@@ -4,9 +4,8 @@ R2S2R turns a recording of a robot's workspace into a simulation of that scene, 
 deploys what is learned there back to the robot. The input is the robot's
 parameters, calibrated camera intrinsics and extrinsics, an RGB-D (stereo) video and
 optionally CAD models of the objects. The output is an Isaac Lab environment with
-every rigid object in place, in the robot's own base frame. The same pipeline is
-meant to accept MuJoCo renderings as "real" input, so that MuJoCo can stand in for
-the real world when testing.
+every rigid object in place, in the robot's own base frame. MuJoCo can stand in for
+the real world: it records captures with ground truth and runs the deployed policy.
 
 The module is shared between the code-for-gen project and
 [PhysCoder](https://github.com/Jaraxxus-Me/physcoder). The first platform is the
@@ -21,7 +20,7 @@ camera).
 | SimFoundry backend, stages 2–12 (Codex as the VLM), textured meshes | done on IRIS: mug + marker on a table plane at z = −0.189 m |
 | Multi-view refinement (`r2s2r refine`): support outline + object footprint check | done: table 0.36 × 0.42 m from both exterior cameras; both objects already within ~2 mm, poses kept |
 | Isaac Lab scene builder + real-camera overlay | done (`scripts/render_overlay.py`): robot, mug, marker and table line up with the real images in both exterior cameras |
-| MuJoCo capture ("MuJoCo as real") and deployment | planned |
+| MuJoCo as real: RGB-D capture → SimFoundry → Isaac Lab pick → MuJoCo deploy | done, see [MuJoCo loop](#the-mujoco-loop-mujoco-as-real) |
 | Robot-side alignment (controller and dynamics) | **not started, see below** |
 
 ## How it fits together
@@ -40,6 +39,13 @@ Capture ──► ReconstructionBackend ──► SceneSpec ──► simulator 
 - `src/r2s2r/reconstruct/`: the backend interface and its registry.
   `simfoundry.py` drives [SimFoundry](third_party/SimFoundry) and re-expresses its
   output in the robot base frame.
+- `src/r2s2r/robots/franka.py`: Panda kinematics (FK, Jacobian, IK) in numpy,
+  shared by every deployment target.
+- `src/r2s2r/policy/`: `RobotInterface` (hold joint targets + a gripper command for
+  one control period) with motion primitives on top, and the scripted pick program.
+- `src/r2s2r/sim/isaaclab/`: the scene builder and the Isaac Lab `RobotInterface`.
+- `src/r2s2r/real/`: MuJoCo as the real world (`mujoco_world.py`: world, capture,
+  `RobotInterface`; `mujoco_deploy.py`: deployment and ground-truth scoring).
 - `third_party/SimFoundry`: git submodule of
   [our fork](https://github.com/weiqianwang123/SimFoundry). All SimFoundry changes go
   there, never into this repository.
@@ -62,6 +68,11 @@ backend:
 3. reads back which frame SimFoundry chose. It then anchors SimFoundry's
    support-plane world frame to the robot with that frame's `T_base_cam` and
    converts every object pose from stage 12.
+
+For an RGB-D camera (no stereo pair, `depth_image` on every frame), the backend
+writes the measured depth where FoundationStereo would (`s2_fs/image_<i>_*`, at
+FoundationStereo's 0.5 scale) and drops stage 2; stages 3–12 cannot tell the
+difference.
 
 SimFoundry reconstructs from one frame of one camera, so most of the video goes
 unused. That single frame is the baseline. Using the rest of the video is on the
@@ -135,6 +146,66 @@ OMNI_KIT_ACCEPT_EULA=YES python scripts/render_overlay.py outputs/iris/scene \
     outputs/iris/capture --out outputs/iris/overlay --headless
 ```
 
+## The MuJoCo loop (MuJoCo as real)
+
+MuJoCo plays the real world at both ends. A Franka Panda with the Franka Hand
+(mujoco_menagerie) stands on a table with three Google Scanned Objects, watched by
+two RealSense-like RGB-D cameras (1280×720, f = 910 px) and a wrist camera. The
+camera layout follows DROID's 2 exterior + 1 wrist. The pipeline only ever sees what a
+real rig would record: images, metric depth, intrinsics, extrinsics and joint
+states. Ground truth goes into `capture.metadata` and is used for scoring only.
+
+```bash
+bash scripts/fetch_mujoco_assets.sh     # Panda + 3 scanned objects, ~45 MB
+bash scripts/mujoco_loop.sh             # everything below, into outputs/mujoco_pick
+
+r2s2r mujoco-capture --out outputs/mujoco_pick/capture
+r2s2r reconstruct outputs/mujoco_pick/capture --workdir outputs/mujoco_pick/simfoundry \
+    --camera-role ext2 --override s3_ground.frame_selection.max_clipped_frac=0.9
+r2s2r refine outputs/mujoco_pick/simfoundry/mujoco_pick/scene \
+    --capture outputs/mujoco_pick/capture --capture-depth --out outputs/mujoco_pick/scene_refined
+OMNI_KIT_ACCEPT_EULA=YES python scripts/run_policy_isaac.py outputs/mujoco_pick/scene_refined \
+    --target crayon --out outputs/mujoco_pick/isaac --headless
+r2s2r mujoco-deploy outputs/mujoco_pick/scene_refined --capture outputs/mujoco_pick/capture \
+    --target crayon --out outputs/mujoco_pick/deploy
+r2s2r mujoco-deploy --oracle --capture outputs/mujoco_pick/capture \
+    --target crayon --out outputs/mujoco_pick/deploy_oracle   # ground-truth baseline
+```
+
+The policy (`r2s2r.policy.pick.pick_up`) is a short program. It goes to a fixed
+ready pose, plans a top-down grasp across the target's narrowest side from the
+SceneSpec mesh, then approaches, descends, closes and lifts 15 cm. Every target runs
+it through the same `RobotInterface`. Cartesian interpolation and IK happen above
+that interface, in numpy (`r2s2r.robots.franka`, checked against MuJoCo's own
+kinematics). Isaac Lab and MuJoCo therefore receive the same joint-target stream,
+and only the plant differs.
+
+First run (2026-09-25):
+
+| | Result |
+|---|---|
+| Capture | 77 RGB-D frames per camera × 3 cameras while the arm sweeps over the table; 5 s |
+| SimFoundry (ext2, RGB-D, Codex) | 12 min 56 s; Codex picked frame 6 and found "teal mug", "crayon box", "orange figurine" |
+| Reconstruction vs ground truth (box centre) | crayon box 0.5 cm, mug 1.0 cm, figurine 1.5 cm; table 1.20 × 1.20 m from `refine` (exact) |
+| Isaac Lab, reconstructed scene | success: crayon box lifted 14.8 cm |
+| MuJoCo as real, same program | **success**: crayon box lifted 14.9 cm; the 411 commands after the ready pose are identical to Isaac's |
+| MuJoCo, ground-truth scene (oracle) | success: 14.9 cm |
+
+What the run exposed:
+
+- Generative shape errors. Codex's image model redrew the Android figurine as a small
+  orange pot with a handle, and the mesh came out 25–30 % too small. The crayon box and
+  the mug are 5–15 % too large. The grasp only depends on the target's narrow side,
+  which came out at 3.1 cm (true 3.0 cm).
+- The VLM's mass estimates are rough: 0.65 kg for a 0.35 kg mug.
+- The arm stands on the table and runs off the image edge. SimFoundry's frame selection
+  counts it as a clipped object and rejected every frame until `max_clipped_frac` was
+  raised. Masking the robot out of the depth would be the proper fix.
+- Isaac Lab's `sim.reset()` leaves the robot in the USD's joint state, not the
+  config's, so `run_policy_isaac.py` writes the initial joint state explicitly.
+- MuJoCo 3.4+ requires `websockets>=13`, which conflicts with Isaac Sim 5.1's pin. The
+  project pins `mujoco<3.4`.
+
 ## Development
 
 ```bash
@@ -151,10 +222,10 @@ and synthetic SimFoundry outputs where those are needed.
 2. **Use more of the video**: add the moving wrist camera to `r2s2r refine`, generate
    meshes from several views (to fix shapes like the over-thick marker), and replay
    the interaction steps to validate physics.
-3. **MuJoCo as real**: render DROID-shaped episodes (same files, plus ground truth)
-   from MuJoCo, score reconstructions against the ground truth, and deploy policies
-   back into the same MuJoCo world.
-4. **Deployment** to the real DROID Franka.
+3. **MuJoCo as real, harder**: DROID's Robotiq gripper in MuJoCo, randomized
+   layouts and lighting, many objects, and a robot mask so the arm never enters the
+   reconstruction.
+4. **Deployment** to the real DROID Franka: a `RobotInterface` over its controller.
 
 ## TODO: robot-side alignment
 
@@ -173,7 +244,9 @@ policies can be trusted to transfer:
 - **Camera timing.** Latency between the camera and robot state streams. DROID videos
   lag their step timestamps by about 40 ms.
 
-Planned after the scene pipeline works end to end.
+The MuJoCo loop covers the first point only for its own setup: Franka Hand in both
+simulators, and one joint-target interface with shared IK. DROID's Robotiq, real arm
+dynamics and camera timing are still open.
 
 ## Data caveats
 

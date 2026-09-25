@@ -16,7 +16,10 @@ import numpy as np
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
-from isaaclab_assets.robots.franka import FRANKA_ROBOTIQ_GRIPPER_CFG
+from isaaclab_assets.robots.franka import (
+    FRANKA_PANDA_HIGH_PD_CFG,
+    FRANKA_ROBOTIQ_GRIPPER_CFG,
+)
 
 from r2s2r.structs import CameraSpec, ObjectSpec, SceneSpec
 from r2s2r.transforms import make_transform, matrix_to_pos_quat
@@ -30,11 +33,19 @@ def _pose(T: np.ndarray) -> tuple[tuple[float, ...], tuple[float, ...]]:
     return tuple(float(v) for v in pos), tuple(float(v) for v in quat)
 
 
+# Embodiment -> Isaac Lab robot. Both hold joint position targets stiffly with
+# gravity compensated, like Franka's own controller.
+ROBOT_CFGS = {
+    "droid_franka": FRANKA_ROBOTIQ_GRIPPER_CFG,  # Panda + Robotiq 2F-85
+    "franka_panda": FRANKA_PANDA_HIGH_PD_CFG,  # Panda + Franka Hand
+}
+
+
 def robot_cfg(scene: SceneSpec) -> ArticulationCfg:
-    """DROID Franka (Panda + Robotiq 2F-85) at the origin, in the recorded pose."""
-    if scene.embodiment != "droid_franka":
+    """The scene's robot at the origin, in the recorded pose."""
+    if scene.embodiment not in ROBOT_CFGS:
         raise NotImplementedError(f"no Isaac Lab config for {scene.embodiment!r}")
-    cfg = FRANKA_ROBOTIQ_GRIPPER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    cfg = ROBOT_CFGS[scene.embodiment].replace(prim_path="{ENV_REGEX_NS}/Robot")
     joint_pos = dict(cfg.init_state.joint_pos)
     joint_pos.update(
         {name: float(q) for name, q in zip(PANDA_JOINTS, scene.joint_positions)}
@@ -135,6 +146,7 @@ def build_scene_cfg(
     env_spacing: float = 5.0,
     support_extent: tuple[float, float] = (0.6, 0.6),  # when the scene has none
     with_cameras: bool = True,
+    camera_roles: list[str] | None = None,  # None: every static camera
 ) -> InteractiveSceneCfg:
     """The full interactive scene: robot, support, objects, lights, cameras."""
     cfg = InteractiveSceneCfg(num_envs=num_envs, env_spacing=env_spacing)
@@ -164,6 +176,8 @@ def build_scene_cfg(
     )
     if with_cameras:
         for cam in scene.cameras.values():
+            if camera_roles is not None and cam.role not in camera_roles:
+                continue
             if cam.is_static and cam.T_base_cam is not None:
                 setattr(cfg, f"camera_{cam.role}", camera_cfg(cam, cam.T_base_cam))
     return cfg

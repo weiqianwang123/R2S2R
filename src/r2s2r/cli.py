@@ -1,7 +1,13 @@
 """Command-line entry points.
 
-r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR r2s2r reconstruct
-CAPTURE_DIR --workdir WORKDIR [--stages 2,3] [--prepare-only]
+r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR r2s2r mujoco-capture
+--out CAPTURE_DIR r2s2r reconstruct CAPTURE_DIR --workdir WORKDIR [--stages 2,3]
+[--prepare-only] r2s2r refine SCENE_DIR --capture CAPTURE_DIR (--views WORKDIR... |
+--capture-depth) r2s2r mujoco-deploy SCENE_DIR --capture CAPTURE_DIR --target NAME --out
+OUT_DIR
+
+The Isaac Lab side runs as scripts (the Omniverse app must start first): see
+``scripts/run_policy_isaac.py``.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import shutil
 from pathlib import Path
 
 from r2s2r.io.droid import load_droid_episode
+from r2s2r.io.rgbd import capture_depth_views
 from r2s2r.reconstruct import make_backend, registered_backends
 from r2s2r.reconstruct.simfoundry import (
     SimFoundryBackend,
@@ -75,10 +82,12 @@ def _refine(args: argparse.Namespace) -> None:
     capture = Capture.load(args.capture)
     step = scene.reference_step if args.step is None else args.step
     views = []
+    if args.capture_depth:
+        views += capture_depth_views(capture, step)
     for workdir in args.views:
         views += load_stage2_views(capture, workdir, steps={step})
     if not views:
-        raise SystemExit(f"no stage-2 depth at step {step} in {args.views}")
+        raise SystemExit(f"no depth at step {step} (capture depth or --views)")
     refined, report = refine_scene(scene, views)
     path = refined.save(args.out)
     for name, entry in report["objects"].items():
@@ -94,6 +103,48 @@ def _refine(args: argparse.Namespace) -> None:
             print(f"{name}: no matching point cluster, left as is")
     w, h = report["support"]["size"]
     print(f"support {w:.2f} x {h:.2f} m from {len(views)} views -> {path}")
+
+
+def _mujoco_capture(args: argparse.Namespace) -> None:
+    # MuJoCo creates GL contexts on import of its renderer; keep it lazy.
+    from r2s2r.real.mujoco_world import (  # pylint: disable=import-outside-toplevel
+        record_capture,
+    )
+
+    capture = record_capture(args.out, name=args.name, every=args.every)
+    print(
+        f"capture {capture.name}: {len(capture.frames)} RGB-D frames from "
+        f"{len(capture.cameras)} cameras -> {capture.root}"
+    )
+
+
+def _mujoco_deploy(args: argparse.Namespace) -> None:
+    from r2s2r.real.mujoco_deploy import (  # pylint: disable=import-outside-toplevel
+        oracle_scene,
+        run_pick,
+        scene_errors,
+    )
+
+    capture = Capture.load(args.capture)
+    if args.oracle:
+        scene = oracle_scene(capture, args.out)
+        scene.save(args.out / "oracle_scene")
+    else:
+        scene = SceneSpec.load(args.scene_dir)
+        for name, err in scene_errors(scene, capture).items():
+            print(
+                f"{name} ~ {err['ground_truth']}: centre off by "
+                f"{err['center_error_m'] * 100:.1f} cm, size {err['size_m']} "
+                f"(true {err['ground_truth_size_m']})"
+            )
+    result = run_pick(capture, scene, args.target, args.out, args.video_camera)
+    lift = result["object_lift_m"]
+    print(
+        f"{'SUCCESS' if result['success'] else 'FAILURE'}: policy picked "
+        f"{result['policy']['target']!r}; lifted "
+        + ", ".join(f"{n} {dz * 100:+.1f} cm" for n, dz in lift.items())
+        + f" -> {args.out}"
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -134,12 +185,34 @@ def main(argv: list[str] | None = None) -> None:
         "--views",
         type=Path,
         nargs="+",
-        required=True,
+        default=[],
         help="SimFoundry workdirs whose stage-2 depth to fuse (one per camera)",
+    )
+    p.add_argument(
+        "--capture-depth",
+        action="store_true",
+        help="fuse the capture's own depth (RGB-D cameras) of every static camera",
     )
     p.add_argument("--step", type=int, help="default: the scene's reference step")
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_refine)
+
+    p = sub.add_parser("mujoco-capture", help="record a capture in the MuJoCo world")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--name", default="mujoco_pick")
+    p.add_argument("--every", type=int, default=5, help="save every n control steps")
+    p.set_defaults(func=_mujoco_capture)
+
+    p = sub.add_parser("mujoco-deploy", help="run the pick policy in the MuJoCo world")
+    p.add_argument("scene_dir", type=Path, nargs="?")
+    p.add_argument("--capture", type=Path, required=True, help="MuJoCo capture dir")
+    p.add_argument("--target", required=True, help="object name (or unique substring)")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--video-camera", default="ext1")
+    p.add_argument(
+        "--oracle", action="store_true", help="use ground-truth objects, not SCENE_DIR"
+    )
+    p.set_defaults(func=_mujoco_deploy)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)

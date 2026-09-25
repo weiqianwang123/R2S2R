@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
    "h5py",
+   # MuJoCo stands in for the real world. 3.4+ needs websockets>=13, which
+   # conflicts with the websockets==12.0 pin of isaacsim-kernel 5.1.
+   "mujoco>=3.3,<3.4",
    "numpy",
    "opencv-python-headless",
    "PyYAML",
@@ -69,5 +72,6 @@ module = [
     "trimesh.*",
     "isaaclab.*",
     "isaaclab_assets.*",
+    "mujoco.*",
 ]
 ignore_missing_imports = true

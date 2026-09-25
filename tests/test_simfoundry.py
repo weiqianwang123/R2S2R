@@ -2,14 +2,20 @@
 
 import json
 
+import cv2
 import numpy as np
 import pytest
 
 from r2s2r.io.droid import load_droid_episode
 from r2s2r.reconstruct import make_backend
 from r2s2r.reconstruct.simfoundry import FRAME_MAP_FILENAME, SimFoundryBackend
-from r2s2r.structs import SceneSpec
-from r2s2r.transforms import make_transform, pos_quat_to_matrix, quat_wxyz_to_xyzw
+from r2s2r.structs import CameraSpec, Capture, FrameRecord, SceneSpec
+from r2s2r.transforms import (
+    intrinsics_matrix,
+    make_transform,
+    pos_quat_to_matrix,
+    quat_wxyz_to_xyzw,
+)
 
 
 @pytest.fixture(name="capture")
@@ -111,3 +117,65 @@ def test_parse_reanchors_to_robot_base(capture, tmp_path):
     scene.save(tmp_path / "scene")
     reloaded = SceneSpec.load(tmp_path / "scene")
     assert np.allclose(reloaded.objects[0].T_base_obj, obj.T_base_obj)
+
+
+def _rgbd_capture(root):
+    """A mono RGB-D camera with three frames of constant depth."""
+    (root / "frames").mkdir(parents=True)
+    width, height = 128, 96
+    frames = []
+    for step in range(3):
+        cv2.imwrite(
+            str(root / f"frames/{step}_rgb.png"),
+            np.full((height, width, 3), 50 * step, np.uint8),
+        )
+        cv2.imwrite(
+            str(root / f"frames/{step}_depth.png"),
+            np.full((height, width), 1000 + step, np.uint16),
+        )
+        frames.append(
+            FrameRecord(
+                step,
+                "cam",
+                f"frames/{step}_rgb.png",
+                None,
+                np.eye(4),
+                np.zeros(7),
+                0.0,
+                depth_image=f"frames/{step}_depth.png",
+            )
+        )
+    K = intrinsics_matrix(100.0, 100.0, 63.5, 47.5)
+    cam = CameraSpec("cam", "ext1", width, height, K, T_base_cam=np.eye(4))
+    return Capture(
+        "c", "mujoco", "franka_panda", "", {"cam": cam}, frames, (0, 3), root
+    )
+
+
+def test_prepare_inputs_rgbd(tmp_path):
+    """Measured depth is written in FoundationStereo's layout at its scale."""
+    capture = _rgbd_capture(tmp_path / "capture")
+    backend = SimFoundryBackend(camera_role="ext1")
+    assert backend.uses_measured_depth(capture)
+    backend.prepare_inputs(capture, tmp_path / "work")
+    fs = backend.scene_dir(capture, tmp_path / "work") / "s2_fs"
+    depth = np.load(fs / "image_1_depth_meter.npy")
+    assert depth.shape == (48, 64) and np.allclose(depth, 1.001)
+    K = np.load(fs / "image_1_K.npy")
+    assert np.isclose(K[0, 0], 50.0) and np.isclose(K[0, 2], 31.5)
+    assert np.load(fs / "image_2_rgb.npy").shape == (48, 64, 3)
+    s1 = backend.scene_dir(capture, tmp_path / "work") / "s1_zed"
+    assert (s1 / "image_0_l.png").exists() and not (s1 / "image_0_r.png").exists()
+
+
+def test_run_skips_stage2_for_rgbd(tmp_path, monkeypatch):
+    """Stage 2 (stereo depth) is dropped when the camera measured depth."""
+    capture = _rgbd_capture(tmp_path / "capture")
+    calls = []
+    monkeypatch.setattr(
+        "r2s2r.reconstruct.simfoundry.subprocess.run",
+        lambda cmd, **kwargs: calls.append(cmd),
+    )
+    SimFoundryBackend(camera_role="ext1").run(capture, tmp_path, stages=("2", "3"))
+    cmd = calls[0]
+    assert cmd[cmd.index("--include") + 1] == "3"

@@ -5,7 +5,9 @@ in its own conda environments, driven through its reconstruction orchestrator.
 This module only
 
 1. writes a capture in the layout of SimFoundry's stereo capture stage (1a), so
-   its FoundationStereo path gives metric depth from calibrated stereo;
+   its FoundationStereo path gives metric depth from calibrated stereo; or, for an
+   RGB-D camera, writes the measured depth where FoundationStereo would (stage 2's
+   outputs) and skips stage 2;
 2. runs stages 2-12 (13-14 import into OmniGibson, which r2s2r does not use);
 3. reads the stage outputs back and re-expresses them in the robot base frame.
 
@@ -31,6 +33,7 @@ import cv2
 import numpy as np
 
 from r2s2r.assets import bake_mesh_scales
+from r2s2r.io.rgbd import read_depth
 from r2s2r.reconstruct.base import ReconstructionBackend, register_backend
 from r2s2r.refine import DepthView
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec
@@ -72,6 +75,9 @@ class SimFoundryConfig:
     # with the image model; off by default so no generated content enters the scene.
     upsample_source_image: bool = False
     mesh_low_vram: bool = True  # stage 7 CPU offload (~29 GB -> ~6 GB VRAM)
+    # RGB-D input is downscaled like FoundationStereo's output (s2_fs.fs.scale), so
+    # stages 3-12 see the same resolution whichever depth source was used.
+    rgbd_scale: float = 0.5
     overrides: list[str] = field(default_factory=list)  # extra Hydra overrides
 
 
@@ -88,40 +94,65 @@ class SimFoundryBackend(ReconstructionBackend):
         return Path(workdir).resolve() / capture.name
 
     # ----------------------------------------------------------------- inputs
+    def uses_measured_depth(self, capture: Capture) -> bool:
+        """True for an RGB-D camera (no stereo pair): stage 2 is replaced."""
+        cam = capture.camera_by_role(self.config.camera_role)
+        if cam.stereo_baseline is not None:
+            return False
+        if any(f.depth_image is None for f in capture.frames_of(cam.serial)):
+            raise ValueError(f"camera {cam.serial} has neither stereo nor depth")
+        return True
+
     def prepare_inputs(self, capture: Capture, workdir: Path) -> Path:
-        """Write stereo pairs + ``intrinsic.txt`` where stage 1a would.
+        """Write stereo pairs + ``intrinsic.txt`` where stage 1a would, or, for an RGB-D
+        camera, left images plus stage 2's FoundationStereo-format outputs.
 
         Files are named ``image_<i>_{l,r}.png`` (not stage 1a's ``zed_<i>``), which is
         the prefix stages 3-8 read back from the FoundationStereo output.
         """
         cam = capture.camera_by_role(self.config.camera_role)
-        if cam.stereo_baseline is None:
-            raise ValueError(f"camera {cam.serial} is not stereo")
+        rgbd = self.uses_measured_depth(capture)
         frames = capture.frames_of(cam.serial)
         if not frames:
             raise ValueError(f"capture has no frames of camera {cam.serial}")
         pick = np.linspace(0, len(frames) - 1, min(self.config.max_frames, len(frames)))
         frames = [frames[i] for i in sorted({int(round(p)) for p in pick})]
 
-        s1_dir = self.scene_dir(capture, workdir) / "s1_zed"
-        if s1_dir.exists():
-            shutil.rmtree(s1_dir)
-        s1_dir.mkdir(parents=True)
+        scene_dir = self.scene_dir(capture, workdir)
+        s1_dir = scene_dir / "s1_zed"
+        fs_dir = scene_dir / "s2_fs"
+        for d in (s1_dir, fs_dir) if rgbd else (s1_dir,):
+            if d.exists():
+                shutil.rmtree(d)
+            d.mkdir(parents=True)
         frame_map = []
         for i, frame in enumerate(frames):
-            assert frame.right_image is not None
-            for side, rel in (("l", frame.left_image), ("r", frame.right_image)):
+            sides = [("l", frame.left_image)]
+            if not rgbd:
+                assert frame.right_image is not None
+                sides.append(("r", frame.right_image))
+            for side, rel in sides:
                 img = cv2.imread(str(capture.root / rel))
                 if img is None:
                     raise IOError(f"cannot read {capture.root / rel}")
                 cv2.imwrite(str(s1_dir / f"image_{i}_{side}.png"), img)
+            if rgbd:
+                assert frame.depth_image is not None
+                _write_fs_outputs(
+                    fs_dir / f"image_{i}",
+                    cv2.imread(str(capture.root / frame.left_image)),
+                    read_depth(capture.root / frame.depth_image),
+                    cam.K,
+                    self.config.rgbd_scale,
+                )
             frame_map.append({"index": i, "camera": cam.serial, "step": frame.step})
         np.save(s1_dir / "K.npy", cam.K)
-        # FoundationStereo's format: row-major K on line 1, baseline (m) on line 2.
-        k_line = " ".join(f"{v:.8f}" for v in cam.K.reshape(-1))
-        (s1_dir / "intrinsic.txt").write_text(
-            f"{k_line}\n{cam.stereo_baseline:.8f}\n", encoding="utf-8"
-        )
+        if not rgbd:
+            # FoundationStereo's format: row-major K on line 1, baseline (m) on line 2.
+            k_line = " ".join(f"{v:.8f}" for v in cam.K.reshape(-1))
+            (s1_dir / "intrinsic.txt").write_text(
+                f"{k_line}\n{cam.stereo_baseline:.8f}\n", encoding="utf-8"
+            )
         (s1_dir / FRAME_MAP_FILENAME).write_text(
             json.dumps(frame_map, indent=2), encoding="utf-8"
         )
@@ -190,6 +221,8 @@ class SimFoundryBackend(ReconstructionBackend):
     ) -> None:
         """Run the requested SimFoundry stages."""
         stages = stages or self.config.stages
+        if self.uses_measured_depth(capture):
+            stages = tuple(s for s in stages if s != "2")
         needs_vlm = GEMINI_STAGES & set(stages)
         if (
             needs_vlm
@@ -292,6 +325,25 @@ def load_stage2_views(
             )
         )
     return views
+
+
+def _write_fs_outputs(
+    stem: Path, bgr: np.ndarray, depth: np.ndarray, K: np.ndarray, scale: float
+) -> None:
+    """What FoundationStereo writes per frame: rgb (png + npy), depth, K."""
+    h, w = depth.shape
+    size = (int(round(w * scale)), int(round(h * scale)))
+    rgb = cv2.cvtColor(
+        cv2.resize(bgr, size, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB
+    )
+    depth = cv2.resize(depth, size, interpolation=cv2.INTER_NEAREST)
+    K = K.astype(np.float32).copy()
+    K[:2, :2] *= scale
+    K[:2, 2] = (K[:2, 2] + 0.5) * scale - 0.5  # pixel-centre convention
+    cv2.imwrite(f"{stem}_rgb.png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    np.save(f"{stem}_rgb.npy", rgb)
+    np.save(f"{stem}_depth_meter.npy", depth.astype(np.float32))
+    np.save(f"{stem}_K.npy", K)
 
 
 def _hydra_bool(value: bool) -> str:

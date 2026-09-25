@@ -19,6 +19,7 @@ from numpy.typing import NDArray
 
 CAPTURE_FILENAME = "capture.json"
 SCENE_FILENAME = "scene.json"
+DEPTH_PNG_SCALE = 0.001  # meters per unit of uint16 depth PNGs
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -74,6 +75,8 @@ class FrameRecord:
     T_base_cam: NDArray[np.float64]
     joint_positions: NDArray[np.float64]
     gripper_position: float
+    # Metric depth of the left image: uint16 PNG, DEPTH_PNG_SCALE meters per unit.
+    depth_image: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FrameRecord:
