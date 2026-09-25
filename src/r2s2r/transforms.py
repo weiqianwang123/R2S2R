@@ -83,3 +83,15 @@ def project_points(
         uv = uvw[:, :2] / uvw[:, 2:3]
     uv[pts_cam[:, 2] <= 0] = np.nan
     return uv
+
+
+def backproject(
+    depth: ArrayLike, K: ArrayLike, max_depth: float = np.inf
+) -> NDArray[np.float64]:
+    """Camera-frame points (N x 3) of the pixels with 0 < depth < ``max_depth`` (planar
+    depth, OpenCV camera)."""
+    depth = np.asarray(depth, dtype=np.float64)
+    K = np.asarray(K, dtype=np.float64)
+    v, u = np.nonzero((depth > 0) & (depth < max_depth))
+    z = depth[v, u]
+    return np.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], 1)

@@ -3,12 +3,12 @@
 #
 # The core package (capture loading, reconstruction adapters, scene specs) needs
 # none of this; only the Isaac Lab scene builder does. SimFoundry keeps its own
-# conda envs (see scripts/link_simfoundry_resources.sh).
+# conda envs (see scripts/setup/link_simfoundry_resources.sh).
 #
-# Usage: bash scripts/install.sh            # R2S2R_ISAACLAB_REF overrides the tag
+# Usage: bash scripts/setup/install.sh           # R2S2R_ISAACLAB_REF overrides the tag
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ISAACLAB_REF="${R2S2R_ISAACLAB_REF:-v2.3.2}"
 ISAACLAB_ROOT="${ROOT}/_isaaclab/IsaacLab"
 PYTHON="${ROOT}/.venv/bin/python"

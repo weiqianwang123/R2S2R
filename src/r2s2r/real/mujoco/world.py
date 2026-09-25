@@ -1,30 +1,19 @@
-"""MuJoCo standing in for the real world.
-
-The world is a Franka Panda (mujoco_menagerie) on a table with scanned household
-objects (Google Scanned Objects, MuJoCo port), watched by calibrated RGB-D cameras.
-It plays both ends of the loop:
-
-* **real -> sim**: :func:`record_capture` writes a :class:`~r2s2r.structs.Capture`
-  (RGB + metric depth, intrinsics, extrinsics, joint states) exactly like a real
-  recording, and nothing else; ground truth goes into ``capture.metadata`` for
-  evaluation only;
-* **sim -> real**: :class:`MujocoRobot` is a :class:`RobotInterface`, so a program
-  policy validated in Isaac Lab runs here unchanged.
+"""The MuJoCo world: a Franka Panda (mujoco_menagerie) on a table with scanned household
+objects (Google Scanned Objects, MuJoCo port), watched by calibrated RGB-D cameras, and
+its robot behind :class:`~r2s2r.policy.robot.RobotInterface`.
 
 The world frame is the robot base frame. Assets are fetched by
-``scripts/fetch_mujoco_assets.sh`` into ``~/.cache/r2s2r``.
+``scripts/setup/fetch_mujoco_assets.sh`` into ``~/.cache/r2s2r``.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-import cv2
 import numpy as np
 import trimesh
 from numpy.typing import NDArray
@@ -32,7 +21,7 @@ from scipy.spatial.transform import Rotation
 
 from r2s2r.policy.robot import RobotInterface
 from r2s2r.robots.franka import FRANKA_HAND_TCP, Q_READY, PandaKinematics
-from r2s2r.structs import DEPTH_PNG_SCALE, CameraSpec, Capture, FrameRecord
+from r2s2r.structs import CameraSpec, Capture
 from r2s2r.transforms import intrinsics_matrix, make_transform
 
 os.environ.setdefault("MUJOCO_GL", "egl")
@@ -40,7 +29,6 @@ import mujoco  # noqa: E402  pylint: disable=wrong-import-position,wrong-import-
 
 CACHE_DIR = Path(os.environ.get("R2S2R_CACHE", Path.home() / ".cache" / "r2s2r"))
 
-MAX_DEPTH = 10.0  # meters; farther pixels (the sky) are stored as invalid (0)
 ARM_JOINTS = [f"joint{i}" for i in range(1, 8)]
 FINGER_JOINTS = ["finger_joint1", "finger_joint2"]
 PANDA_BODIES = ["link0", *[f"link{i}" for i in range(1, 8)], "hand"]
@@ -478,89 +466,6 @@ class MujocoRobot(RobotInterface):
             self.on_step(self)
 
 
-# ---------------------------------------------------------------------- capture
-def _capture_motion(robot: MujocoRobot) -> None:
-    """Sweep the hand over the table so the wrist camera sees the scene."""
-    T0 = robot.tcp_pose()
-    for dx, dy, dz in [(0.12, 0.18, -0.1), (0.12, -0.18, -0.1), (0.0, 0.0, 0.0)]:
-        T = T0.copy()
-        T[:3, 3] += [dx, dy, dz]
-        robot.move_tcp(T, speed=0.12, settle=0.2)
-
-
-def record_capture(
-    out_dir: str | Path,
-    cfg: MujocoWorldConfig | None = None,
-    name: str = "mujoco_pick",
-    instruction: str = "pick up the crayon box",
-    every: int = 5,
-) -> Capture:
-    """Run the capture motion and save RGB-D frames every ``every`` control steps."""
-    out_dir = Path(out_dir)
-    world = MujocoWorld(cfg)
-    world.reset()
-    cameras = {n: world.camera_spec(n) for n in world.camera_names()}
-    frames: list[FrameRecord] = []
-
-    def grab(robot: MujocoRobot) -> None:
-        if robot.steps % every:
-            return
-        q, width = world.arm_q(), world.finger_width()
-        for cam_name in world.camera_names():
-            spec = cameras[cam_name]
-            rgb, depth = world.render(cam_name)
-            rel = Path("frames") / spec.serial
-            (out_dir / rel).mkdir(parents=True, exist_ok=True)
-            rgb_rel = rel / f"{robot.steps:04d}_rgb.png"
-            depth_rel = rel / f"{robot.steps:04d}_depth.png"
-            cv2.imwrite(str(out_dir / rgb_rel), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-            depth[depth > MAX_DEPTH] = 0.0  # like a real sensor: 0 = no return
-            depth_mm = np.clip(np.round(depth / DEPTH_PNG_SCALE), 0, 65535)
-            cv2.imwrite(str(out_dir / depth_rel), depth_mm.astype(np.uint16))
-            frames.append(
-                FrameRecord(
-                    step=robot.steps,
-                    camera=spec.serial,
-                    left_image=str(rgb_rel),
-                    right_image=None,
-                    depth_image=str(depth_rel),
-                    T_base_cam=world.camera_pose(cam_name),
-                    joint_positions=q,
-                    gripper_position=1.0 - width / 0.08,
-                )
-            )
-
-    robot = MujocoRobot(world, on_step=grab)
-    grab(robot)
-    _capture_motion(robot)
-    capture = Capture(
-        name=name,
-        source="mujoco",
-        embodiment="franka_panda",
-        instruction=instruction,
-        cameras={c.serial: c for c in cameras.values()},
-        frames=frames,
-        static_steps=(0, robot.steps + 1),
-        root=out_dir,
-        metadata={
-            "world_config": world.cfg.as_dict(),
-            "depth_png_scale": DEPTH_PNG_SCALE,
-            # For evaluating reconstructions only; never read by the pipeline.
-            "ground_truth_T_base_obj": {
-                o.name: world.object_pose(o.name).tolist() for o in world.cfg.objects
-            },
-        },
-    )
-    capture.save()
-    world.close()
-    return capture
-
-
 def world_from_capture(capture: Capture) -> MujocoWorld:
     """Rebuild the world a MuJoCo capture was recorded in."""
     return MujocoWorld(MujocoWorldConfig.from_dict(capture.metadata["world_config"]))
-
-
-def save_json(path: str | Path, payload: Any) -> None:
-    """Small helper for result files."""
-    Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")

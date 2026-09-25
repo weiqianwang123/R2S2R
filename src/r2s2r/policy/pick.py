@@ -14,8 +14,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from r2s2r.assets import urdf_visual_points
 from r2s2r.policy.robot import RobotInterface
-from r2s2r.refine import urdf_visual_points
 from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH, Q_READY
 from r2s2r.structs import ObjectSpec, SceneSpec
 

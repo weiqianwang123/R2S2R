@@ -1,19 +1,17 @@
-"""Tests for refine.py and assets.py on synthetic geometry."""
+"""Tests for reconstruct/refine.py and assets.py on synthetic geometry."""
 
 import numpy as np
 import pytest
 import trimesh
 from scipy.spatial.transform import Rotation
 
-from r2s2r.assets import bake_mesh_scales
-from r2s2r.refine import (
-    DepthView,
+from r2s2r.assets import bake_mesh_scales, urdf_visual_points
+from r2s2r.reconstruct.refine import (
     fit_support_outline,
     refine_scene,
     register_footprint,
-    urdf_visual_points,
 )
-from r2s2r.structs import CameraSpec, ObjectSpec, SceneSpec
+from r2s2r.structs import CameraSpec, DepthView, ObjectSpec, SceneSpec
 from r2s2r.transforms import intrinsics_matrix, make_transform
 
 BOX = (0.12, 0.06, 0.05)  # object size (m)

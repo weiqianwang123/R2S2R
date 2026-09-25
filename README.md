@@ -19,7 +19,7 @@ camera).
 | DROID raw episode → `Capture` (`r2s2r droid-capture`) | done, tested on `IRIS+ef107c48+2023-03-07-16h-19m-59s` |
 | SimFoundry backend, stages 2–12 (Codex as the VLM), textured meshes | done on IRIS: mug + marker on a table plane at z = −0.189 m |
 | Multi-view refinement (`r2s2r refine`): support outline + object footprint check | done: table 0.36 × 0.42 m from both exterior cameras; both objects already within ~2 mm, poses kept |
-| Isaac Lab scene builder + real-camera overlay | done (`scripts/render_overlay.py`): robot, mug, marker and table line up with the real images in both exterior cameras |
+| Isaac Lab scene builder + real-camera overlay | done (`scripts/isaaclab/render_overlay.py`): robot, mug, marker and table line up with the real images in both exterior cameras |
 | MuJoCo as real: RGB-D capture → SimFoundry → Isaac Lab pick → MuJoCo deploy | done, see [MuJoCo loop](#the-mujoco-loop-mujoco-as-real) |
 | Robot-side alignment (controller and dynamics) | **not started, see below** |
 
@@ -31,21 +31,36 @@ Capture ──► ReconstructionBackend ──► SceneSpec ──► simulator 
                                         frame)                                         MuJoCo as real)
 ```
 
-- `src/r2s2r/structs.py`: `Capture` (what was recorded) and `SceneSpec` (what was
-  reconstructed), both plain data saved as JSON.
-- `src/r2s2r/io/droid.py`: raw DROID episode → `Capture`. It uses the improved DROID
-  calibration and keeps only the steps before the gripper first closes, when the
-  objects are static.
-- `src/r2s2r/reconstruct/`: the backend interface and its registry.
-  `simfoundry.py` drives [SimFoundry](third_party/SimFoundry) and re-expresses its
-  output in the robot base frame.
-- `src/r2s2r/robots/franka.py`: Panda kinematics (FK, Jacobian, IK) in numpy,
-  shared by every deployment target.
-- `src/r2s2r/policy/`: `RobotInterface` (hold joint targets + a gripper command for
-  one control period) with motion primitives on top, and the scripted pick program.
-- `src/r2s2r/sim/isaaclab/`: the scene builder and the Isaac Lab `RobotInterface`.
-- `src/r2s2r/real/`: MuJoCo as the real world (`mujoco_world.py`: world, capture,
-  `RobotInterface`; `mujoco_deploy.py`: deployment and ground-truth scoring).
+```
+src/r2s2r/
+  structs.py        Capture (what was recorded), SceneSpec (what was reconstructed),
+                    DepthView; plain data saved as JSON
+  transforms.py     frames, quaternions, projection / backprojection
+  assets.py         URDF helpers: bake mesh scales, sample visual surfaces
+  cli.py            the r2s2r command
+  io/               recordings -> Capture: droid.py (raw DROID episodes), rgbd.py
+  reconstruct/      Capture -> SceneSpec: base.py (pluggable backends),
+                    simfoundry.py, refine.py (multi-view pose and outline check)
+  robots/franka.py  Panda FK / Jacobian / IK in numpy, shared by every target
+  policy/           robot.py (RobotInterface + motion primitives), pick.py (the pick
+                    program), scoring.py (lift scoring, result files)
+  sim/isaaclab/     scene.py (SceneSpec -> Isaac Lab scene), robot.py, rollout.py
+  real/mujoco/      MuJoCo as the real world: world.py, capture.py, deploy.py
+  video.py          rollout videos and contact sheets
+scripts/
+  setup/            install.sh, link_simfoundry_resources.sh, fetch_mujoco_assets.sh
+  isaaclab/         entry points that start the Omniverse app: render_overlay.py,
+                    run_pick.py
+  mujoco_loop.sh    the whole MuJoCo loop
+```
+
+- `io/droid.py` uses the improved DROID calibration and keeps only the steps before
+  the gripper first closes, when the objects are static.
+- `reconstruct/simfoundry.py` drives [SimFoundry](third_party/SimFoundry) and
+  re-expresses its output in the robot base frame.
+- A deployment target implements `policy.robot.RobotInterface`: hold joint targets
+  and a gripper command for one control period. Isaac Lab (`sim/isaaclab/robot.py`)
+  and MuJoCo (`real/mujoco/world.py`) do; the real DROID arm will.
 - `third_party/SimFoundry`: git submodule of
   [our fork](https://github.com/weiqianwang123/SimFoundry). All SimFoundry changes go
   there, never into this repository.
@@ -86,14 +101,14 @@ Python 3.11 and [uv](https://docs.astral.sh/uv/).
 git clone --recurse-submodules https://github.com/weiqianwang123/R2S2R.git
 cd R2S2R
 uv venv --python 3.11 .venv && uv pip install -e ".[develop]"   # core only
-bash scripts/install.sh      # + torch 2.7 (cu128), Isaac Sim 5.1, Isaac Lab v2.3.2
+bash scripts/setup/install.sh    # + torch 2.7 (cu128), Isaac Sim 5.1, Isaac Lab v2.3.2
 ```
 
 SimFoundry needs its own install (conda envs, model repos, checkpoints). Follow its
 README once. Then link the heavy, git-ignored parts into the submodule:
 
 ```bash
-bash scripts/link_simfoundry_resources.sh ~/SimFoundry
+bash scripts/setup/link_simfoundry_resources.sh ~/SimFoundry
 ```
 
 SimFoundry's stages 3, 5, 6, 8 and 11 call Gemini upstream. The `r2s2r` branch of
@@ -142,7 +157,7 @@ r2s2r reconstruct outputs/iris/capture --workdir outputs/iris/simfoundry_ext1 \
     --camera-role ext1 --stages 2            # depth from the second camera
 r2s2r refine outputs/iris/simfoundry/<scene>/scene --capture outputs/iris/capture \
     --views outputs/iris/simfoundry outputs/iris/simfoundry_ext1 --out outputs/iris/scene
-OMNI_KIT_ACCEPT_EULA=YES python scripts/render_overlay.py outputs/iris/scene \
+OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/render_overlay.py outputs/iris/scene \
     outputs/iris/capture --out outputs/iris/overlay --headless
 ```
 
@@ -156,15 +171,15 @@ real rig would record: images, metric depth, intrinsics, extrinsics and joint
 states. Ground truth goes into `capture.metadata` and is used for scoring only.
 
 ```bash
-bash scripts/fetch_mujoco_assets.sh     # Panda + 3 scanned objects, ~45 MB
-bash scripts/mujoco_loop.sh             # everything below, into outputs/mujoco_pick
+bash scripts/setup/fetch_mujoco_assets.sh   # Panda + 3 scanned objects, ~45 MB
+bash scripts/mujoco_loop.sh                 # everything below, into outputs/mujoco_pick
 
 r2s2r mujoco-capture --out outputs/mujoco_pick/capture
 r2s2r reconstruct outputs/mujoco_pick/capture --workdir outputs/mujoco_pick/simfoundry \
     --camera-role ext2 --override s3_ground.frame_selection.max_clipped_frac=0.9
 r2s2r refine outputs/mujoco_pick/simfoundry/mujoco_pick/scene \
     --capture outputs/mujoco_pick/capture --capture-depth --out outputs/mujoco_pick/scene_refined
-OMNI_KIT_ACCEPT_EULA=YES python scripts/run_policy_isaac.py outputs/mujoco_pick/scene_refined \
+OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/run_pick.py outputs/mujoco_pick/scene_refined \
     --target crayon --out outputs/mujoco_pick/isaac --headless
 r2s2r mujoco-deploy outputs/mujoco_pick/scene_refined --capture outputs/mujoco_pick/capture \
     --target crayon --out outputs/mujoco_pick/deploy
@@ -202,7 +217,7 @@ What the run exposed:
   counts it as a clipped object and rejected every frame until `max_clipped_frac` was
   raised. Masking the robot out of the depth would be the proper fix.
 - Isaac Lab's `sim.reset()` leaves the robot in the USD's joint state, not the
-  config's, so `run_policy_isaac.py` writes the initial joint state explicitly.
+  config's, so `sim/isaaclab/rollout.py` writes the initial joint state explicitly.
 - MuJoCo 3.4+ requires `websockets>=13`, which conflicts with Isaac Sim 5.1's pin. The
   project pins `mujoco<3.4`.
 
@@ -213,7 +228,8 @@ What the run exposed:
 ```
 
 Tests need neither a GPU nor SimFoundry. They build a tiny synthetic DROID episode,
-and synthetic SimFoundry outputs where those are needed.
+and synthetic SimFoundry outputs where those are needed. The MuJoCo tests are skipped
+until `scripts/setup/fetch_mujoco_assets.sh` has run.
 
 ## Roadmap
 
@@ -250,6 +266,8 @@ dynamics and camera timing are still open.
 
 ## Data caveats
 
+- DROID's `cartesian_position` sits about 0.17 m above the Robotiq fingertips
+  (IRIS: end effector at −0.008 m while grasping a marker at −0.179 m).
 - DROID 1.0.1 raw videos are face-blurred, and the blur sometimes fires on objects:
   the red mug in the IRIS episode is smeared in some frames and sharp in others.
   SimFoundry's frame selection scores sharpness, so it prefers the clean frames.

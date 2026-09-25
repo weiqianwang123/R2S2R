@@ -4,10 +4,10 @@
 # The conda envs built by SimFoundry's installers are reused as-is; r2s2r runs
 # the submodule's code in them via PYTHONPATH.
 #
-# Usage: bash scripts/link_simfoundry_resources.sh [SIMFOUNDRY_INSTALL_DIR]
+# Usage: bash scripts/setup/link_simfoundry_resources.sh [SIMFOUNDRY_INSTALL_DIR]
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SRC="${1:-${SIMFOUNDRY_HOME:-$HOME/SimFoundry}}"
 DST="${ROOT}/third_party/SimFoundry"
 

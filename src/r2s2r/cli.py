@@ -1,13 +1,16 @@
 """Command-line entry points.
 
-r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR r2s2r mujoco-capture
---out CAPTURE_DIR r2s2r reconstruct CAPTURE_DIR --workdir WORKDIR [--stages 2,3]
-[--prepare-only] r2s2r refine SCENE_DIR --capture CAPTURE_DIR (--views WORKDIR... |
---capture-depth) r2s2r mujoco-deploy SCENE_DIR --capture CAPTURE_DIR --target NAME --out
-OUT_DIR
+Subcommands::
 
-The Isaac Lab side runs as scripts (the Omniverse app must start first): see
-``scripts/run_policy_isaac.py``.
+    r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
+    r2s2r mujoco-capture --out CAPTURE_DIR
+    r2s2r reconstruct CAPTURE_DIR --workdir WORKDIR [--stages 2,3] [--prepare-only]
+    r2s2r refine SCENE_DIR --capture CAPTURE_DIR (--views WORKDIR... | --capture-depth)
+    r2s2r mujoco-deploy (SCENE_DIR | --oracle) --capture CAPTURE_DIR --target NAME
+        --out OUT_DIR
+
+The Isaac Lab side runs as scripts, since the Omniverse app must start first:
+``scripts/isaaclab/run_pick.py`` and ``scripts/isaaclab/render_overlay.py``.
 """
 
 from __future__ import annotations
@@ -19,13 +22,14 @@ from pathlib import Path
 
 from r2s2r.io.droid import load_droid_episode
 from r2s2r.io.rgbd import capture_depth_views
+from r2s2r.policy.scoring import summarize
 from r2s2r.reconstruct import make_backend, registered_backends
+from r2s2r.reconstruct.refine import refine_scene
 from r2s2r.reconstruct.simfoundry import (
     SimFoundryBackend,
     SimFoundryConfig,
     load_stage2_views,
 )
-from r2s2r.refine import refine_scene
 from r2s2r.structs import Capture, SceneSpec
 
 
@@ -106,8 +110,8 @@ def _refine(args: argparse.Namespace) -> None:
 
 
 def _mujoco_capture(args: argparse.Namespace) -> None:
-    # MuJoCo creates GL contexts on import of its renderer; keep it lazy.
-    from r2s2r.real.mujoco_world import (  # pylint: disable=import-outside-toplevel
+    # Imported here so the other subcommands work without MuJoCo and a GL driver.
+    from r2s2r.real.mujoco.capture import (  # pylint: disable=import-outside-toplevel
         record_capture,
     )
 
@@ -119,7 +123,7 @@ def _mujoco_capture(args: argparse.Namespace) -> None:
 
 
 def _mujoco_deploy(args: argparse.Namespace) -> None:
-    from r2s2r.real.mujoco_deploy import (  # pylint: disable=import-outside-toplevel
+    from r2s2r.real.mujoco.deploy import (  # pylint: disable=import-outside-toplevel
         oracle_scene,
         run_pick,
         scene_errors,
@@ -138,13 +142,7 @@ def _mujoco_deploy(args: argparse.Namespace) -> None:
                 f"(true {err['ground_truth_size_m']})"
             )
     result = run_pick(capture, scene, args.target, args.out, args.video_camera)
-    lift = result["object_lift_m"]
-    print(
-        f"{'SUCCESS' if result['success'] else 'FAILURE'}: policy picked "
-        f"{result['policy']['target']!r}; lifted "
-        + ", ".join(f"{n} {dz * 100:+.1f} cm" for n, dz in lift.items())
-        + f" -> {args.out}"
-    )
+    print(f"{summarize(result)} -> {args.out}")
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -17,34 +17,21 @@ Mesh shape, scale and tilt are kept; only where the objects stand changes.
 from __future__ import annotations
 
 import logging
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
-import trimesh
 from numpy.typing import NDArray
 from scipy import ndimage
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.transform import Rotation
 
-from r2s2r.structs import ObjectSpec, SceneSpec
-from r2s2r.transforms import invert, make_transform
+from r2s2r.assets import urdf_visual_points
+from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
+from r2s2r.transforms import backproject, invert, make_transform
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class DepthView:
-    """One calibrated metric depth image."""
-
-    camera: str
-    step: int
-    depth: NDArray[np.float64]  # metres, <= 0 where invalid
-    K: NDArray[np.float64]
-    T_base_cam: NDArray[np.float64]
 
 
 @dataclass
@@ -67,12 +54,8 @@ class RefineConfig:
 
 def view_points(view: DepthView, max_depth: float) -> NDArray[np.float64]:
     """Base-frame points of all valid pixels."""
-    v, u = np.nonzero((view.depth > 0) & (view.depth < max_depth))
-    z = view.depth[v, u]
-    K = view.K
-    pts = np.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], 1)
     T = view.T_base_cam
-    return pts @ T[:3, :3].T + T[:3, 3]
+    return backproject(view.depth, view.K, max_depth) @ T[:3, :3].T + T[:3, 3]
 
 
 def to_frame(T_base_frame: NDArray[np.float64], pts_base: NDArray[np.float64]):
@@ -127,31 +110,6 @@ def cluster(pts: NDArray[np.float64], voxel: float, min_points: int) -> list:
     point_labels = labels[tuple(ijk.T)]
     groups = [np.flatnonzero(point_labels == k) for k in range(1, n + 1)]
     return [g for g in groups if len(g) >= min_points]
-
-
-def urdf_visual_points(urdf_path: str | Path, n: int, seed: int = 0):
-    """Surface samples of a URDF's visual meshes, in the URDF root link frame."""
-    urdf_path = Path(urdf_path)
-    root = ET.parse(urdf_path).getroot()
-    chunks = []
-    for visual in root.iter("visual"):
-        mesh_el = visual.find("geometry/mesh")
-        if mesh_el is None:
-            continue
-        mesh = trimesh.load(urdf_path.parent / mesh_el.attrib["filename"], force="mesh")
-        scale = np.array(mesh_el.attrib.get("scale", "1 1 1").split(), float)
-        origin = visual.find("origin")
-        xyz = np.zeros(3)
-        rpy = np.zeros(3)
-        if origin is not None:
-            xyz = np.array(origin.attrib.get("xyz", "0 0 0").split(), float)
-            rpy = np.array(origin.attrib.get("rpy", "0 0 0").split(), float)
-        pts = trimesh.sample.sample_surface(mesh, n, seed=seed)[0] * scale
-        T = make_transform(Rotation.from_euler("xyz", rpy).as_matrix(), xyz)
-        chunks.append(pts @ T[:3, :3].T + T[:3, 3])
-    if not chunks:
-        raise ValueError(f"no visual meshes in {urdf_path}")
-    return np.concatenate(chunks)
 
 
 def _planar(yaw: float, dx: float, dy: float) -> NDArray[np.float64]:

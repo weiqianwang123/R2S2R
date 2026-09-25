@@ -35,8 +35,7 @@ import numpy as np
 from r2s2r.assets import bake_mesh_scales
 from r2s2r.io.rgbd import read_depth
 from r2s2r.reconstruct.base import ReconstructionBackend, register_backend
-from r2s2r.refine import DepthView
-from r2s2r.structs import Capture, ObjectSpec, SceneSpec
+from r2s2r.structs import Capture, DepthView, ObjectSpec, SceneSpec
 from r2s2r.transforms import invert, pos_quat_to_matrix, quat_xyzw_to_wxyz
 
 logger = logging.getLogger(__name__)

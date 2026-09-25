@@ -3,13 +3,13 @@
 # the Franka Panda from mujoco_menagerie and a few Google Scanned Objects
 # (kevinzakka/mujoco_scanned_objects). Sparse, shallow clones: ~45 MB in total.
 #
-# Usage: bash scripts/fetch_mujoco_assets.sh [MODEL_NAME...]
+# Usage: bash scripts/setup/fetch_mujoco_assets.sh [MODEL_NAME...]
 set -euo pipefail
 
 CACHE="${R2S2R_CACHE:-$HOME/.cache/r2s2r}"
 MODELS=("$@")
 if [ ${#MODELS[@]} -eq 0 ]; then
-    # The objects of r2s2r.real.mujoco_world.default_objects().
+    # The objects of r2s2r.real.mujoco.world.default_objects().
     MODELS=(Crayola_Crayons_24_count Cole_Hardware_Mug_Classic_Blue Android_Figure_Orange)
 fi
 mkdir -p "${CACHE}"

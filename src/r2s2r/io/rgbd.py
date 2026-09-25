@@ -8,8 +8,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from r2s2r.refine import DepthView
-from r2s2r.structs import DEPTH_PNG_SCALE, Capture
+from r2s2r.structs import DEPTH_PNG_SCALE, Capture, DepthView
 
 
 def read_depth(path: str | Path) -> NDArray[np.float32]:
@@ -18,6 +17,12 @@ def read_depth(path: str | Path) -> NDArray[np.float32]:
     if raw is None:
         raise IOError(f"cannot read {path}")
     return raw.astype(np.float32) * DEPTH_PNG_SCALE
+
+
+def write_depth(path: str | Path, depth: NDArray) -> None:
+    """Metric depth as a uint16 PNG, the inverse of :func:`read_depth`."""
+    units = np.clip(np.round(np.asarray(depth) / DEPTH_PNG_SCALE), 0, 65535)
+    cv2.imwrite(str(path), units.astype(np.uint16))
 
 
 def capture_depth_views(

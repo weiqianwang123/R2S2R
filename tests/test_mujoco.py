@@ -1,4 +1,4 @@
-"""Tests for real/mujoco_world.py (skipped without MuJoCo or its assets)."""
+"""Tests for real/mujoco/ (skipped without MuJoCo or its assets)."""
 
 from pathlib import Path
 
@@ -8,14 +8,15 @@ import pytest
 pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
-from r2s2r.real import mujoco_world as mw  # noqa: E402
-from r2s2r.refine import DepthView, view_points  # noqa: E402
+from r2s2r.real.mujoco import world as mw  # noqa: E402
+from r2s2r.reconstruct.refine import view_points  # noqa: E402
 from r2s2r.robots.franka import PandaKinematics  # noqa: E402
+from r2s2r.structs import DepthView  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     not (Path(mw.MujocoWorldConfig().menagerie_dir) / "franka_emika_panda").exists()
     or not Path(mw.MujocoWorldConfig().gso_dir).exists(),
-    reason="MuJoCo assets not fetched (scripts/fetch_mujoco_assets.sh)",
+    reason="MuJoCo assets not fetched (scripts/setup/fetch_mujoco_assets.sh)",
 )
 
 

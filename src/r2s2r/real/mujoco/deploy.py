@@ -1,8 +1,7 @@
-"""Run a program policy on the MuJoCo "real" world and score it with ground truth."""
+"""Deploy a program policy to the MuJoCo world and score it with ground truth."""
 
 from __future__ import annotations
 
-import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -10,12 +9,11 @@ from typing import Any
 import numpy as np
 
 from r2s2r.policy.pick import object_points, pick_up
-from r2s2r.real.mujoco_world import MujocoRobot, MujocoWorld, world_from_capture
+from r2s2r.policy.scoring import save_rollout, score_lift
+from r2s2r.real.mujoco.world import MujocoRobot, world_from_capture
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec
 from r2s2r.transforms import make_transform
 from r2s2r.video import VideoRecorder
-
-LIFT_SUCCESS_M = 0.05
 
 
 def oracle_scene(capture: Capture, out_dir: str | Path) -> SceneSpec:
@@ -102,13 +100,15 @@ def run_pick(
     video_camera: str | None = "ext1",
     video_every: int = 2,
 ) -> dict[str, Any]:
-    """Pick ``target`` (an object of ``scene``) in the world ``capture`` came from."""
+    """Pick ``target`` (an object of ``scene``) in the world ``capture`` came from, and
+    score it against the world's ground-truth target."""
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    world: MujocoWorld = world_from_capture(capture)
+    world = world_from_capture(capture)
     world.reset()
     names = [o.name for o in world.cfg.objects]
-    before = {n: world.object_pose(n)[:3, 3].copy() for n in names}
+
+    def positions() -> dict[str, np.ndarray]:
+        return {n: world.object_pose(n)[:3, 3].copy() for n in names}
 
     cam = video_camera or ""
     video = None
@@ -120,27 +120,18 @@ def run_pick(
         if video is not None and robot.steps % video_every == 0:
             video.add(world.render(cam)[0])
 
+    before = positions()
     robot = MujocoRobot(world, on_step=record)
     policy = pick_up(robot, scene, target)
-    after = {n: world.object_pose(n)[:3, 3].copy() for n in names}
-    lift = {n: float(after[n][2] - before[n][2]) for n in names}
     result = {
         "deployment": "mujoco",
         "scene": scene.name,
         "scene_backend": scene.provenance.get("backend"),
         "policy": policy,
         "ground_truth_target": world.cfg.target,
-        "object_lift_m": lift,
-        "object_shift_m": {
-            n: float(np.linalg.norm(after[n] - before[n])) for n in names
-        },
-        "success": bool(lift[world.cfg.target] > LIFT_SUCCESS_M),
-        "tcp_final": world.tcp_pose()[:3, 3].tolist(),
+        **score_lift(before, positions(), world.cfg.target),
     }
-    (out_dir / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-    (out_dir / "commands.json").write_text(
-        json.dumps(robot.log.as_dict()), encoding="utf-8"
-    )
+    save_rollout(out_dir, result, robot.log)
     if video is not None:
         video.close()
     world.close()

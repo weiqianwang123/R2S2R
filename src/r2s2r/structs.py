@@ -1,7 +1,8 @@
 """Backend-independent data structures.
 
 A :class:`Capture` is what the robot recorded (images, calibration, robot state);
-a :class:`SceneSpec` is what a reconstruction backend produced from it. Both are
+a :class:`SceneSpec` is what a reconstruction backend produced from it; a
+:class:`DepthView` is one calibrated metric depth image. Captures and scenes are
 plain data saved as JSON next to their files, so every stage can be run, inspected
 and re-run on its own. Frame and quaternion conventions are those of
 :mod:`r2s2r.transforms`; every pose in a SceneSpec is in the robot base frame.
@@ -147,6 +148,17 @@ class Capture:
             root=root,
             metadata=d.get("metadata", {}),
         )
+
+
+@dataclass
+class DepthView:
+    """One calibrated metric depth image."""
+
+    camera: str
+    step: int
+    depth: NDArray[np.float64]  # metres, <= 0 where invalid
+    K: NDArray[np.float64]
+    T_base_cam: NDArray[np.float64]
 
 
 @dataclass

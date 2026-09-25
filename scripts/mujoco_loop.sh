@@ -26,7 +26,7 @@ SCENE="$(ls -d "${OUT}"/simfoundry/*/scene)"
 "${R2S2R}" mujoco-deploy --oracle --capture "${OUT}/capture" --target "${TARGET}" \
     --out "${OUT}/deploy_oracle"
 # Isaac ignores SIGTERM and can hang on exit; bound it.
-timeout -s KILL 900 "${PY}" "${ROOT}/scripts/run_policy_isaac.py" \
+timeout -s KILL 900 "${PY}" "${ROOT}/scripts/isaaclab/run_pick.py" \
     "${OUT}/scene_refined" --target "${TARGET}" --out "${OUT}/isaac" --headless
 "${R2S2R}" mujoco-deploy "${OUT}/scene_refined" --capture "${OUT}/capture" \
     --target "${TARGET}" --out "${OUT}/deploy"
