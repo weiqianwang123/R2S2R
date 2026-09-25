@@ -131,16 +131,18 @@ class SimFoundryBackend(ReconstructionBackend):
             if not rgbd:
                 assert frame.right_image is not None
                 sides.append(("r", frame.right_image))
+            images = {}
             for side, rel in sides:
                 img = cv2.imread(str(capture.root / rel))
                 if img is None:
                     raise IOError(f"cannot read {capture.root / rel}")
                 cv2.imwrite(str(s1_dir / f"image_{i}_{side}.png"), img)
+                images[side] = img
             if rgbd:
                 assert frame.depth_image is not None
                 _write_fs_outputs(
                     fs_dir / f"image_{i}",
-                    cv2.imread(str(capture.root / frame.left_image)),
+                    images["l"],
                     read_depth(capture.root / frame.depth_image),
                     cam.K,
                     self.config.rgbd_scale,

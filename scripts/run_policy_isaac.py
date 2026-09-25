@@ -85,7 +85,8 @@ def main() -> None:
         _, _, x0, y0 = centered_render_size(cam)
         window = (slice(y0, y0 + cam.height), slice(x0, x0 + cam.width))
         video = VideoRecorder(
-            args.out / f"isaac_{roles[0]}.mp4", 1 / (IsaacLabRobot.control_dt * VIDEO_EVERY)
+            args.out / f"isaac_{roles[0]}.mp4",
+            1 / (IsaacLabRobot.control_dt * VIDEO_EVERY),
         )
 
     def record(robot: IsaacLabRobot) -> None:
@@ -93,7 +94,9 @@ def main() -> None:
             rgb = scene[f"camera_{roles[0]}"].data.output["rgb"][0, ..., :3]
             video.add(rgb.cpu().numpy().astype(np.uint8)[window])
 
-    robot = IsaacLabRobot(sim, scene, on_step=record, render_every=VIDEO_EVERY if video else 0)
+    robot = IsaacLabRobot(
+        sim, scene, on_step=record, render_every=VIDEO_EVERY if video else 0
+    )
     policy = pick_up(robot, spec, target)
     after = positions()
     lift = {n: float(after[n][2] - before[n][2]) for n in before}
@@ -109,7 +112,9 @@ def main() -> None:
         "success": bool(lift[target] > LIFT_SUCCESS_M),
     }
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    (args.out / "result.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
     (args.out / "commands.json").write_text(
         json.dumps(robot.log.as_dict()), encoding="utf-8"
     )
