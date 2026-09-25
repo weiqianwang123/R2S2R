@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -115,6 +115,61 @@ class Capture:
                 return cam
         raise KeyError(f"no camera with role {role!r} in capture {self.name}")
 
+    def resolve_cameras(self, names: Iterable[str] | None = None) -> list[str]:
+        """Serials of the cameras named by serial or role; all cameras for None."""
+        if names is None:
+            return list(self.cameras)
+        serials = []
+        for name in names:
+            serial = name if name in self.cameras else self.camera_by_role(name).serial
+            if serial not in serials:
+                serials.append(serial)
+        return serials
+
+    def select_frames(
+        self,
+        cameras: Iterable[str] | None = None,
+        max_frames: int | None = None,
+        keep: Callable[[FrameRecord], bool] | None = None,
+    ) -> list[FrameRecord]:
+        """Frames of the static period from any mix of cameras.
+
+        At most ``max_frames`` in total, shared evenly between the cameras (a camera
+        with fewer frames leaves its share to the others) and spread evenly over each
+        camera's frames. ``keep`` filters frames first.
+        """
+        start, end = self.static_steps
+        pools = {}
+        for serial in self.resolve_cameras(cameras):
+            pool = [
+                f
+                for f in self.frames_of(serial)
+                if start <= f.step < end and (keep is None or keep(f))
+            ]
+            if pool:
+                pools[serial] = pool
+        quota = {s: len(p) for s, p in pools.items()}
+        if max_frames is not None:
+            quota = dict.fromkeys(pools, 0)
+            left, open_ = max_frames, list(pools)
+            while left > 0 and open_:
+                share = max(1, left // len(open_))
+                for serial in list(open_):
+                    take = min(share, len(pools[serial]) - quota[serial], left)
+                    quota[serial] += take
+                    left -= take
+                    if quota[serial] == len(pools[serial]):
+                        open_.remove(serial)
+                    if left == 0:
+                        break
+        picked = []
+        for serial, pool in pools.items():
+            if quota[serial] == 0:
+                continue
+            idx = np.linspace(0, len(pool) - 1, quota[serial]).round().astype(int)
+            picked += [pool[i] for i in sorted(set(idx))]
+        return picked
+
     def save(self) -> Path:
         """Write ``capture.json`` into ``root``."""
         payload = {
@@ -159,18 +214,21 @@ class DepthView:
     depth: NDArray[np.float64]  # metres, <= 0 where invalid
     K: NDArray[np.float64]
     T_base_cam: NDArray[np.float64]
+    image: NDArray[np.uint8] | None = None  # RGB at the depth's resolution
 
 
 @dataclass
 class ObjectSpec:
-    """One rigid object, placed in the robot base frame."""
+    """One object, placed in the robot base frame: rigid, or articulated when its URDF
+    has movable joints (drawers, doors, lids)."""
 
     name: str
     category: str
     asset_path: str  # URDF produced by the backend (absolute path)
     T_base_obj: NDArray[np.float64]
-    mass: float | None = None
+    mass: float | None = None  # total, all links
     friction: float | None = None
+    articulated: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ObjectSpec:

@@ -1,7 +1,7 @@
 """Render a SceneSpec in Isaac Lab from every real camera and overlay the real frames.
 
     OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/render_overlay.py \
-        outputs/iris/preview outputs/iris/capture --out outputs/iris/overlay
+        outputs/iris/scene outputs/iris/capture --out outputs/iris/overlay
 
 For each static camera it writes ``<role>_sim.png`` (the render),
 ``<role>_real.png`` (the capture frame at the scene's reference step, or the

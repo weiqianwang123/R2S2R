@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Iterable
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from r2s2r.structs import DEPTH_PNG_SCALE, Capture, DepthView
+from r2s2r.structs import DEPTH_PNG_SCALE, Capture, DepthView, FrameRecord
+
+if TYPE_CHECKING:  # MuJoCo is imported only when a masker is made
+    from r2s2r.robots.mask import RobotMasker
 
 
 def read_depth(path: str | Path) -> NDArray[np.float32]:
@@ -26,25 +30,48 @@ def write_depth(path: str | Path, depth: NDArray) -> None:
 
 
 def capture_depth_views(
-    capture: Capture, step: int, roles: list[str] | None = None
+    capture: Capture,
+    cameras: Iterable[str] | None = None,
+    max_views: int | None = 12,
+    steps: set[int] | None = None,
+    masker: RobotMasker | None = None,
 ) -> list[DepthView]:
-    """Depth views of the static cameras (or ``roles``) at one step."""
+    """Measured depth from any mix of cameras over the static period.
+
+    Views are spread over cameras and time like SimFoundry's candidates
+    (:meth:`~r2s2r.structs.Capture.select_frames`). A
+    :class:`~r2s2r.robots.mask.RobotMasker` removes the robot from each.
+    """
+
+    def keep(frame: FrameRecord) -> bool:
+        return frame.depth_image is not None and (steps is None or frame.step in steps)
+
     views = []
-    for cam in capture.cameras.values():
-        if roles is not None and cam.role not in roles:
-            continue
-        if roles is None and not cam.is_static:
-            continue
-        frame = next((f for f in capture.frames_of(cam.serial) if f.step == step), None)
-        if frame is None or frame.depth_image is None:
-            continue
+    for frame in capture.select_frames(cameras, max_views, keep):
+        assert frame.depth_image is not None
+        cam = capture.cameras[frame.camera]
+        depth = read_depth(capture.root / frame.depth_image)
+        if masker is not None:
+            depth, _ = masker.mask_depth(
+                depth,
+                cam.K,
+                frame.T_base_cam,
+                frame.joint_positions,
+                frame.gripper_position,
+            )
+        bgr = cv2.imread(str(capture.root / frame.left_image))
         views.append(
             DepthView(
-                camera=cam.serial,
-                step=step,
-                depth=read_depth(capture.root / frame.depth_image).astype(float),
-                K=cam.K,
-                T_base_cam=frame.T_base_cam,
+                frame.camera,
+                frame.step,
+                depth.astype(float),
+                cam.K,
+                frame.T_base_cam,
+                (
+                    None
+                    if bgr is None
+                    else np.asarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), np.uint8)
+                ),
             )
         )
     return views

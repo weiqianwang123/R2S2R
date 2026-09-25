@@ -3,9 +3,11 @@
 Subcommands::
 
     r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
-    r2s2r mujoco-capture --out CAPTURE_DIR
-    r2s2r reconstruct CAPTURE_DIR --workdir WORKDIR [--stages 2,3] [--prepare-only]
+    r2s2r mujoco-capture --out CAPTURE_DIR [--cameras ext1 ext2 wrist]
+    r2s2r reconstruct CAPTURE_DIR --workdir WORKDIR [--cameras ...] [--stages 2,3]
     r2s2r refine SCENE_DIR --capture CAPTURE_DIR (--views WORKDIR... | --capture-depth)
+        [--no-vlm | --no-orientation-check]
+    r2s2r mujoco-eval SCENE_DIR --capture CAPTURE_DIR
     r2s2r mujoco-deploy (SCENE_DIR | --oracle) --capture CAPTURE_DIR --target NAME
         --out OUT_DIR
 
@@ -58,8 +60,9 @@ def _reconstruct(args: argparse.Namespace) -> None:
         mamba = args.mamba or shutil.which("mamba") or "mamba"
         config = SimFoundryConfig(
             mamba_exe=mamba,
-            camera_role=args.camera_role,
+            cameras=tuple(args.cameras) if args.cameras else None,
             max_frames=args.max_frames,
+            mask_robot=not args.no_robot_mask,
             vlm_backend=args.vlm_backend,
             codex_reasoning=args.codex_reasoning,
             overrides=args.override,
@@ -84,14 +87,39 @@ def _reconstruct(args: argparse.Namespace) -> None:
 def _refine(args: argparse.Namespace) -> None:
     scene = SceneSpec.load(args.scene_dir)
     capture = Capture.load(args.capture)
-    step = scene.reference_step if args.step is None else args.step
+    steps = None if args.step is None else {args.step}
     views = []
     if args.capture_depth:
-        views += capture_depth_views(capture, step)
+        masker = None
+        if not args.no_robot_mask:
+            # MuJoCo only when masking.
+            from r2s2r.robots.mask import (  # pylint: disable=import-outside-toplevel
+                RobotMasker,
+            )
+
+            masker = RobotMasker(capture.embodiment)
+        views += capture_depth_views(
+            capture, args.cameras, args.max_views, steps, masker=masker
+        )
     for workdir in args.views:
-        views += load_stage2_views(capture, workdir, steps={step})
+        views += load_stage2_views(capture, workdir, steps=steps)
     if not views:
-        raise SystemExit(f"no depth at step {step} (capture depth or --views)")
+        raise SystemExit("no depth to refine with (--capture-depth or --views)")
+    if not args.no_orientation_check:
+        # MuJoCo renders the candidates; imported only when used.
+        # pylint: disable=import-outside-toplevel
+        from r2s2r.reconstruct.orientation import check_orientations
+        from r2s2r.vlm import CodexVLM
+
+        vlm = None if args.no_vlm else CodexVLM(reasoning=args.codex_reasoning)
+        scene, turns = check_orientations(
+            scene, views, vlm, image_dir=args.out / "orientation"
+        )
+        for name, entry in turns.items():
+            print(
+                f"{name}: turned {entry['turn_deg']:.0f} deg "
+                f"(candidates {entry['candidates']}, {entry['decided_by']})"
+            )
     refined, report = refine_scene(scene, views)
     path = refined.save(args.out)
     for name, entry in report["objects"].items():
@@ -111,22 +139,56 @@ def _refine(args: argparse.Namespace) -> None:
 
 def _mujoco_capture(args: argparse.Namespace) -> None:
     # Imported here so the other subcommands work without MuJoCo and a GL driver.
-    from r2s2r.real.mujoco.capture import (  # pylint: disable=import-outside-toplevel
-        record_capture,
-    )
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.real.mujoco.capture import record_capture
+    from r2s2r.real.mujoco.world import MujocoWorldConfig
 
-    capture = record_capture(args.out, name=args.name, every=args.every)
+    capture = record_capture(
+        args.out,
+        MujocoWorldConfig.preset(args.world),
+        name=args.name,
+        every=args.every,
+        cameras=args.cameras,
+    )
     print(
         f"capture {capture.name}: {len(capture.frames)} RGB-D frames from "
         f"{len(capture.cameras)} cameras -> {capture.root}"
     )
 
 
+def _print_scene_errors(scene: SceneSpec, capture: Capture) -> None:
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.real.mujoco.deploy import articulation_errors, scene_errors
+
+    for name, err in scene_errors(scene, capture).items():
+        print(
+            f"{name} ~ {err['ground_truth']}: centre off by "
+            f"{err['center_error_m'] * 100:.1f} cm, size {err['size_m']} "
+            f"(true {err['ground_truth_size_m']})"
+        )
+    for name, entry in articulation_errors(scene, capture).items():
+        for joint in entry["joints"]:
+            print(f"{name} joint {joint['name']}: {joint}")
+        if not entry["joints"]:
+            print(f"{name}: articulated but no movable joint")
+
+
+def _mujoco_eval(args: argparse.Namespace) -> None:
+    scene, capture = SceneSpec.load(args.scene_dir), Capture.load(args.capture)
+    if args.match_target:
+        # pylint: disable=import-outside-toplevel
+        from r2s2r.real.mujoco.deploy import match_target
+
+        print(match_target(scene, capture))
+        return
+    _print_scene_errors(scene, capture)
+
+
 def _mujoco_deploy(args: argparse.Namespace) -> None:
     from r2s2r.real.mujoco.deploy import (  # pylint: disable=import-outside-toplevel
+        match_target,
         oracle_scene,
         run_pick,
-        scene_errors,
     )
 
     capture = Capture.load(args.capture)
@@ -135,13 +197,9 @@ def _mujoco_deploy(args: argparse.Namespace) -> None:
         scene.save(args.out / "oracle_scene")
     else:
         scene = SceneSpec.load(args.scene_dir)
-        for name, err in scene_errors(scene, capture).items():
-            print(
-                f"{name} ~ {err['ground_truth']}: centre off by "
-                f"{err['center_error_m'] * 100:.1f} cm, size {err['size_m']} "
-                f"(true {err['ground_truth_size_m']})"
-            )
-    result = run_pick(capture, scene, args.target, args.out, args.video_camera)
+        _print_scene_errors(scene, capture)
+    target = args.target or match_target(scene, capture)
+    result = run_pick(capture, scene, target, args.out, args.video_camera)
     print(f"{summarize(result)} -> {args.out}")
 
 
@@ -166,7 +224,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--backend", default="simfoundry", choices=registered_backends())
     p.add_argument("--scene-out", type=Path)
     p.add_argument("--stages", help="comma-separated SimFoundry stage ids")
-    p.add_argument("--camera-role", default="ext1")
+    p.add_argument(
+        "--cameras", nargs="+", help="roles or serials to draw candidates from (all)"
+    )
+    p.add_argument(
+        "--no-robot-mask", action="store_true", help="keep the robot in depth"
+    )
     p.add_argument("--max-frames", type=int, default=12)
     p.add_argument("--mamba", help="path to the mamba executable")
     p.add_argument("--vlm-backend", default="codex", choices=["codex", "gemini"])
@@ -191,7 +254,23 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="fuse the capture's own depth (RGB-D cameras) of every static camera",
     )
-    p.add_argument("--step", type=int, help="default: the scene's reference step")
+    p.add_argument("--step", type=int, help="only this step (default: static period)")
+    p.add_argument("--cameras", nargs="+", help="capture-depth cameras (all)")
+    p.add_argument("--max-views", type=int, default=12, help="capture-depth views")
+    p.add_argument(
+        "--no-robot-mask", action="store_true", help="keep the robot in depth"
+    )
+    p.add_argument(
+        "--no-orientation-check",
+        action="store_true",
+        help="keep every object's turn about the support normal",
+    )
+    p.add_argument(
+        "--no-vlm",
+        action="store_true",
+        help="orientation check from geometry only (ties keep the backend's turn)",
+    )
+    p.add_argument("--codex-reasoning", default="medium")
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_refine)
 
@@ -199,12 +278,31 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--name", default="mujoco_pick")
     p.add_argument("--every", type=int, default=5, help="save every n control steps")
+    p.add_argument(
+        "--cameras", nargs="+", help="cameras to record (default: ext1 ext2 wrist)"
+    )
+    p.add_argument(
+        "--world", default="pick", help="world preset: pick, or cabinet (articulated)"
+    )
     p.set_defaults(func=_mujoco_capture)
+
+    p = sub.add_parser("mujoco-eval", help="score a scene against MuJoCo ground truth")
+    p.add_argument("scene_dir", type=Path)
+    p.add_argument("--capture", type=Path, required=True, help="MuJoCo capture dir")
+    p.add_argument(
+        "--match-target",
+        action="store_true",
+        help="only print the scene object that is the world's task target",
+    )
+    p.set_defaults(func=_mujoco_eval)
 
     p = sub.add_parser("mujoco-deploy", help="run the pick policy in the MuJoCo world")
     p.add_argument("scene_dir", type=Path, nargs="?")
     p.add_argument("--capture", type=Path, required=True, help="MuJoCo capture dir")
-    p.add_argument("--target", required=True, help="object name (or unique substring)")
+    p.add_argument(
+        "--target",
+        help="object name or unique substring (default: the world's task target)",
+    )
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--video-camera", default="ext1")
     p.add_argument(

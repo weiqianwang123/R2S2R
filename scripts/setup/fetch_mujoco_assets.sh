@@ -1,7 +1,7 @@
 #!/bin/bash
 # Fetch what the MuJoCo "real" world needs into ~/.cache/r2s2r (R2S2R_CACHE):
-# the Franka Panda from mujoco_menagerie and a few Google Scanned Objects
-# (kevinzakka/mujoco_scanned_objects). Sparse, shallow clones: ~45 MB in total.
+# the Franka Panda and DROID's Robotiq 2F-85 from mujoco_menagerie, and a few Google
+# Scanned Objects (kevinzakka/mujoco_scanned_objects). Sparse, shallow clones.
 #
 # Usage: bash scripts/setup/fetch_mujoco_assets.sh [MODEL_NAME...]
 set -euo pipefail
@@ -24,7 +24,7 @@ sparse_clone() {  # url dir paths...
 }
 
 sparse_clone https://github.com/google-deepmind/mujoco_menagerie.git \
-    "${CACHE}/mujoco_menagerie" franka_emika_panda
+    "${CACHE}/mujoco_menagerie" franka_emika_panda robotiq_2f85 robotiq_2f85
 paths=()
 for m in "${MODELS[@]}"; do paths+=("models/${m}"); done
 sparse_clone https://github.com/kevinzakka/mujoco_scanned_objects.git \

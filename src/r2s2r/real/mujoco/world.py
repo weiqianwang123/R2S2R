@@ -8,7 +8,6 @@ The world frame is the robot base frame. Assets are fetched by
 
 from __future__ import annotations
 
-import os
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -17,17 +16,13 @@ from typing import Any, Callable
 import numpy as np
 import trimesh
 from numpy.typing import NDArray
-from scipy.spatial.transform import Rotation
 
+from r2s2r.mjrender import CV_TO_MJ, mujoco, quat_wxyz
 from r2s2r.policy.robot import RobotInterface
 from r2s2r.robots.franka import FRANKA_HAND_TCP, Q_READY, PandaKinematics
+from r2s2r.robots.mujoco_models import CACHE_DIR, MENAGERIE_DIR, robot_spec
 from r2s2r.structs import CameraSpec, Capture
 from r2s2r.transforms import intrinsics_matrix, make_transform
-
-os.environ.setdefault("MUJOCO_GL", "egl")
-import mujoco  # noqa: E402  pylint: disable=wrong-import-position,wrong-import-order
-
-CACHE_DIR = Path(os.environ.get("R2S2R_CACHE", Path.home() / ".cache" / "r2s2r"))
 
 ARM_JOINTS = [f"joint{i}" for i in range(1, 8)]
 FINGER_JOINTS = ["finger_joint1", "finger_joint2"]
@@ -72,6 +67,21 @@ def default_objects() -> list[ObjectConfig]:
     ]
 
 
+@dataclass
+class CabinetConfig:
+    """A procedural cabinet with one drawer (a prismatic joint), fixed to the table.
+
+    Sizes are outer dimensions: depth along the drawer's travel, width, height.
+    ``yaw_deg`` 180 puts the drawer front toward the robot.
+    """
+
+    name: str
+    xy: tuple[float, float]
+    yaw_deg: float = 180.0
+    size: tuple[float, float, float] = (0.22, 0.26, 0.18)
+    travel: float = 0.14  # how far the drawer opens
+
+
 def default_cameras() -> list[CameraConfig]:
     """Two external views, front-left and right, like DROID's ext1/ext2."""
     return [
@@ -85,8 +95,14 @@ class MujocoWorldConfig:
     """Everything needed to rebuild the same world at capture and deploy time."""
 
     objects: list[ObjectConfig] = field(default_factory=default_objects)
+    cabinets: list[CabinetConfig] = field(default_factory=list)
     cameras: list[CameraConfig] = field(default_factory=default_cameras)
     wrist_camera: bool = True
+    wrist_size: tuple[int, int] = (1280, 720)
+    wrist_focal: float = 800.0  # pixels
+    # The capture motion points the wrist camera at this point from a few directions.
+    scan_target: tuple[float, float, float] = (0.55, 0.0, 0.03)
+    scan_distance: float = 0.5
     target: str = "crayon_box"  # ground-truth object a pick task should lift
     table_center: tuple[float, float] = (0.35, 0.0)
     table_size: tuple[float, float] = (1.2, 1.2)
@@ -94,7 +110,7 @@ class MujocoWorldConfig:
     q_start: tuple[float, ...] = tuple(float(v) for v in Q_READY)
     timestep: float = 0.002
     gripper_kp: float = 1000.0  # ~7 N per finger on a 3 cm object
-    menagerie_dir: str = str(CACHE_DIR / "mujoco_menagerie")
+    menagerie_dir: str = str(MENAGERIE_DIR)
     gso_dir: str = str(CACHE_DIR / "gso" / "models")
 
     def as_dict(self) -> dict[str, Any]:
@@ -107,7 +123,27 @@ class MujocoWorldConfig:
         d = dict(d)
         d["objects"] = [ObjectConfig(**o) for o in d["objects"]]
         d["cameras"] = [CameraConfig(**c) for c in d["cameras"]]
+        d["cabinets"] = [CabinetConfig(**c) for c in d.get("cabinets", [])]
         return cls(**d)
+
+    @classmethod
+    def preset(cls, name: str) -> MujocoWorldConfig:
+        """``pick``: crayon box, mug, figurine.
+
+        ``cabinet``: the mug is replaced by a drawer cabinet, to exercise articulated
+        objects.
+        """
+        if name == "pick":
+            return cls()
+        if name == "cabinet":
+            objects = [o for o in default_objects() if o.name != "blue_mug"]
+            return cls(
+                objects=objects,
+                cabinets=[CabinetConfig("drawer_cabinet", (0.66, 0.27))],
+                scan_target=(0.6, 0.1, 0.06),
+                scan_distance=0.62,
+            )
+        raise KeyError(f"unknown world preset {name!r} (pick, cabinet)")
 
 
 def look_at(pos: NDArray, target: NDArray) -> NDArray[np.float64]:
@@ -125,15 +161,6 @@ def camera_intrinsics(cam: CameraConfig) -> NDArray[np.float64]:
     return intrinsics_matrix(
         cam.focal, cam.focal, (cam.width - 1) / 2.0, (cam.height - 1) / 2.0
     )
-
-
-# OpenCV camera axes -> MuJoCo camera axes (x right, y up, looking along -z).
-CV_TO_MJ = np.diag([1.0, -1.0, -1.0])
-
-
-def _quat_wxyz(R: NDArray) -> list[float]:
-    x, y, z, w = Rotation.from_matrix(R).as_quat()
-    return [float(w), float(x), float(y), float(z)]
 
 
 # ---------------------------------------------------------------------- building
@@ -193,28 +220,144 @@ def _add_gso_object(spec: Any, obj: ObjectConfig, gso_dir: Path) -> None:
         )
 
 
+def _add_cabinet_materials(spec: Any) -> None:
+    spec.add_texture(
+        name="cabinet_tex",
+        type=mujoco.mjtTexture.mjTEXTURE_2D,
+        builtin=mujoco.mjtBuiltin.mjBUILTIN_FLAT,
+        mark=mujoco.mjtMark.mjMARK_RANDOM,
+        random=0.05,
+        rgb1=[0.42, 0.27, 0.16],
+        markrgb=[0.34, 0.21, 0.12],
+        width=512,
+        height=512,
+    )
+    body_mat = spec.add_material(name="cabinet_mat", specular=0.15)
+    body_mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = "cabinet_tex"
+    spec.add_material(
+        name="drawer_front_mat", rgba=[0.86, 0.84, 0.78, 1.0], specular=0.2
+    )
+    spec.add_material(name="handle_mat", rgba=[0.12, 0.12, 0.13, 1.0], specular=0.6)
+
+
+def _add_cabinet(spec: Any, cab: CabinetConfig, wall: float = 0.012) -> None:
+    """A fixed carcass open at the front (+x in its frame) and a sliding drawer."""
+    dx, dy, dz = (v / 2 for v in cab.size)
+    yaw = np.deg2rad(cab.yaw_deg)
+    body = spec.worldbody.add_body(
+        name=cab.name,
+        pos=[cab.xy[0], cab.xy[1], 0.0],
+        quat=[np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)],
+    )
+    box = mujoco.mjtGeom.mjGEOM_BOX
+    panels = {  # name: (half sizes, centre)
+        "bottom": ((dx, dy, wall / 2), (0, 0, wall / 2)),
+        "top": ((dx, dy, wall / 2), (0, 0, 2 * dz - wall / 2)),
+        "left": ((dx, wall / 2, dz), (0, dy - wall / 2, dz)),
+        "right": ((dx, wall / 2, dz), (0, -dy + wall / 2, dz)),
+        "back": ((wall / 2, dy, dz), (-dx + wall / 2, 0, dz)),
+    }
+    for name, (size, pos) in panels.items():
+        body.add_geom(
+            name=f"{cab.name}_{name}",
+            type=box,
+            size=list(size),
+            pos=list(pos),
+            material="cabinet_mat",
+        )
+    # The drawer fills the opening; closed, its front is flush with the carcass.
+    inner_x, inner_y = dx - wall, dy - wall
+    inner_z = dz - wall - 0.004
+    drawer = body.add_body(name=f"{cab.name}_drawer", pos=[wall / 2, 0.0, dz])
+    drawer.add_joint(
+        name=f"{cab.name}_slide",
+        type=mujoco.mjtJoint.mjJNT_SLIDE,
+        axis=[1, 0, 0],
+        range=[0.0, cab.travel],
+        damping=5.0,
+        frictionloss=0.5,
+    )
+    t = 0.008
+    for name, size, pos, mat in [
+        (
+            "front",
+            (t, dy - 0.004, dz - 0.004),
+            (inner_x - t / 2 + wall / 2, 0, 0),
+            "drawer_front_mat",
+        ),
+        (
+            "floor",
+            (inner_x - t, inner_y - 0.002, t / 2),
+            (-t, 0, -inner_z + t / 2),
+            "cabinet_mat",
+        ),
+        (
+            "side_l",
+            (inner_x - t, t / 2, inner_z * 0.7),
+            (-t, inner_y - t, -inner_z * 0.3),
+            "cabinet_mat",
+        ),
+        (
+            "side_r",
+            (inner_x - t, t / 2, inner_z * 0.7),
+            (-t, -inner_y + t, -inner_z * 0.3),
+            "cabinet_mat",
+        ),
+        (
+            "rear",
+            (t / 2, inner_y - 0.002, inner_z * 0.7),
+            (-inner_x + t, 0, -inner_z * 0.3),
+            "cabinet_mat",
+        ),
+    ]:
+        drawer.add_geom(
+            name=f"{cab.name}_drawer_{name}",
+            type=box,
+            size=list(size),
+            pos=list(pos),
+            material=mat,
+            mass=0.05,
+        )
+    drawer.add_geom(
+        name=f"{cab.name}_handle",
+        type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+        size=[0.008, 0.045, 0],
+        pos=[inner_x + wall / 2 + 0.022, 0, 0.02],
+        quat=[np.cos(np.pi / 4), np.cos(np.pi / 4), 0.0, 0.0],
+        material="handle_mat",
+        mass=0.02,
+    )
+    for side in (1, -1):
+        drawer.add_geom(
+            name=f"{cab.name}_handle_post{side}",
+            type=box,
+            size=[0.011, 0.005, 0.005],
+            pos=[inner_x + wall / 2 + 0.011, side * 0.035, 0.02],
+            material="handle_mat",
+            mass=0.005,
+        )
+
+
 def _add_camera(spec: Any, cam: CameraConfig) -> None:
     T = look_at(np.array(cam.pos), np.array(cam.lookat))
     fovy = np.rad2deg(2 * np.arctan(cam.height / 2.0 / cam.focal))
     spec.worldbody.add_camera(
         name=cam.role,
         pos=list(cam.pos),
-        quat=_quat_wxyz(T[:3, :3] @ CV_TO_MJ),
+        quat=quat_wxyz(T[:3, :3] @ CV_TO_MJ),
         fovy=float(fovy),
     )
 
 
 def build_spec(cfg: MujocoWorldConfig) -> Any:
     """The world as an ``mujoco.MjSpec`` (compile it with ``spec.compile()``)."""
-    spec = mujoco.MjSpec.from_file(
-        str(Path(cfg.menagerie_dir) / "franka_emika_panda" / "panda.xml")
-    )
+    spec = robot_spec("franka_panda", cfg.menagerie_dir)
     spec.modelname = "r2s2r_world"
     spec.option.timestep = cfg.timestep
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     spec.option.impratio = 10.0
-    width = max([c.width for c in cfg.cameras] + [640])
-    height = max([c.height for c in cfg.cameras] + [480])
+    width = max([c.width for c in cfg.cameras] + [cfg.wrist_size[0]])
+    height = max([c.height for c in cfg.cameras] + [cfg.wrist_size[1]])
     spec.visual.global_.offwidth = width
     spec.visual.global_.offheight = height
     spec.visual.quality.shadowsize = 4096
@@ -230,16 +373,19 @@ def build_spec(cfg: MujocoWorldConfig) -> Any:
     grip.biasprm[1] = -cfg.gripper_kp
     grip.biasprm[2] = -0.05 * cfg.gripper_kp
     hand = spec.body("hand")
-    hand.add_site(name="tcp", pos=[0.0, 0.0, FRANKA_HAND_TCP], size=[0.005, 0, 0])
+    # Group 4 is never rendered: the site must not show up in camera images.
+    hand.add_site(
+        name="tcp", pos=[0.0, 0.0, FRANKA_HAND_TCP], size=[0.005, 0, 0], group=4
+    )
     if cfg.wrist_camera:
-        # Behind the fingers, looking along the hand's approach axis.
+        # Beside the hand, looking along its approach axis; the fingertips are in view.
         hand.add_camera(
             name="wrist",
             pos=[0.06, 0.0, 0.02],
-            quat=_quat_wxyz(
-                Rotation.from_euler("y", -15, degrees=True).as_matrix() @ CV_TO_MJ
+            quat=quat_wxyz(CV_TO_MJ),
+            fovy=float(
+                np.rad2deg(2 * np.arctan(cfg.wrist_size[1] / 2 / cfg.wrist_focal))
             ),
-            fovy=70.0,
         )
 
     spec.add_texture(
@@ -320,6 +466,10 @@ def build_spec(cfg: MujocoWorldConfig) -> Any:
         )
     for obj in cfg.objects:
         _add_gso_object(spec, obj, Path(cfg.gso_dir))
+    if cfg.cabinets:
+        _add_cabinet_materials(spec)
+    for cabinet in cfg.cabinets:
+        _add_cabinet(spec, cabinet)
     for cam in cfg.cameras:
         _add_camera(spec, cam)
     return spec
@@ -359,6 +509,10 @@ class MujocoWorld:
         """Distance between the fingers."""
         return float(self.data.qpos[self._finger_qadr].sum())
 
+    def joint_position(self, name: str) -> float:
+        """Current position of a (1-dof) joint, e.g. a drawer's slide."""
+        return float(self.data.qpos[self.model.joint(name).qposadr[0]])
+
     def object_pose(self, name: str) -> NDArray[np.float64]:
         """Ground-truth ``T_base_obj`` (GSO origin: bottom centre)."""
         body = self.data.body(name)
@@ -389,9 +543,8 @@ class MujocoWorld:
                 is_static=True,
                 T_base_cam=self.camera_pose(name),
             )
-        cam_model = self.model.camera(name)
-        height, width = 480, 640
-        focal = height / 2.0 / np.tan(np.deg2rad(cam_model.fovy[0]) / 2.0)
+        width, height = self.cfg.wrist_size
+        focal = self.cfg.wrist_focal
         K = intrinsics_matrix(focal, focal, (width - 1) / 2.0, (height - 1) / 2.0)
         return CameraSpec(
             serial=f"mj_{name}",

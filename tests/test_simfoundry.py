@@ -25,20 +25,44 @@ def fixture_capture(droid_episode, tmp_path):
     return load_droid_episode(episode, tmp_path / "capture", calib_dir=calib, stride=2)
 
 
+def _intrinsic_file(path):
+    k_line, baseline = path.read_text().splitlines()
+    return np.array(k_line.split(), float).reshape(3, 3), float(baseline)
+
+
 def test_prepare_inputs(capture, tmp_path):
     """Stereo pairs, intrinsics and the frame map land where stage 2 reads them."""
-    backend = SimFoundryBackend(camera_role="ext1", max_frames=3)
+    backend = SimFoundryBackend(cameras=("ext1",), max_frames=3, mask_robot=False)
     s1_dir = backend.prepare_inputs(capture, tmp_path / "work")
     cam = capture.camera_by_role("ext1")
 
     frame_map = json.loads((s1_dir / FRAME_MAP_FILENAME).read_text())
     assert [m["step"] for m in frame_map] == [0, 4, 6]  # 3 spread over 0, 2, 4, 6
+    assert {m["depth"] for m in frame_map} == {"stereo"}
     for m in frame_map:
         assert (s1_dir / f"image_{m['index']}_l.png").exists()
         assert (s1_dir / f"image_{m['index']}_r.png").exists()
-    k_line, baseline = (s1_dir / "intrinsic.txt").read_text().splitlines()
-    assert np.allclose(np.array(k_line.split(), float).reshape(3, 3), cam.K)
-    assert np.isclose(float(baseline), cam.stereo_baseline)
+        K, baseline = _intrinsic_file(s1_dir / f"image_{m['index']}_intrinsic.txt")
+        assert np.allclose(K, cam.K) and np.isclose(baseline, cam.stereo_baseline)
+    assert (s1_dir / "intrinsic.txt").exists()
+
+
+def test_prepare_inputs_mixes_cameras(capture, tmp_path):
+    """Exterior and wrist candidates share the budget, each with its own intrinsics."""
+    backend = SimFoundryBackend(
+        cameras=("ext1", "wrist"), max_frames=4, mask_robot=False
+    )
+    s1_dir = backend.prepare_inputs(capture, tmp_path / "work")
+    frame_map = json.loads((s1_dir / FRAME_MAP_FILENAME).read_text())
+    by_camera = {m["camera"] for m in frame_map}
+    assert by_camera == {
+        capture.camera_by_role("ext1").serial,
+        capture.camera_by_role("wrist").serial,
+    }
+    assert len(frame_map) == 4
+    for m in frame_map:
+        K, _ = _intrinsic_file(s1_dir / f"image_{m['index']}_intrinsic.txt")
+        assert np.allclose(K, capture.cameras[m["camera"]].K)
 
 
 def test_build_command(capture, tmp_path):
@@ -48,6 +72,9 @@ def test_build_command(capture, tmp_path):
     cmd, env, cwd = backend.build_command(capture, tmp_path)
     assert cmd[cmd.index("--include") + 1] == "2,3"
     assert cmd[cmd.index("--input-mode") + 1] == "stereo"
+    assert "--detect-articulation" not in cmd
+    cmd, _, _ = backend.build_command(capture, tmp_path, stages=("8", "9"))
+    assert "--detect-articulation" in cmd
     assert "s2_depth.backend=fs" in cmd and "s3_ground.use_fs=true" in cmd
     assert f"scene_name={capture.name}" in cmd
     assert env["PYTHONPATH"].split(":")[0] == str(cwd)
@@ -74,7 +101,7 @@ def test_codex_backend_env(capture, tmp_path):
 
 def test_parse_reanchors_to_robot_base(capture, tmp_path):
     """Object poses from SimFoundry's plane frame are moved into the base frame."""
-    backend = SimFoundryBackend(camera_role="ext1", max_frames=3)
+    backend = SimFoundryBackend(cameras=("ext1",), max_frames=3, mask_robot=False)
     backend.prepare_inputs(capture, tmp_path)
     scene_dir = backend.scene_dir(capture, tmp_path)
     idx = 1  # SimFoundry picked the second candidate frame
@@ -152,30 +179,110 @@ def _rgbd_capture(root):
     )
 
 
+class _HalfMasker:
+    """Stands in for RobotMasker: the robot covers the left half of every image."""
+
+    def mask_depth(self, depth, *robot_state):  # pylint: disable=unused-argument
+        """Zero the left half."""
+        mask = np.zeros(depth.shape, bool)
+        mask[:, : depth.shape[1] // 2] = True
+        out = depth.astype(np.float32, copy=True)
+        out[mask] = 0.0
+        return out, mask
+
+
 def test_prepare_inputs_rgbd(tmp_path):
     """Measured depth is written in FoundationStereo's layout at its scale."""
     capture = _rgbd_capture(tmp_path / "capture")
-    backend = SimFoundryBackend(camera_role="ext1")
-    assert backend.uses_measured_depth(capture)
+    backend = SimFoundryBackend(cameras=("ext1",), mask_robot=False)
     backend.prepare_inputs(capture, tmp_path / "work")
-    fs = backend.scene_dir(capture, tmp_path / "work") / "s2_fs"
+    scene_dir = backend.scene_dir(capture, tmp_path / "work")
+    fs = scene_dir / "s2_fs"
     depth = np.load(fs / "image_1_depth_meter.npy")
     assert depth.shape == (48, 64) and np.allclose(depth, 1.001)
     K = np.load(fs / "image_1_K.npy")
     assert np.isclose(K[0, 0], 50.0) and np.isclose(K[0, 2], 31.5)
     assert np.load(fs / "image_2_rgb.npy").shape == (48, 64, 3)
-    s1 = backend.scene_dir(capture, tmp_path / "work") / "s1_zed"
+    s1 = scene_dir / "s1_zed"
     assert (s1 / "image_0_l.png").exists() and not (s1 / "image_0_r.png").exists()
+    frame_map = json.loads((s1 / FRAME_MAP_FILENAME).read_text())
+    assert {m["depth"] for m in frame_map} == {"rgbd"}
+
+
+def test_rgbd_depth_is_robot_masked(tmp_path, monkeypatch):
+    """The robot's pixels are invalid in the depth SimFoundry reads."""
+    capture = _rgbd_capture(tmp_path / "capture")
+    backend = SimFoundryBackend(cameras=("ext1",))
+    monkeypatch.setattr(backend, "_masker", lambda capture: _HalfMasker())
+    backend.prepare_inputs(capture, tmp_path / "work")
+    fs = backend.scene_dir(capture, tmp_path / "work") / "s2_fs"
+    depth = np.load(fs / "image_0_depth_meter.npy")
+    assert np.all(depth[:, :32] == 0) and np.all(depth[:, 32:] > 0)
+    assert cv2.imread(str(fs / "image_0_robot_mask.png"), cv2.IMREAD_GRAYSCALE).any()
+
+
+def test_stage2_depth_is_robot_masked_once(capture, tmp_path, monkeypatch):
+    """FoundationStereo depth is masked from a kept raw copy, so reruns are safe."""
+    backend = SimFoundryBackend(cameras=("ext1",), max_frames=2)
+    monkeypatch.setattr(backend, "_masker", lambda capture: None)
+    backend.prepare_inputs(capture, tmp_path)
+    fs = backend.scene_dir(capture, tmp_path) / "s2_fs"
+    for i in range(2):  # what stage 2 would write
+        np.save(fs / f"image_{i}_depth_meter.npy", np.ones((6, 8), np.float32))
+        np.save(fs / f"image_{i}_K.npy", np.eye(3))
+    monkeypatch.setattr(backend, "_masker", lambda capture: _HalfMasker())
+    backend.mask_stage2_outputs(capture, tmp_path)
+    backend.mask_stage2_outputs(capture, tmp_path)
+    depth = np.load(fs / "image_0_depth_meter.npy")
+    assert np.all(depth[:, :4] == 0) and np.all(depth[:, 4:] == 1)
+    assert np.all(np.load(fs / "image_0_depth_meter_raw.npy") == 1)
 
 
 def test_run_skips_stage2_for_rgbd(tmp_path, monkeypatch):
-    """Stage 2 (stereo depth) is dropped when the camera measured depth."""
+    """Stage 2 (stereo depth) is dropped when every candidate measured depth."""
     capture = _rgbd_capture(tmp_path / "capture")
+    backend = SimFoundryBackend(cameras=("ext1",), mask_robot=False)
+    backend.prepare_inputs(capture, tmp_path)
     calls = []
     monkeypatch.setattr(
         "r2s2r.reconstruct.simfoundry.subprocess.run",
         lambda cmd, **kwargs: calls.append(cmd),
     )
-    SimFoundryBackend(camera_role="ext1").run(capture, tmp_path, stages=("2", "3"))
-    cmd = calls[0]
-    assert cmd[cmd.index("--include") + 1] == "3"
+    backend.run(capture, tmp_path, stages=("2", "3"))
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--include") + 1] == "3"
+
+
+def test_run_masks_between_stage2_and_3(capture, tmp_path, monkeypatch):
+    """Stereo captures run stage 2 alone, then mask, then the rest."""
+    backend = SimFoundryBackend(cameras=("ext1",), max_frames=2, mask_robot=False)
+    backend.prepare_inputs(capture, tmp_path)
+    events = []
+    monkeypatch.setattr(
+        "r2s2r.reconstruct.simfoundry.subprocess.run",
+        lambda cmd, **kwargs: events.append(cmd[cmd.index("--include") + 1]),
+    )
+    monkeypatch.setattr(
+        backend, "mask_stage2_outputs", lambda *args: events.append("mask")
+    )
+    backend.run(capture, tmp_path, stages=("2", "3", "4"))
+    assert events == ["2", "mask", "3,4"]
+    events.clear()
+    backend.run(capture, tmp_path, stages=("2",))  # depth only: masked all the same
+    assert events == ["2", "mask"]
+
+
+def test_stage9_skipped_without_articulate_anything(capture, tmp_path, monkeypatch):
+    """Without articulate-anything, stage 9 is dropped and objects stay rigid."""
+    backend = SimFoundryBackend(
+        cameras=("ext1",), max_frames=1, mask_robot=False, repo_dir=tmp_path / "sf"
+    )
+    backend.prepare_inputs(capture, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "r2s2r.reconstruct.simfoundry.subprocess.run",
+        lambda cmd, **kwargs: calls.append(cmd[cmd.index("--include") + 1]),
+    )
+    monkeypatch.setattr(backend, "mask_stage2_outputs", lambda *args: None)
+    backend.run(capture, tmp_path, stages=("8", "9", "10"))
+    assert calls == ["8,10"]

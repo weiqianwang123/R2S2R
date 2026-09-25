@@ -9,8 +9,10 @@ pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
 from r2s2r.real.mujoco import world as mw  # noqa: E402
+from r2s2r.real.mujoco.capture import record_capture  # noqa: E402
 from r2s2r.reconstruct.refine import view_points  # noqa: E402
-from r2s2r.robots.franka import PandaKinematics  # noqa: E402
+from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH, PandaKinematics  # noqa: E402
+from r2s2r.robots.mask import NO_ROBOT, RobotMasker  # noqa: E402
 from r2s2r.structs import DepthView  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
@@ -52,3 +54,49 @@ def test_objects_rest_where_placed(world):
         T = world.object_pose(obj.name)
         assert np.allclose(T[:2, 3], obj.xy, atol=5e-3)
         assert T[2, 2] > 0.999
+
+
+def _robot_pixels(world, name):
+    """The world's own segmentation of the robot in camera ``name``."""
+    spec = world.camera_spec(name)
+    r = world._renderer(spec.width, spec.height)  # pylint: disable=protected-access
+    r.enable_segmentation_rendering()
+    r.update_scene(world.data, camera=name)
+    seg = r.render()
+    r.disable_segmentation_rendering()
+    geom = np.where(seg[..., 1] == int(mw.mujoco.mjtObj.mjOBJ_GEOM), seg[..., 0], -1)
+    body = world.model.geom_bodyid[np.maximum(geom, 0)]
+    root = world.model.body_rootid[body]
+    return (geom >= 0) & (root == world.model.body("link0").id)
+
+
+def test_robot_masker_matches_the_simulator(world):
+    """Rendering the robot from calibration + joints reproduces what cameras see."""
+    masker = RobotMasker("franka_panda", world.cfg.menagerie_dir)
+    for name in world.camera_names():
+        spec = world.camera_spec(name)
+        truth = _robot_pixels(world, name)
+        pred = (
+            masker.robot_depth(
+                spec.K,
+                spec.width,
+                spec.height,
+                world.camera_pose(name),
+                world.arm_q(),
+                1 - world.finger_width() / FRANKA_HAND_MAX_WIDTH,
+            )
+            < NO_ROBOT
+        )
+        union = (truth | pred).sum()
+        assert union == 0 or (truth & pred).sum() / union > 0.97, name
+    masker.close()
+
+
+def test_capture_records_the_requested_cameras(tmp_path):
+    """A wrist-only capture has one moving camera with per-frame poses."""
+    capture = record_capture(tmp_path / "cap", cameras=["wrist"], every=40)
+    (cam,) = capture.cameras.values()
+    assert cam.role == "wrist" and not cam.is_static
+    poses = np.stack([f.T_base_cam for f in capture.frames])
+    assert len(capture.frames) > 3 and np.ptp(poses[:, :3, 3], axis=0).max() > 0.1
+    assert all(f.depth_image for f in capture.frames)

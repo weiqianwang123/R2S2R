@@ -10,22 +10,44 @@ from __future__ import annotations
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from r2s2r.io.rgbd import write_depth
-from r2s2r.real.mujoco.world import MujocoRobot, MujocoWorld, MujocoWorldConfig
-from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH
+from r2s2r.real.mujoco.world import (
+    MujocoRobot,
+    MujocoWorld,
+    MujocoWorldConfig,
+    look_at,
+)
+from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH, Q_READY
 from r2s2r.structs import DEPTH_PNG_SCALE, Capture, FrameRecord
+from r2s2r.transforms import invert
 
 MAX_DEPTH = 10.0  # metres; farther pixels (the sky) are stored as invalid (0)
 
 
-def _capture_motion(robot: MujocoRobot) -> None:
-    """Sweep the hand over the table so the wrist camera sees the scene."""
-    T0 = robot.tcp_pose()
-    for dx, dy, dz in [(0.12, 0.18, -0.1), (0.12, -0.18, -0.1), (0.0, 0.0, 0.0)]:
-        T = T0.copy()
-        T[:3, 3] += [dx, dy, dz]
-        robot.move_tcp(T, speed=0.12, settle=0.2)
+def _capture_motion(
+    robot: MujocoRobot,
+    world: MujocoWorld,
+    elevation_deg: float = 55.0,
+    azimuths_deg: tuple[float, ...] = (-35.0, 0.0, 35.0),
+) -> None:
+    """Point the wrist camera at the world's scan target from a few directions, then
+    return to the ready pose.
+
+    The exterior cameras see the arm move (it is masked out).
+    """
+    if "wrist" not in world.camera_names():
+        return
+    T_tcp_cam = invert(world.tcp_pose()) @ world.camera_pose("wrist")
+    centre = np.asarray(world.cfg.scan_target)
+    distance = world.cfg.scan_distance
+    for az_deg in azimuths_deg:
+        az, el = np.deg2rad(az_deg), np.deg2rad(elevation_deg)
+        offset = [-np.cos(el) * np.cos(az), -np.cos(el) * np.sin(az), np.sin(el)]
+        T_base_cam = look_at(centre + distance * np.asarray(offset), centre)
+        robot.move_tcp(T_base_cam @ invert(T_tcp_cam), speed=0.15, settle=0.3)
+    robot.move_joints(Q_READY)
 
 
 def record_capture(
@@ -34,19 +56,27 @@ def record_capture(
     name: str = "mujoco_pick",
     instruction: str = "pick up the crayon box",
     every: int = 5,
+    cameras: list[str] | None = None,
 ) -> Capture:
-    """Run the capture motion and save RGB-D frames every ``every`` control steps."""
+    """Run the capture motion and save RGB-D frames of ``cameras`` (default: all) every
+    ``every`` control steps."""
     out_dir = Path(out_dir)
     world = MujocoWorld(cfg)
     world.reset()
-    cameras = {n: world.camera_spec(n) for n in world.camera_names()}
+    names = cameras or world.camera_names()
+    unknown = set(names) - set(world.camera_names())
+    if unknown:
+        raise KeyError(
+            f"unknown cameras {sorted(unknown)}; have {world.camera_names()}"
+        )
+    cameras_ = {n: world.camera_spec(n) for n in names}
     frames: list[FrameRecord] = []
 
     def grab(robot: MujocoRobot) -> None:
         if robot.steps % every:
             return
         q, width = world.arm_q(), world.finger_width()
-        for cam_name, spec in cameras.items():
+        for cam_name, spec in cameras_.items():
             rgb, depth = world.render(cam_name)
             rel = Path("frames") / spec.serial
             (out_dir / rel).mkdir(parents=True, exist_ok=True)
@@ -70,13 +100,13 @@ def record_capture(
 
     robot = MujocoRobot(world, on_step=grab)
     grab(robot)
-    _capture_motion(robot)
+    _capture_motion(robot, world)
     capture = Capture(
         name=name,
         source="mujoco",
         embodiment="franka_panda",
         instruction=instruction,
-        cameras={c.serial: c for c in cameras.values()},
+        cameras={c.serial: c for c in cameras_.values()},
         frames=frames,
         static_steps=(0, robot.steps + 1),
         root=out_dir,
@@ -84,7 +114,9 @@ def record_capture(
             "world_config": world.cfg.as_dict(),
             "depth_png_scale": DEPTH_PNG_SCALE,
             "ground_truth_T_base_obj": {
-                o.name: world.object_pose(o.name).tolist() for o in world.cfg.objects
+                name: world.object_pose(name).tolist()
+                for name in [o.name for o in world.cfg.objects]
+                + [c.name for c in world.cfg.cabinets]
             },
         },
     )

@@ -1,11 +1,10 @@
-"""Tests for reconstruct/refine.py and assets.py on synthetic geometry."""
+"""Tests for reconstruct/refine.py on synthetic geometry."""
 
 import numpy as np
 import pytest
 import trimesh
 from scipy.spatial.transform import Rotation
 
-from r2s2r.assets import bake_mesh_scales, urdf_visual_points
 from r2s2r.reconstruct.refine import (
     fit_support_outline,
     refine_scene,
@@ -90,17 +89,6 @@ def test_register_footprint_recovers_shift_and_yaw():
     assert np.allclose(T[:2, 3], truth[:2, 3], atol=0.004)
     assert abs(np.arctan2(T[1, 0], T[0, 0]) - np.deg2rad(8.0)) < np.deg2rad(1.0)
     assert after > 0.8 > before
-
-
-def test_bake_mesh_scales(tmp_path):
-    """Scaled meshes are baked to their true size and lose the attribute."""
-    urdf = _write_box_urdf(tmp_path, scale=(0.5, 2.0, 1.0))
-    baked = bake_mesh_scales(urdf)
-    assert baked.name == "box_r2s2r.urdf"
-    assert "scale" not in baked.read_text(encoding="utf-8")
-    pts = urdf_visual_points(baked, 2000)
-    assert np.allclose(np.ptp(pts, 0), BOX, atol=0.002)
-    assert np.allclose(np.ptp(urdf_visual_points(urdf, 2000), 0), BOX, atol=0.002)
 
 
 def test_refine_scene_moves_misplaced_object(tmp_path):
