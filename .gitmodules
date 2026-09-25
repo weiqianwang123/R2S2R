@@ -1,0 +1,5 @@
+[submodule "third_party/SimFoundry"]
+	path = third_party/SimFoundry
+	url = https://github.com/weiqianwang123/SimFoundry.git
+	shallow = true
+	branch = r2s2r

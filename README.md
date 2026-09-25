@@ -1,0 +1,211 @@
+# R2S2R: Real-to-Sim-to-Real
+
+R2S2R turns a recording of a robot's workspace into a simulation of that scene, and
+deploys what is learned there back to the robot. The input is the robot's
+parameters, calibrated camera intrinsics and extrinsics, an RGB-D (stereo) video and
+optionally CAD models of the objects. The output is an Isaac Lab environment with
+every rigid object in place, in the robot's own base frame. The same pipeline is
+meant to accept MuJoCo renderings as "real" input, so that MuJoCo can stand in for
+the real world when testing.
+
+The module is shared between the code-for-gen project and
+[PhysCoder](https://github.com/Jaraxxus-Me/physcoder). The first platform is the
+DROID Franka (Panda + Robotiq 2F-85, two ZED 2 exterior cameras, a ZED Mini wrist
+camera).
+
+## Status
+
+| Piece | State |
+|---|---|
+| DROID raw episode → `Capture` (`r2s2r droid-capture`) | done, tested on `IRIS+ef107c48+2023-03-07-16h-19m-59s` |
+| SimFoundry backend: inputs, stage 2 (FoundationStereo depth) | done, verified against a second camera |
+| SimFoundry stages 3–12 (segmentation, meshes, poses, physics) | runs end to end on the IRIS episode; VLM calls go through the local Codex CLI (see below) |
+| `SceneSpec` in the robot base frame | done: IRIS gives a mug + marker on a table plane at z = −0.189 m |
+| Isaac Lab scene builder + real-camera overlay | done (`scripts/render_overlay.py`): robot and mug line up in both exterior cameras, marker is off by several cm (see below) |
+| MuJoCo capture ("MuJoCo as real") and deployment | planned, after the DROID path works |
+| Robot-side alignment (controller and dynamics) | **not started, see below** |
+
+## How it fits together
+
+```
+Capture ──► ReconstructionBackend ──► SceneSpec ──► simulator builder ──► policy ──► deploy
+(io/)       (reconstruct/, pluggable)  (robot base    (Isaac Lab; MuJoCo)             (real robot;
+                                        frame)                                         MuJoCo as real)
+```
+
+- `src/r2s2r/structs.py`: `Capture` (what was recorded) and `SceneSpec` (what was
+  reconstructed), both plain data saved as JSON.
+- `src/r2s2r/io/droid.py`: raw DROID episode → `Capture`. It uses the improved DROID
+  calibration and keeps only the steps before the gripper first closes, when the
+  objects are static.
+- `src/r2s2r/reconstruct/`: the backend interface and its registry.
+  `simfoundry.py` drives [SimFoundry](third_party/SimFoundry) and re-expresses its
+  output in the robot base frame.
+- `third_party/SimFoundry`: git submodule of
+  [our fork](https://github.com/weiqianwang123/SimFoundry). All SimFoundry changes go
+  there, never into this repository.
+
+Conventions: `T_a_b` maps frame-b points into frame a, camera frames are OpenCV
+(+z forward, +y down), quaternions are `(w, x, y, z)`, and every `SceneSpec` pose is in
+the robot base frame.
+
+### The SimFoundry backend (single-frame baseline)
+
+SimFoundry is run, not imported. It keeps its own conda envs, and r2s2r calls its
+orchestrator with `PYTHONPATH` pointing at the submodule. For a DROID capture, the
+backend:
+
+1. writes the stereo pairs of one exterior camera in the layout of SimFoundry's
+   stereo capture stage (`image_<i>_{l,r}.png` plus `intrinsic.txt` holding K and the
+   baseline);
+2. runs stages 2–12 in stereo mode. FoundationStereo gives metric depth, and stages
+   13–14 (OmniGibson import) are skipped;
+3. reads back which frame SimFoundry chose. It then anchors SimFoundry's
+   support-plane world frame to the robot with that frame's `T_base_cam` and
+   converts every object pose from stage 12.
+
+SimFoundry reconstructs from one frame of one camera, so most of the video goes
+unused. That single frame is the baseline. Using the rest of the video is on the
+roadmap below.
+
+## Install
+
+Python 3.11 and [uv](https://docs.astral.sh/uv/).
+
+```bash
+git clone --recurse-submodules https://github.com/weiqianwang123/R2S2R.git
+cd R2S2R
+uv venv --python 3.11 .venv && uv pip install -e ".[develop]"   # core only
+bash scripts/install.sh      # + torch 2.7 (cu128), Isaac Sim 5.1, Isaac Lab v2.3.2
+```
+
+SimFoundry needs its own install (conda envs, model repos, checkpoints). Follow its
+README once. Then link the heavy, git-ignored parts into the submodule:
+
+```bash
+bash scripts/link_simfoundry_resources.sh ~/SimFoundry
+```
+
+SimFoundry's stages 3, 5, 6, 8 and 11 call Gemini upstream. The `r2s2r` branch of
+our fork adds a Codex backend (`simfoundry/models/codex_vlm.py`). With
+`SIMFOUNDRY_VLM_BACKEND=codex`, which r2s2r sets by default, every `Gemini(...)`
+the stages construct becomes a `codex exec` call:
+
+- Text/vision requests (detection, frame choice, front picking, mass/friction) are
+  read-only calls with the images attached. They take about 7 s at reasoning effort
+  medium.
+- Image requests (removing an object to see behind it, upsampling an object crop)
+  enable Codex's `image_generation` feature. They take about 75 s per image.
+
+The default model is `gpt-6-astra` at reasoning effort `medium`
+(`r2s2r reconstruct --codex-reasoning ...` to change). SimFoundry picks the ChatGPT
+desktop app's bundled CLI (`/usr/lib/chatgpt/resources/codex`) when it exists.
+Older CLIs reject `gpt-6-astra`. Sampling controls (temperature, seed) have no
+Codex equivalent, so runs are not bit-reproducible. `--vlm-backend gemini` restores
+upstream behaviour (needs `GCLOUD_PROJECT` or `GEMINI_API_KEY`).
+
+On first use SimFoundry downloads its model weights into the usual caches:
+Hunyuan3D-2.1 (~14 GB, `~/.cache/hy3dgen`), Depth Anything 3 (~7 GB), Prior-DA and
+bria-rmbg (~2 GB). It also downloads SAM3 (~3.5 GB, `facebook/sam3`) unless that is
+already in the Hugging Face cache.
+
+## Quickstart: one public DROID episode
+
+```bash
+# Improved calibration + language annotations (~175 MB)
+mkdir -p data/droid/calib && for f in intrinsics.json cam2base_extrinsic_superset.json \
+    episode_id_to_path.json droid_language_annotations.json; do
+  curl -L -o data/droid/calib/$f https://huggingface.co/KarlP/droid/resolve/main/$f; done
+
+# One episode, without trajectory_im128.h5 (~30 MB)
+E=gs://gresearch/robotics/droid_raw/1.0.1/IRIS/success/2023-03-07/Tue_Mar__7_16_19_59_2023
+D=data/droid/episodes/IRIS+ef107c48+2023-03-07-16h-19m-59s
+mkdir -p $D/recordings && gsutil -m cp $E/metadata_*.json $E/trajectory.h5 $D/ \
+  && gsutil -m cp -r $E/recordings/MP4 $E/recordings/SVO $D/recordings/
+
+r2s2r droid-capture $D --calib data/droid/calib --out outputs/iris/capture
+r2s2r reconstruct outputs/iris/capture --workdir outputs/iris/simfoundry \
+    --camera-role ext2 --stages 2            # depth only, no Gemini needed
+r2s2r reconstruct outputs/iris/capture --workdir outputs/iris/simfoundry \
+    --camera-role ext2                       # stages 2-12, then writes scene.json
+```
+
+## Development
+
+```bash
+./run_ci_checks.sh   # autoformat, mypy, pylint, pytest (src/ and tests/ only)
+```
+
+Tests need neither a GPU nor SimFoundry. They build a tiny synthetic DROID episode,
+and synthetic SimFoundry outputs where those are needed.
+
+## Roadmap
+
+1. **Isaac Lab builder**: `SceneSpec` → `ManagerBasedRLEnvCfg`, containing the DROID
+   Franka at the recorded joint positions, every object from its URDF, the support
+   plane, and cameras built from the real K and `T_base_cam`. Then render from the
+   real camera poses and overlay the renders on the real frames as a fidelity check.
+2. **Use the whole video**: refine poses across both exterior cameras and the moving
+   wrist camera, generate meshes from several views, and replay the interaction steps
+   to validate physics.
+3. **MuJoCo as real**: render DROID-shaped episodes (same files, plus ground truth)
+   from MuJoCo, score reconstructions against the ground truth, and deploy policies
+   back into the same MuJoCo world.
+4. **Deployment** to the real DROID Franka.
+
+## TODO: robot-side alignment
+
+Everything above aligns the **scene** (objects, support surface, cameras). The
+**robot** is not yet aligned between sim and real, and this has to be done before
+policies can be trusted to transfer:
+
+- **Same controller in sim and real.** The simulated arm must run the same control
+  law, gains and rate as the real one. DROID runs a Cartesian/joint impedance
+  controller on the Franka.
+- **System identification of the arm.** Fit joint armature, friction and actuation
+  delay from real excitation runs, and validate on held-out trajectories.
+  [FrankaTwin](https://github.com/tsrobcvai/frankatwin) does exactly this for FR3/Panda
+  in Isaac Lab and is the starting point.
+- **Gripper.** The Robotiq 2F-85 model, its actuation and its contact parameters.
+- **Camera timing.** Latency between the camera and robot state streams. DROID videos
+  lag their step timestamps by about 40 ms.
+
+Planned after the scene pipeline works end to end.
+
+## Data caveats
+
+- DROID 1.0.1 raw videos are face-blurred, and the blur sometimes fires on objects:
+  the red mug in the IRIS episode is smeared in some frames and sharp in others.
+  SimFoundry's frame selection scores sharpness, so it prefers the clean frames.
+
+## First result (IRIS episode, single-frame baseline)
+
+SimFoundry picked frame 2 of ext2 (step 10) via Codex, separated the marker and the mug,
+and placed both on the table. Rendered from the real camera poses in Isaac Lab:
+
+- The robot at the recorded joint angles and the mug line up with the real images in
+  both exterior cameras. ext1 was never seen by the reconstruction, so the mug's pose
+  is right in the robot base frame.
+- The marker is off by several centimetres and too thick. It is small and thin, seen
+  from one view, and the generated image of it (stage 6) exaggerates its diameter.
+  Multi-view pose refinement (roadmap item 2) targets exactly this.
+- Only the support plane's height and normal are reconstructed. Its extent and
+  orientation are not yet in the SceneSpec, so the builder spawns a fixed 0.6 m slab.
+- The meshes are untextured. The run used `s7_mesh.generate_texture=false` while the
+  texture model was still downloading.
+
+## Changes on the fork's `r2s2r` branch
+
+- `simfoundry/models/codex_vlm.py` + `Gemini.__new__`: Codex backend (see Install).
+- Stage 5: supports stereo (FoundationStereo) inputs. Upstream it only read the
+  video-mode frames and Depth Anything outputs.
+- Stage 6: accepts the Codex stand-in where it asserted a `Gemini` instance.
+- Stage 7: shape-only runs publish a face-reduced (40k) untextured mesh where stages 8
+  and 11 look for the textured one, so geometry can be checked before texturing.
+
+Worked around on the r2s2r side, not yet fixed in the fork:
+
+- The orchestrator runs stage 2 in the `da3` env even for the FoundationStereo backend,
+  which is installed in the `simfoundry` env. r2s2r passes `--env-da3 simfoundry`.
+- Stage 1a writes stereo pairs as `zed_<i>_{l,r}.png`, while stages 3–8 read
+  `image_<i>_*` from the FoundationStereo output. r2s2r writes `image_<i>_*` directly.

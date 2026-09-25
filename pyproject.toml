@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "r2s2r"
+version = "0.1.0"
+description = "Real-to-sim-to-real: reconstruct robot scenes into Isaac Lab and deploy back."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+   "h5py",
+   "numpy",
+   "opencv-python-headless",
+   "PyYAML",
+   "scipy",
+]
+
+[project.optional-dependencies]
+develop = [
+    "black",
+    "docformatter",
+    "isort",
+    "mypy",
+    "pylint>=2.14.5",
+    "pytest-pylint>=0.18.0",
+    "pytest>=7.2.2,<9",
+    "types-PyYAML",
+]
+
+[project.scripts]
+r2s2r = "r2s2r.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+r2s2r = ["py.typed"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+extend-exclude = "third_party"
+
+[tool.isort]
+py_version = 311
+profile = "black"
+multi_line_output = 2
+skip_glob = ["venv/*", ".venv/*", "third_party/*", "_isaaclab/*"]
+split_on_trailing_comma = true
+
+[tool.docformatter]
+line-length = 88
+wrap-summaries = 88
+wrap-descriptions = 88
+
+[tool.mypy]
+strict_equality = true
+disallow_untyped_calls = true
+warn_unreachable = true
+exclude = ["venv/", ".venv/", "third_party/", "_isaaclab/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "h5py.*",
+    "scipy.*",
+    "cv2.*",
+    "isaaclab.*",
+    "isaaclab_assets.*",
+]
+ignore_missing_imports = true
