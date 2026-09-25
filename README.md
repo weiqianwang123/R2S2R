@@ -18,11 +18,10 @@ camera).
 | Piece | State |
 |---|---|
 | DROID raw episode → `Capture` (`r2s2r droid-capture`) | done, tested on `IRIS+ef107c48+2023-03-07-16h-19m-59s` |
-| SimFoundry backend: inputs, stage 2 (FoundationStereo depth) | done, verified against a second camera |
-| SimFoundry stages 3–12 (segmentation, meshes, poses, physics) | runs end to end on the IRIS episode; VLM calls go through the local Codex CLI (see below) |
-| `SceneSpec` in the robot base frame | done: IRIS gives a mug + marker on a table plane at z = −0.189 m |
-| Isaac Lab scene builder + real-camera overlay | done (`scripts/render_overlay.py`): robot and mug line up in both exterior cameras, marker is off by several cm (see below) |
-| MuJoCo capture ("MuJoCo as real") and deployment | planned, after the DROID path works |
+| SimFoundry backend, stages 2–12 (Codex as the VLM), textured meshes | done on IRIS: mug + marker on a table plane at z = −0.189 m |
+| Multi-view refinement (`r2s2r refine`): support outline + object footprint check | done: table 0.36 × 0.42 m from both exterior cameras; both objects already within ~2 mm, poses kept |
+| Isaac Lab scene builder + real-camera overlay | done (`scripts/render_overlay.py`): robot, mug, marker and table line up with the real images in both exterior cameras |
+| MuJoCo capture ("MuJoCo as real") and deployment | planned |
 | Robot-side alignment (controller and dynamics) | **not started, see below** |
 
 ## How it fits together
@@ -128,6 +127,12 @@ r2s2r reconstruct outputs/iris/capture --workdir outputs/iris/simfoundry \
     --camera-role ext2 --stages 2            # depth only, no Gemini needed
 r2s2r reconstruct outputs/iris/capture --workdir outputs/iris/simfoundry \
     --camera-role ext2                       # stages 2-12, then writes scene.json
+r2s2r reconstruct outputs/iris/capture --workdir outputs/iris/simfoundry_ext1 \
+    --camera-role ext1 --stages 2            # depth from the second camera
+r2s2r refine outputs/iris/simfoundry/<scene>/scene --capture outputs/iris/capture \
+    --views outputs/iris/simfoundry outputs/iris/simfoundry_ext1 --out outputs/iris/scene
+OMNI_KIT_ACCEPT_EULA=YES python scripts/render_overlay.py outputs/iris/scene \
+    outputs/iris/capture --out outputs/iris/overlay --headless
 ```
 
 ## Development
@@ -141,13 +146,11 @@ and synthetic SimFoundry outputs where those are needed.
 
 ## Roadmap
 
-1. **Isaac Lab builder**: `SceneSpec` → `ManagerBasedRLEnvCfg`, containing the DROID
-   Franka at the recorded joint positions, every object from its URDF, the support
-   plane, and cameras built from the real K and `T_base_cam`. Then render from the
-   real camera poses and overlay the renders on the real frames as a fidelity check.
-2. **Use the whole video**: refine poses across both exterior cameras and the moving
-   wrist camera, generate meshes from several views, and replay the interaction steps
-   to validate physics.
+1. **Isaac Lab env**: wrap the scene builder into a `ManagerBasedRLEnvCfg`, adding
+   actions, observations and resets, so policies can run in it.
+2. **Use more of the video**: add the moving wrist camera to `r2s2r refine`, generate
+   meshes from several views (to fix shapes like the over-thick marker), and replay
+   the interaction steps to validate physics.
 3. **MuJoCo as real**: render DROID-shaped episodes (same files, plus ground truth)
    from MuJoCo, score reconstructions against the ground truth, and deploy policies
    back into the same MuJoCo world.
@@ -178,21 +181,29 @@ Planned after the scene pipeline works end to end.
   the red mug in the IRIS episode is smeared in some frames and sharp in others.
   SimFoundry's frame selection scores sharpness, so it prefers the clean frames.
 
-## First result (IRIS episode, single-frame baseline)
+## First result (IRIS episode)
 
 SimFoundry picked frame 2 of ext2 (step 10) via Codex, separated the marker and the mug,
-and placed both on the table. Rendered from the real camera poses in Isaac Lab:
+generated textured meshes and placed both on the table. Fusing FoundationStereo depth
+from both exterior cameras (`r2s2r refine`) fits the table outline (0.36 × 0.42 m) and
+checks every object's top-down footprint against the fused points. Both were already
+within about 2 mm and 1°, so the backend's poses were kept. Rendered from the real
+camera poses in Isaac Lab, the robot, the mug, the marker and the table outline line up
+with the real images in both cameras. ext1 was never used by SimFoundry.
 
-- The robot at the recorded joint angles and the mug line up with the real images in
-  both exterior cameras. ext1 was never seen by the reconstruction, so the mug's pose
-  is right in the robot base frame.
-- The marker is off by several centimetres and too thick. It is small and thin, seen
-  from one view, and the generated image of it (stage 6) exaggerates its diameter.
-  Multi-view pose refinement (roadmap item 2) targets exactly this.
-- Only the support plane's height and normal are reconstructed. Its extent and
-  orientation are not yet in the SceneSpec, so the builder spawns a fixed 0.6 m slab.
-- The meshes are untextured. The run used `s7_mesh.generate_texture=false` while the
-  texture model was still downloading.
+Two Isaac-side pitfalls made the first overlays look centimetres off. Both are fixed in
+this repository:
+
+- **Camera field of view.** Without a focal length, Isaac Lab's
+  `PinholeCameraCfg.from_intrinsic_matrix` sets a 1 mm aperture and a sub-millimetre
+  focal length, and the render came out magnified by about 1.3×. The builder passes
+  24 mm. Omniverse also ignores principal-point offsets, so each camera renders a
+  slightly larger image centred on (cx, cy), which is then cropped back
+  (`centered_render_size`).
+- **Scaled URDF meshes.** SimFoundry's collision hulls are unit meshes scaled in the
+  URDF. Isaac Sim's importer left a 1 m collider beside each scaled one.
+  `r2s2r.assets.bake_mesh_scales` writes `<model>_r2s2r.urdf` with the scales baked
+  into the meshes, and the SceneSpec points at that copy.
 
 ## Changes on the fork's `r2s2r` branch
 

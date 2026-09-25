@@ -14,6 +14,7 @@ dependencies = [
    "opencv-python-headless",
    "PyYAML",
    "scipy",
+   "trimesh",
 ]
 
 [project.optional-dependencies]
@@ -65,6 +66,7 @@ module = [
     "h5py.*",
     "scipy.*",
     "cv2.*",
+    "trimesh.*",
     "isaaclab.*",
     "isaaclab_assets.*",
 ]

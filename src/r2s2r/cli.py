@@ -13,8 +13,13 @@ from pathlib import Path
 
 from r2s2r.io.droid import load_droid_episode
 from r2s2r.reconstruct import make_backend, registered_backends
-from r2s2r.reconstruct.simfoundry import SimFoundryBackend, SimFoundryConfig
-from r2s2r.structs import Capture
+from r2s2r.reconstruct.simfoundry import (
+    SimFoundryBackend,
+    SimFoundryConfig,
+    load_stage2_views,
+)
+from r2s2r.refine import refine_scene
+from r2s2r.structs import Capture, SceneSpec
 
 
 def _droid_capture(args: argparse.Namespace) -> None:
@@ -65,6 +70,32 @@ def _reconstruct(args: argparse.Namespace) -> None:
     print(f"scene with {len(scene.objects)} objects -> {path}")
 
 
+def _refine(args: argparse.Namespace) -> None:
+    scene = SceneSpec.load(args.scene_dir)
+    capture = Capture.load(args.capture)
+    step = scene.reference_step if args.step is None else args.step
+    views = []
+    for workdir in args.views:
+        views += load_stage2_views(capture, workdir, steps={step})
+    if not views:
+        raise SystemExit(f"no stage-2 depth at step {step} in {args.views}")
+    refined, report = refine_scene(scene, views)
+    path = refined.save(args.out)
+    for name, entry in report["objects"].items():
+        if entry["matched"]:
+            print(
+                f"{name}: moved {entry['shift_m'] * 100:.1f} cm, "
+                f"yaw {entry['yaw_change_deg']:+.0f} deg, footprint IoU "
+                f"{entry['footprint_iou_before']:.2f} -> "
+                f"{entry['footprint_iou_after']:.2f}"
+                + ("" if entry["applied"] else " (kept backend pose)")
+            )
+        else:
+            print(f"{name}: no matching point cluster, left as is")
+    w, h = report["support"]["size"]
+    print(f"support {w:.2f} x {h:.2f} m from {len(views)} views -> {path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     """Parse arguments and dispatch."""
     parser = argparse.ArgumentParser(prog="r2s2r")
@@ -95,6 +126,20 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--prepare-only", action="store_true")
     p.add_argument("--parse-only", action="store_true")
     p.set_defaults(func=_reconstruct)
+
+    p = sub.add_parser("refine", help="multi-view refinement of a scene spec")
+    p.add_argument("scene_dir", type=Path)
+    p.add_argument("--capture", type=Path, required=True)
+    p.add_argument(
+        "--views",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="SimFoundry workdirs whose stage-2 depth to fuse (one per camera)",
+    )
+    p.add_argument("--step", type=int, help="default: the scene's reference step")
+    p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(func=_refine)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)

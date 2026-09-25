@@ -30,7 +30,9 @@ from typing import Any
 import cv2
 import numpy as np
 
+from r2s2r.assets import bake_mesh_scales
 from r2s2r.reconstruct.base import ReconstructionBackend, register_backend
+from r2s2r.refine import DepthView
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec
 from r2s2r.transforms import invert, pos_quat_to_matrix, quat_xyzw_to_wxyz
 
@@ -236,7 +238,7 @@ class SimFoundryBackend(ReconstructionBackend):
                 ObjectSpec(
                     name=name,
                     category=category,
-                    asset_path=str(urdf),
+                    asset_path=str(bake_mesh_scales(urdf) if urdf.exists() else urdf),
                     T_base_obj=T_base_world @ T_world_obj,
                     mass=_urdf_mass(urdf),
                     friction=obj.get("friction"),
@@ -264,6 +266,32 @@ class SimFoundryBackend(ReconstructionBackend):
         self.prepare_inputs(capture, workdir)
         self.run(capture, workdir)
         return self.parse(capture, workdir)
+
+
+def load_stage2_views(
+    capture: Capture, workdir: Path, steps: set[int] | None = None
+) -> list[DepthView]:
+    """FoundationStereo depth written by stage 2 for one camera's candidates."""
+    scene_dir = Path(workdir).resolve() / capture.name
+    views = []
+    for m in _read_json(scene_dir / "s1_zed" / FRAME_MAP_FILENAME):
+        step = int(m["step"])
+        if steps is not None and step not in steps:
+            continue
+        frame = next(
+            f for f in capture.frames if f.camera == m["camera"] and f.step == step
+        )
+        fs = scene_dir / "s2_fs"
+        views.append(
+            DepthView(
+                camera=m["camera"],
+                step=step,
+                depth=np.load(fs / f"image_{m['index']}_depth_meter.npy").astype(float),
+                K=np.load(fs / f"image_{m['index']}_K.npy").astype(float),
+                T_base_cam=frame.T_base_cam,
+            )
+        )
+    return views
 
 
 def _hydra_bool(value: bool) -> str:

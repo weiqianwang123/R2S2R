@@ -85,20 +85,45 @@ def object_cfg(obj: ObjectSpec, index: int) -> RigidObjectCfg:
     )
 
 
+def centered_render_size(cam: CameraSpec) -> tuple[int, int, int, int]:
+    """Render size with the principal point at its centre, and the crop back.
+
+    Omniverse cameras ignore aperture offsets (the principal point is always the image
+    centre), so render a larger image centred on (cx, cy) and crop the real image's
+    window out of it. Returns (width, height, crop_x, crop_y).
+    """
+    cx, cy = float(cam.K[0, 2]), float(cam.K[1, 2])
+    half_w = int(np.ceil(max(cx, cam.width - cx)))
+    half_h = int(np.ceil(max(cy, cam.height - cy)))
+    return 2 * half_w, 2 * half_h, int(round(half_w - cx)), int(round(half_h - cy))
+
+
 def camera_cfg(cam: CameraSpec, T_base_cam: np.ndarray) -> CameraCfg:
-    """A camera with the real intrinsics at the calibrated pose."""
+    """A camera with the real intrinsics at the calibrated pose.
+
+    The render is larger than the real image (see :func:`centered_render_size`); crop it
+    with the offsets that function returns.
+    """
     pos, rot = _pose(T_base_cam)
+    width, height, crop_x, crop_y = centered_render_size(cam)
+    K = cam.K.copy()
+    K[0, 2] += crop_x
+    K[1, 2] += crop_y
     return CameraCfg(
         prim_path=f"{{ENV_REGEX_NS}}/Camera_{cam.role}",
         update_period=0.0,
-        width=cam.width,
-        height=cam.height,
+        width=width,
+        height=height,
         data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg.from_intrinsic_matrix(
-            intrinsic_matrix=cam.K.reshape(-1).tolist(),
-            width=cam.width,
-            height=cam.height,
+            intrinsic_matrix=K.reshape(-1).tolist(),
+            width=width,
+            height=height,
             clipping_range=(0.02, 20.0),
+            # Without a focal length Isaac Lab picks a 1 mm aperture and a
+            # sub-millimetre focal length, which renders with the wrong field of
+            # view; 24 mm gives physically sized camera parameters.
+            focal_length=24.0,
         ),
         offset=CameraCfg.OffsetCfg(pos=pos, rot=rot, convention="ros"),
     )
@@ -108,14 +133,14 @@ def build_scene_cfg(
     scene: SceneSpec,
     num_envs: int = 1,
     env_spacing: float = 5.0,
-    support_extent: tuple[float, float] = (0.6, 0.6),
+    support_extent: tuple[float, float] = (0.6, 0.6),  # when the scene has none
     with_cameras: bool = True,
 ) -> InteractiveSceneCfg:
     """The full interactive scene: robot, support, objects, lights, cameras."""
     cfg = InteractiveSceneCfg(num_envs=num_envs, env_spacing=env_spacing)
     # InteractiveScene reads entities from the cfg instance's attributes.
     setattr(cfg, "robot", robot_cfg(scene))
-    setattr(cfg, "support", support_cfg(scene, support_extent))
+    setattr(cfg, "support", support_cfg(scene, scene.support_extent or support_extent))
     for i, obj in enumerate(scene.objects):
         setattr(cfg, f"object_{i}", object_cfg(obj, i))
     # A dim dome keeps the background dark so renders overlay cleanly on real frames;

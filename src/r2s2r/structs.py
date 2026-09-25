@@ -178,6 +178,9 @@ class SceneSpec:
     reference_step: int
     joint_positions: NDArray[np.float64]  # robot state at the reference step
     provenance: dict[str, Any] = field(default_factory=dict)
+    # Support outline as a rectangle centred on T_base_support (x, y sizes in its
+    # frame); None when only the plane is known.
+    support_extent: tuple[float, float] | None = None
 
     def save(self, root: str | Path) -> Path:
         """Write ``scene.json`` into ``root``."""
@@ -203,4 +206,9 @@ class SceneSpec:
             reference_step=int(d["reference_step"]),
             joint_positions=_array(d["joint_positions"]),
             provenance=d.get("provenance", {}),
+            support_extent=(
+                None
+                if d.get("support_extent") is None
+                else (float(d["support_extent"][0]), float(d["support_extent"][1]))
+            ),
         )
