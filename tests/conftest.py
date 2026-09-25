@@ -1,8 +1,12 @@
-"""Shared fixtures: a tiny synthetic DROID episode and its calibration files."""
+"""Shared fixtures: a tiny synthetic DROID episode and its calibration files; the ``gl``
+marker for tests that render with MuJoCo."""
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from functools import cache
 from pathlib import Path
 
 import cv2
@@ -16,6 +20,38 @@ SIZE = {"ext1": (32, 24), "ext2": (32, 24), "wrist": (16, 12)}  # per-eye (w, h)
 NUM_STEPS = 12
 CLOSE_STEP = 8  # gripper starts closing here
 LATENCY_MS = 41
+
+
+@cache
+def offscreen_gl() -> bool:
+    """Whether MuJoCo can render here.
+
+    Probed in a child process: without a GL driver (e.g. CI), creating a renderer
+    aborts the process instead of raising.
+    """
+    probe = (
+        "import os; os.environ.setdefault('MUJOCO_GL', 'egl'); import mujoco; "
+        "mujoco.Renderer(mujoco.MjModel.from_xml_string('<mujoco/>'), 8, 8).close()"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", probe], check=False, capture_output=True
+    )
+    return run.returncode == 0
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the ``gl`` marker."""
+    config.addinivalue_line(
+        "markers", "gl: renders with MuJoCo; skipped without offscreen GL"
+    )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip ``gl`` tests where MuJoCo cannot render."""
+    gl = [item for item in items if item.get_closest_marker("gl")]
+    if gl and not offscreen_gl():
+        for item in gl:
+            item.add_marker(pytest.mark.skip(reason="no offscreen GL rendering"))
 
 
 def _pose6d(x: float) -> list[float]:

@@ -17,7 +17,7 @@ import numpy as np
 import trimesh
 from numpy.typing import NDArray
 
-from r2s2r.mjrender import CV_TO_MJ, mujoco, quat_wxyz
+from r2s2r.mjrender import CV_TO_MJ, mujoco, quat_wxyz, set_clip_planes
 from r2s2r.policy.robot import RobotInterface
 from r2s2r.robots.franka import FRANKA_HAND_TCP, Q_READY, PandaKinematics
 from r2s2r.robots.mujoco_models import CACHE_DIR, MENAGERIE_DIR, robot_spec
@@ -103,6 +103,9 @@ class MujocoWorldConfig:
     # The capture motion points the wrist camera at this point from a few directions.
     scan_target: tuple[float, float, float] = (0.55, 0.0, 0.03)
     scan_distance: float = 0.5
+    # After the scan, the capture opens every drawer by this much and closes it
+    # again, like a teleoperated warmup demonstration (0: no interaction).
+    demo_pull: float = 0.0
     target: str = "crayon_box"  # ground-truth object a pick task should lift
     table_center: tuple[float, float] = (0.35, 0.0)
     table_size: tuple[float, float] = (1.2, 1.2)
@@ -142,6 +145,7 @@ class MujocoWorldConfig:
                 cabinets=[CabinetConfig("drawer_cabinet", (0.66, 0.27))],
                 scan_target=(0.6, 0.1, 0.06),
                 scan_distance=0.62,
+                demo_pull=0.12,
             )
         raise KeyError(f"unknown world preset {name!r} (pick, cabinet)")
 
@@ -269,6 +273,9 @@ def _add_cabinet(spec: Any, cab: CabinetConfig, wall: float = 0.012) -> None:
     inner_x, inner_y = dx - wall, dy - wall
     inner_z = dz - wall - 0.004
     drawer = body.add_body(name=f"{cab.name}_drawer", pos=[wall / 2, 0.0, dz])
+    # The drawer runs on rails: it slides along its joint without rubbing the carcass
+    # (MuJoCo's parent filter does not apply to a body welded to the world).
+    spec.add_exclude(bodyname1=cab.name, bodyname2=f"{cab.name}_drawer")
     drawer.add_joint(
         name=f"{cab.name}_slide",
         type=mujoco.mjtJoint.mjJNT_SLIDE,
@@ -483,6 +490,7 @@ class MujocoWorld:
         self.cfg = cfg or MujocoWorldConfig()
         self.spec = build_spec(self.cfg)
         self.model = self.spec.compile()
+        set_clip_planes(self.model)
         self.data = mujoco.MjData(self.model)
         self._arm_qadr = [self.model.joint(j).qposadr[0] for j in ARM_JOINTS]
         self._finger_qadr = [self.model.joint(j).qposadr[0] for j in FINGER_JOINTS]

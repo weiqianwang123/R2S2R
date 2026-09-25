@@ -1,37 +1,20 @@
 """Tests for reconstruct/orientation.py on synthetic objects (needs GL rendering)."""
 
 import json
-import subprocess
-import sys
 
 import numpy as np
 import pytest
 import trimesh
 
-
-def _offscreen_gl() -> bool:
-    """Whether MuJoCo can render here.
-
-    Probed in a child process: without a GL
-    driver (e.g. CI), creating a renderer aborts the process instead of raising.
-    """
-    probe = (
-        "import os; os.environ.setdefault('MUJOCO_GL', 'egl'); import mujoco; "
-        "mujoco.Renderer(mujoco.MjModel.from_xml_string('<mujoco/>'), 8, 8).close()"
-    )
-    run = subprocess.run(
-        [sys.executable, "-c", probe], check=False, capture_output=True
-    )
-    return run.returncode == 0
-
-
-if not _offscreen_gl():
-    pytest.skip("no offscreen GL rendering", allow_module_level=True)
+pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
 from r2s2r.reconstruct import orientation  # noqa: E402
+from r2s2r.reconstruct.render import SceneRenderer  # noqa: E402
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec  # noqa: E402
 from r2s2r.transforms import intrinsics_matrix, make_transform  # noqa: E402
+
+pytestmark = pytest.mark.gl
 
 K = intrinsics_matrix(300.0, 300.0, 159.5, 119.5)
 
@@ -81,9 +64,7 @@ def _scene(urdf, T):
 
 def _views(scene):
     """Depth and colour of ``scene`` from three cameras around the object."""
-    renderer = orientation._SceneRenderer(  # pylint: disable=protected-access
-        scene, (320, 240)
-    )
+    renderer = SceneRenderer(scene, (320, 240))
     renderer.pose(0, scene.objects[0].T_base_obj)
     views = []
     for eye in ((0.1, 0.3, 0.4), (0.5, -0.45, 0.35), (0.95, 0.2, 0.4)):

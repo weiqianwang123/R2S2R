@@ -32,13 +32,12 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-from r2s2r.assets import urdf_visual_meshes, urdf_visual_points
-from r2s2r.mjrender import CameraRenderer, add_camera, mujoco, quat_wxyz
+from r2s2r.assets import urdf_visual_points
+from r2s2r.reconstruct.render import SceneRenderer
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
 from r2s2r.transforms import make_transform
 
 VLM = Callable[[str, list[Path]], str]
-FAR = (100.0, 100.0, -100.0)  # where hidden bodies go
 
 PROMPT = """Image 1 is a photo that shows a {name}.
 Images 2 to {last} show a 3D model of that object, rendered from the camera that took
@@ -60,84 +59,6 @@ class OrientationConfig:
     keep_margin: float = 0.003
     crop_margin: float = 0.25  # of the object's box, around the VLM's image crops
     max_size: tuple[int, int] = (2560, 1600)
-
-
-class _SceneRenderer:
-    """The support and every object's visual meshes (textured) as mocap bodies."""
-
-    def __init__(self, scene: SceneSpec, max_size: tuple[int, int]) -> None:
-        spec = mujoco.MjSpec()
-        add_camera(spec, max_size)
-        spec.visual.headlight.ambient = [0.5, 0.5, 0.5]
-        spec.visual.headlight.diffuse = [0.5, 0.5, 0.5]
-        support = spec.worldbody.add_body(
-            name="support",
-            pos=scene.T_base_support[:3, 3].tolist(),
-            quat=quat_wxyz(scene.T_base_support[:3, :3]),
-        )
-        support.add_geom(
-            type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[3.0, 3.0, 0.001],
-            pos=[0, 0, -0.001],
-            rgba=[0.5, 0.5, 0.5, 1.0],
-        )
-        for i, obj in enumerate(scene.objects):
-            body = spec.worldbody.add_body(name=f"obj{i}", mocap=True)
-            for j, visual in enumerate(urdf_visual_meshes(obj.asset_path)):
-                _add_mesh(spec, body, f"obj{i}_{j}", visual)
-        self.model = spec.compile()
-        self.data = mujoco.MjData(self.model)
-        self.camera = CameraRenderer(self.model, self.data, max_size)
-        self.bodies = [self.model.body(f"obj{i}").id for i in range(len(scene.objects))]
-
-    def pose(self, index: int, T: NDArray | None) -> None:
-        """Place object ``index`` (None: out of view)."""
-        mocap = self.model.body_mocapid[self.bodies[index]]
-        if T is None:
-            self.data.mocap_pos[mocap] = FAR
-            return
-        self.data.mocap_pos[mocap] = T[:3, 3]
-        self.data.mocap_quat[mocap] = quat_wxyz(T[:3, :3])
-
-    def render(self, view: DepthView, index: int) -> dict[str, NDArray]:
-        """The view's render; ``mask`` marks the pixels object ``index`` covers."""
-        h, w = view.depth.shape
-        out = self.camera.render(view.K, w, h, view.T_base_cam)
-        geom_body = self.model.geom_bodyid[np.maximum(out["geom"], 0)]
-        out["mask"] = (out["geom"] >= 0) & (geom_body == self.bodies[index])
-        return out
-
-    def close(self) -> None:
-        """Free the GL contexts."""
-        self.camera.close()
-
-
-def _add_mesh(spec: Any, body: Any, name: str, visual: Any) -> None:
-    mesh = visual.mesh
-    uv = getattr(mesh.visual, "uv", None)
-    kwargs: dict[str, Any] = {}
-    if visual.texture is not None and uv is not None and len(uv) == len(mesh.vertices):
-        # OBJ images start at the bottom-left; MuJoCo's at the top-left.
-        kwargs["usertexcoord"] = np.c_[uv[:, 0], 1.0 - uv[:, 1]].reshape(-1).tolist()
-        spec.add_texture(
-            name=f"{name}_tex",
-            type=mujoco.mjtTexture.mjTEXTURE_2D,
-            file=str(visual.texture),
-        )
-        material = spec.add_material(name=f"{name}_mat")
-        material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = f"{name}_tex"
-    spec.add_mesh(
-        name=name,
-        uservert=np.asarray(mesh.vertices).reshape(-1).tolist(),
-        userface=np.asarray(mesh.faces).reshape(-1).tolist(),
-        **kwargs,
-    )
-    body.add_geom(
-        type=mujoco.mjtGeom.mjGEOM_MESH,
-        meshname=name,
-        material=f"{name}_mat" if kwargs else "",
-        rgba=[1, 1, 1, 1] if kwargs else [0.75, 0.75, 0.75, 1],
-    )
 
 
 def turned(obj: ObjectSpec, T_base_support: NDArray, degrees: float) -> NDArray:
@@ -163,7 +84,7 @@ def check_orientations(
     ``image_dir`` keeps the images shown to the VLM (``<object>/*.png``).
     """
     cfg = config or OrientationConfig()
-    renderer = _SceneRenderer(scene, cfg.max_size)
+    renderer = SceneRenderer(scene, cfg.max_size)
     objects = list(scene.objects)
     report: dict[str, Any] = {}
     try:
@@ -205,7 +126,7 @@ def check_orientations(
 
 
 def _residuals(
-    renderer: _SceneRenderer,
+    renderer: SceneRenderer,
     index: int,
     poses: dict[float, NDArray],
     views: list[DepthView],
@@ -240,7 +161,7 @@ def _residuals(
 
 
 def _ask_vlm(
-    renderer: _SceneRenderer,
+    renderer: SceneRenderer,
     index: int,
     obj: ObjectSpec,
     poses: dict[float, NDArray],
@@ -259,7 +180,7 @@ def _ask_vlm(
     with_image = [v for v in views if v.image is not None]
     if not with_image:
         return fallback, "no image"
-    for k in range(len(renderer.bodies)):  # the object alone, over nothing
+    for k in range(len(renderer.links)):  # the object alone, over nothing
         renderer.pose(k, None)
     renders = {}
     best_view, best_area = None, 0

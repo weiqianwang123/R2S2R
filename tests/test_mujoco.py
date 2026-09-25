@@ -1,33 +1,11 @@
 """Tests for real/mujoco/ (skipped without MuJoCo, its assets or GL rendering)."""
 
-import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 pytest.importorskip("mujoco")
-
-
-def _offscreen_gl() -> bool:
-    """Whether MuJoCo can render here.
-
-    Probed in a child process: without a GL
-    driver (e.g. CI), creating a renderer aborts the process instead of raising.
-    """
-    probe = (
-        "import os; os.environ.setdefault('MUJOCO_GL', 'egl'); import mujoco; "
-        "mujoco.Renderer(mujoco.MjModel.from_xml_string('<mujoco/>'), 8, 8).close()"
-    )
-    run = subprocess.run(
-        [sys.executable, "-c", probe], check=False, capture_output=True
-    )
-    return run.returncode == 0
-
-
-if not _offscreen_gl():
-    pytest.skip("no offscreen GL rendering", allow_module_level=True)
 
 # pylint: disable=wrong-import-position
 from r2s2r.real.mujoco import world as mw  # noqa: E402
@@ -37,11 +15,14 @@ from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH, PandaKinematics  # noqa: 
 from r2s2r.robots.mask import NO_ROBOT, RobotMasker  # noqa: E402
 from r2s2r.structs import DepthView  # noqa: E402
 
-pytestmark = pytest.mark.skipif(
-    not (Path(mw.MujocoWorldConfig().menagerie_dir) / "franka_emika_panda").exists()
-    or not Path(mw.MujocoWorldConfig().gso_dir).exists(),
-    reason="MuJoCo assets not fetched (scripts/setup/fetch_mujoco_assets.sh)",
-)
+pytestmark = [
+    pytest.mark.gl,
+    pytest.mark.skipif(
+        not (Path(mw.MujocoWorldConfig().menagerie_dir) / "franka_emika_panda").exists()
+        or not Path(mw.MujocoWorldConfig().gso_dir).exists(),
+        reason="MuJoCo assets not fetched (scripts/setup/fetch_mujoco_assets.sh)",
+    ),
+]
 
 
 @pytest.fixture(name="world", scope="module")
@@ -122,3 +103,18 @@ def test_capture_records_the_requested_cameras(tmp_path):
     poses = np.stack([f.T_base_cam for f in capture.frames])
     assert len(capture.frames) > 3 and np.ptp(poses[:, :3, 3], axis=0).max() > 0.1
     assert all(f.depth_image for f in capture.frames)
+
+
+def test_cabinet_capture_opens_and_closes_the_drawer(tmp_path):
+    """After the static scan, the demonstration pulls the drawer out by about
+    ``demo_pull`` and pushes it back; the static period ends before it."""
+    cfg = mw.MujocoWorldConfig.preset("cabinet")
+    capture = record_capture(tmp_path / "cap", cfg, cameras=["ext2"], every=100)
+    recorded = {
+        int(t): q["drawer_cabinet_slide"]
+        for t, q in capture.metadata["ground_truth_joints"].items()
+    }
+    end = capture.static_steps[1]
+    assert max(abs(q) for t, q in recorded.items() if t < end) < 1e-3
+    assert max(recorded.values()) > cfg.demo_pull - 0.01
+    assert abs(recorded[max(recorded)]) < 0.01  # closed again

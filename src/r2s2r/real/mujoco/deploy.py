@@ -130,15 +130,7 @@ def articulation_errors(
 ) -> dict[str, dict[str, Any]]:
     """Compare every reconstructed articulated object's joints with the nearest ground-
     truth cabinet's drawer: joint type, axis angle (sign-free) and travel."""
-    cfg = _world_config(capture)
-    truth = {}
-    for cab in cfg.cabinets:
-        yaw = np.deg2rad(cab.yaw_deg)
-        truth[cab.name] = {
-            "centre": np.array([cab.xy[0], cab.xy[1], cab.size[2] / 2]),
-            "axis": np.array([np.cos(yaw), np.sin(yaw), 0.0]),
-            "travel": cab.travel,
-        }
+    truth = _cabinets(capture)
     out: dict[str, dict[str, Any]] = {}
     for obj in scene.objects:
         if not obj.articulated:
@@ -173,6 +165,64 @@ def articulation_errors(
             entry["joints"].append(row)
         out[obj.name] = entry
     return out
+
+
+def trajectory_errors(
+    scene: SceneSpec, capture: Capture, report: dict[str, Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """Compare the joint trajectories :func:`~r2s2r.reconstruct.joints.fit_joints`
+    fitted (``report``) with the drawer positions recorded in the capture, each fitted
+    axis signed to the true opening direction."""
+    recorded = capture.metadata.get("ground_truth_joints", {})
+    truth = _cabinets(capture)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for name, entry in articulation_errors(scene, capture).items():
+        if name not in report or "ground_truth" not in entry:
+            continue
+        cab = entry["ground_truth"]
+        rows = []
+        for joint in entry["joints"]:
+            fit = report[name]["joints"].get(joint["name"])
+            if fit is None:
+                continue
+            sign = 1.0 if np.dot(joint["axis_base"], truth[cab]["axis"]) >= 0 else -1.0
+            pairs = [
+                (sign * q, recorded[t][f"{cab}_slide"])
+                for t, q in fit["trajectory"].items()
+                if q is not None and t in recorded
+            ]
+            err = [abs(q - g) for q, g in pairs]
+            true = [
+                recorded[t][f"{cab}_slide"] for t in fit["trajectory"] if t in recorded
+            ]
+            rows.append(
+                {
+                    "joint": joint["name"],
+                    "cabinet": cab,
+                    "observed": f"{len(pairs)}/{len(fit['trajectory'])}",
+                    "median_error_m": round(float(np.median(err)), 4) if err else None,
+                    "max_error_m": round(float(np.max(err)), 4) if err else None,
+                    "fitted_max_m": (
+                        round(max(q for q, _ in pairs), 4) if pairs else None
+                    ),
+                    "true_max_m": round(max(true), 4) if true else None,
+                }
+            )
+        out[name] = rows
+    return out
+
+
+def _cabinets(capture: Capture) -> dict[str, dict[str, Any]]:
+    """Every cabinet's centre, drawer opening direction and travel (base frame)."""
+    truth = {}
+    for cab in _world_config(capture).cabinets:
+        yaw = np.deg2rad(cab.yaw_deg)
+        truth[cab.name] = {
+            "centre": np.array([cab.xy[0], cab.xy[1], cab.size[2] / 2]),
+            "axis": np.array([np.cos(yaw), np.sin(yaw), 0.0]),
+            "travel": cab.travel,
+        }
+    return truth
 
 
 def run_pick(

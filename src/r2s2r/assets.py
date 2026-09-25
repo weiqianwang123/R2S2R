@@ -73,27 +73,30 @@ def make_sim_ready(
 
 
 # ----------------------------------------------------------------------- readers
-def urdf_link_poses(root: ET.Element) -> dict[str, NDArray[np.float64]]:
-    """``T_root_link`` of every link at zero joint positions."""
+def urdf_link_poses(
+    root: ET.Element, joint_positions: dict[str, float] | None = None
+) -> dict[str, NDArray[np.float64]]:
+    """``T_root_link`` of every link, with the named joints moved (metres for prismatic
+    joints, radians for revolute ones) and every other joint at zero."""
+    joint_positions = joint_positions or {}
     joints = {_link(j, "child"): j for j in root.iter("joint")}
     poses = {}
     for link in root.iter("link"):
         name = link.attrib["name"]
         T = np.eye(4)
         while name in joints:
-            T = _origin(joints[name]) @ T
+            T = _joint_transform(joints[name], joint_positions) @ T
             name = _link(joints[name], "parent")
         poses[link.attrib["name"]] = T
     return poses
 
 
-def urdf_visual_meshes(urdf_path: str | Path) -> list[VisualMesh]:
-    """Every visual mesh, posed in the root link frame at zero joint positions."""
+def urdf_link_visuals(urdf_path: str | Path) -> dict[str, list[VisualMesh]]:
+    """Every link's visual meshes, each in its own link frame."""
     urdf_path = Path(urdf_path)
-    root = ET.parse(urdf_path).getroot()
-    poses = urdf_link_poses(root)
-    out = []
-    for link in root.iter("link"):
+    out: dict[str, list[VisualMesh]] = {}
+    for link in ET.parse(urdf_path).getroot().iter("link"):
+        meshes = []
         for visual in link.iter("visual"):
             mesh_el = visual.find("geometry/mesh")
             if mesh_el is None:
@@ -102,8 +105,45 @@ def urdf_visual_meshes(urdf_path: str | Path) -> list[VisualMesh]:
             mesh = trimesh.load(path, force="mesh")
             assert isinstance(mesh, trimesh.Trimesh), f"{path} is not a single mesh"
             mesh.apply_transform(np.diag([*_vector(mesh_el, "scale", "1 1 1"), 1.0]))
-            mesh.apply_transform(poses[link.attrib["name"]] @ _origin(visual))
-            out.append(VisualMesh(mesh, _base_color_texture(path)))
+            mesh.apply_transform(_origin(visual))
+            meshes.append(VisualMesh(mesh, _base_color_texture(path)))
+        if meshes:
+            out[link.attrib["name"]] = meshes
+    return out
+
+
+def urdf_link_collisions(urdf_path: str | Path) -> dict[str, list[trimesh.Trimesh]]:
+    """Every link's collision meshes, each in its own link frame."""
+    urdf_path = Path(urdf_path)
+    out: dict[str, list[trimesh.Trimesh]] = {}
+    for link in ET.parse(urdf_path).getroot().iter("link"):
+        meshes = []
+        for collision in link.iter("collision"):
+            mesh_el = collision.find("geometry/mesh")
+            if mesh_el is None:
+                continue
+            path = urdf_path.parent / mesh_el.attrib["filename"]
+            mesh = trimesh.load(path, force="mesh")
+            assert isinstance(mesh, trimesh.Trimesh), f"{path} is not a single mesh"
+            mesh.apply_transform(np.diag([*_vector(mesh_el, "scale", "1 1 1"), 1.0]))
+            mesh.apply_transform(_origin(collision))
+            meshes.append(mesh)
+        if meshes:
+            out[link.attrib["name"]] = meshes
+    return out
+
+
+def urdf_visual_meshes(
+    urdf_path: str | Path, joint_positions: dict[str, float] | None = None
+) -> list[VisualMesh]:
+    """Every visual mesh, posed in the root link frame (joints at zero unless given)."""
+    poses = urdf_link_poses(ET.parse(urdf_path).getroot(), joint_positions)
+    out = []
+    for link, meshes in urdf_link_visuals(urdf_path).items():
+        for visual in meshes:
+            mesh = visual.mesh.copy()
+            mesh.apply_transform(poses[link])
+            out.append(VisualMesh(mesh, visual.texture))
     if not out:
         raise ValueError(f"no visual meshes in {urdf_path}")
     return out
@@ -124,8 +164,9 @@ def urdf_visual_points(
 def urdf_movable_joints(urdf_path: str | Path) -> list[dict[str, Any]]:
     """Movable joints with their axis and pivot in the root link frame.
 
-    Each entry: ``name``, ``type``, ``lower``/``upper`` (None when unlimited),
-    ``axis`` (unit vector) and ``origin`` (the joint frame's position).
+    Each entry: ``name``, ``type``, ``parent`` / ``child`` links, ``lower`` / ``upper``
+    (None when unlimited), ``axis`` (unit vector) and ``origin`` (the joint frame's
+    position).
     """
     root = ET.parse(urdf_path).getroot()
     poses = urdf_link_poses(root)
@@ -141,6 +182,8 @@ def urdf_movable_joints(urdf_path: str | Path) -> list[dict[str, Any]]:
             {
                 "name": joint.attrib["name"],
                 "type": kind,
+                "parent": _link(joint, "parent"),
+                "child": _link(joint, "child"),
                 "lower": lower,
                 "upper": upper,
                 "axis": (T[:3, :3] @ axis / np.linalg.norm(axis)).tolist(),
@@ -229,6 +272,22 @@ def _base_color_texture(mesh_path: Path) -> Path | None:
                     texture = mtl.parent / mline.split(maxsplit=1)[1].strip()
                     return texture if texture.exists() else None
     return None
+
+
+def _joint_transform(
+    joint: ET.Element, joint_positions: dict[str, float]
+) -> NDArray[np.float64]:
+    """Parent-to-child transform of a joint at its given (or zero) position."""
+    T = _origin(joint)
+    q = joint_positions.get(joint.attrib.get("name", ""), 0.0)
+    kind = joint.attrib.get("type")
+    if q == 0.0 or kind not in MOVABLE_JOINTS:
+        return T
+    axis = _vector(joint.find("axis"), "xyz", "1 0 0")
+    axis = axis / np.linalg.norm(axis)
+    if kind == "prismatic":
+        return T @ make_transform(np.eye(3), axis * q)
+    return T @ make_transform(Rotation.from_rotvec(axis * q).as_matrix(), np.zeros(3))
 
 
 def _limits(joint: ET.Element) -> tuple[float | None, float | None]:

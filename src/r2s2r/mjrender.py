@@ -20,12 +20,21 @@ import mujoco  # noqa: E402  pylint: disable=wrong-import-position,wrong-import-
 # OpenCV camera axes -> MuJoCo camera axes (x right, y up, looking along -z).
 CV_TO_MJ = np.diag([1.0, -1.0, -1.0])
 CAMERA_NAME = "r2s2r_camera"
+# Clip planes in metres. MuJoCo scales its own by the model's extent, which puts the
+# near plane centimetres out in a large scene and cuts off what a wrist camera sees.
+NEAR, FAR = 0.005, 50.0
 
 
 def quat_wxyz(R: NDArray) -> list[float]:
     """MuJoCo quaternion of a rotation matrix."""
     x, y, z, w = Rotation.from_matrix(R).as_quat()
     return [float(w), float(x), float(y), float(z)]
+
+
+def set_clip_planes(model: Any, near: float = NEAR, far: float = FAR) -> None:
+    """Fix a compiled model's clip planes in metres."""
+    model.vis.map.znear = near / model.stat.extent
+    model.vis.map.zfar = far / model.stat.extent
 
 
 def add_camera(spec: Any, max_size: tuple[int, int]) -> None:
@@ -40,6 +49,7 @@ class CameraRenderer:
     def __init__(self, model: Any, data: Any, max_size: tuple[int, int]) -> None:
         self.model, self.data = model, data
         self.max_size = max_size
+        set_clip_planes(model)
         self.cam = model.camera(CAMERA_NAME).id
         self._renderers: dict[tuple[int, int], Any] = {}
 
