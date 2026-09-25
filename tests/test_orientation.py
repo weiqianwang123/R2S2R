@@ -1,12 +1,32 @@
 """Tests for reconstruct/orientation.py on synthetic objects (needs GL rendering)."""
 
 import json
+import subprocess
+import sys
 
 import numpy as np
 import pytest
 import trimesh
 
-pytest.importorskip("mujoco")
+
+def _offscreen_gl() -> bool:
+    """Whether MuJoCo can render here.
+
+    Probed in a child process: without a GL
+    driver (e.g. CI), creating a renderer aborts the process instead of raising.
+    """
+    probe = (
+        "import os; os.environ.setdefault('MUJOCO_GL', 'egl'); import mujoco; "
+        "mujoco.Renderer(mujoco.MjModel.from_xml_string('<mujoco/>'), 8, 8).close()"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", probe], check=False, capture_output=True
+    )
+    return run.returncode == 0
+
+
+if not _offscreen_gl():
+    pytest.skip("no offscreen GL rendering", allow_module_level=True)
 
 # pylint: disable=wrong-import-position
 from r2s2r.reconstruct import orientation  # noqa: E402
@@ -73,17 +93,6 @@ def _views(scene):
         views.append(DepthView("cam", 0, out["depth"].astype(float), K, T, out["rgb"]))
     renderer.close()
     return views
-
-
-@pytest.fixture(name="gl", autouse=True)
-def fixture_gl():
-    """Skip where MuJoCo cannot open an offscreen GL context (e.g. CI)."""
-    mujoco = orientation.mujoco
-    model = mujoco.MjModel.from_xml_string("<mujoco/>")
-    try:
-        mujoco.Renderer(model, 8, 8).close()
-    except Exception as exc:  # pylint: disable=broad-except
-        pytest.skip(f"no offscreen rendering: {exc}")
 
 
 def test_geometry_turns_an_asymmetric_object_back(tmp_path):

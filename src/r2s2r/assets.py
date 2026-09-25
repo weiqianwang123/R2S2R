@@ -188,6 +188,7 @@ def _add_resting_base(
     except ValueError:  # nothing to take the footprint from
         return
     mesh = trimesh.util.concatenate([v.mesh for v in visuals])
+    assert isinstance(mesh, trimesh.Trimesh)
     mesh.apply_transform(T_support_obj)
     z0 = float(mesh.bounds[0, 2])
     if abs(z0) > cfg.contact_tolerance:

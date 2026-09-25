@@ -1,11 +1,33 @@
-"""Tests for real/mujoco/ (skipped without MuJoCo or its assets)."""
+"""Tests for real/mujoco/ (skipped without MuJoCo, its assets or GL rendering)."""
 
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 pytest.importorskip("mujoco")
+
+
+def _offscreen_gl() -> bool:
+    """Whether MuJoCo can render here.
+
+    Probed in a child process: without a GL
+    driver (e.g. CI), creating a renderer aborts the process instead of raising.
+    """
+    probe = (
+        "import os; os.environ.setdefault('MUJOCO_GL', 'egl'); import mujoco; "
+        "mujoco.Renderer(mujoco.MjModel.from_xml_string('<mujoco/>'), 8, 8).close()"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", probe], check=False, capture_output=True
+    )
+    return run.returncode == 0
+
+
+if not _offscreen_gl():
+    pytest.skip("no offscreen GL rendering", allow_module_level=True)
 
 # pylint: disable=wrong-import-position
 from r2s2r.real.mujoco import world as mw  # noqa: E402
