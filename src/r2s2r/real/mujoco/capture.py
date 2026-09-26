@@ -11,7 +11,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from numpy.typing import NDArray
 
 from r2s2r.io.rgbd import write_depth
 from r2s2r.real.mujoco.world import (
@@ -22,7 +21,7 @@ from r2s2r.real.mujoco.world import (
 )
 from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH, Q_READY
 from r2s2r.structs import DEPTH_PNG_SCALE, Capture, FrameRecord
-from r2s2r.transforms import invert, make_transform
+from r2s2r.transforms import invert
 
 # The depth sensor's range in metres; outside it there is no return (0). The near
 # limit is the ZED Mini's, on DROID's wrist; beyond the far one is the sky.
@@ -53,51 +52,6 @@ def _capture_motion(
     robot.move_joints(Q_READY)
 
 
-def _demo_interaction(robot: MujocoRobot, world: MujocoWorld) -> None:
-    """Open every drawer by ``demo_pull`` and close it again, gripping the handle from
-    the front, and pause in between with the arm out of the way.
-
-    MuJoCo is the real world here, so the demonstration may use its ground truth, as a
-    teleoperator would use their eyes.
-    """
-    if world.cfg.demo_pull > 0:
-        for cab in world.cfg.cabinets:
-            _open_and_close(robot, world, cab.name, world.cfg.demo_pull)
-
-
-def _open_and_close(
-    robot: MujocoRobot, world: MujocoWorld, cabinet: str, pull: float
-) -> None:
-    """Pull ``cabinet``'s drawer ``pull`` metres out by its handle, then push it
-    back."""
-    drawer = world.data.body(f"{cabinet}_drawer")
-    axis = drawer.xmat.reshape(3, 3) @ world.model.joint(f"{cabinet}_slide").axis
-    axis = axis / np.linalg.norm(axis)  # the opening direction
-    z = -axis  # the hand approaches against it
-    y = np.array([0.0, 0.0, 1.0])  # fingers close vertically around the bar
-    grasp = make_transform(np.column_stack([np.cross(y, z), y, z]), np.zeros(3))
-
-    def at(offset: float) -> NDArray[np.float64]:
-        T = grasp.copy()
-        T[:3, 3] = world.data.geom(f"{cabinet}_handle").xpos + offset * axis
-        return T
-
-    for direction in (1.0, -1.0):  # open, then close
-        robot.set_gripper(False, 0.5)
-        # Turning the hand to face the handle is a large reorientation: go to a
-        # well-conditioned configuration in joint space, then approach.
-        robot.move_joints(robot.kin.solve(at(0.08), robot.q_command).q)
-        robot.move_tcp(at(0.0), speed=0.05)
-        robot.set_gripper(True, 1.0)
-        T = at(0.0)
-        T[:3, 3] += direction * pull * axis
-        robot.move_tcp(T, speed=0.05)
-        robot.set_gripper(False, 0.8)
-        robot.move_tcp(at(0.08), speed=0.1)
-        robot.move_joints(Q_READY)
-        robot.wait(1.5)
-
-
 def record_capture(
     out_dir: str | Path,
     cfg: MujocoWorldConfig | None = None,
@@ -106,8 +60,8 @@ def record_capture(
     every: int = 5,
     cameras: list[str] | None = None,
 ) -> Capture:
-    """Run the capture motion and save RGB-D frames of ``cameras`` (default: all) every
-    ``every`` control steps."""
+    """Run the capture motion and save RGB-D frames of ``cameras`` (default: all) with
+    the robot's joint state every ``every`` control steps."""
     out_dir = Path(out_dir)
     world = MujocoWorld(cfg)
     world.reset()
@@ -119,15 +73,10 @@ def record_capture(
         )
     cameras_ = {n: world.camera_spec(n) for n in names}
     frames: list[FrameRecord] = []
-    joints: dict[str, dict[str, float]] = {}  # ground truth, for scoring only
 
     def grab(robot: MujocoRobot) -> None:
         if robot.steps % every:
             return
-        joints[str(robot.steps)] = {
-            f"{c.name}_slide": world.joint_position(f"{c.name}_slide")
-            for c in world.cfg.cabinets
-        }
         q, width = world.arm_q(), world.finger_width()
         for cam_name, spec in cameras_.items():
             rgb, depth = world.render(cam_name)
@@ -154,8 +103,6 @@ def record_capture(
     robot = MujocoRobot(world, on_step=grab)
     grab(robot)
     _capture_motion(robot, world)
-    static_end = robot.steps + 1
-    _demo_interaction(robot, world)
     capture = Capture(
         name=name,
         source="mujoco",
@@ -163,16 +110,13 @@ def record_capture(
         instruction=instruction,
         cameras={c.serial: c for c in cameras_.values()},
         frames=frames,
-        static_steps=(0, static_end),
+        static_steps=(0, robot.steps + 1),
         root=out_dir,
         metadata={
             "world_config": world.cfg.as_dict(),
             "depth_png_scale": DEPTH_PNG_SCALE,
-            "ground_truth_joints": joints,
             "ground_truth_T_base_obj": {
-                name: world.object_pose(name).tolist()
-                for name in [o.name for o in world.cfg.objects]
-                + [c.name for c in world.cfg.cabinets]
+                o.name: world.object_pose(o.name).tolist() for o in world.cfg.objects
             },
         },
     )

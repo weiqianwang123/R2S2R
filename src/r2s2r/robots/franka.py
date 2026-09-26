@@ -143,33 +143,3 @@ class PandaKinematics:
         return IKResult(
             q, pos_err, rot_err, bool(pos_err < pos_tol and rot_err < rot_tol)
         )
-
-    def solve(
-        self,
-        T_target: NDArray,
-        q_seed: NDArray,
-        n_seeds: int = 24,
-        seed: int = 0,
-    ) -> IKResult:
-        """IK from ``q_seed`` and random seeds; the converged solution farthest from the
-        joint limits (in shares of each joint's range).
-
-        For goals far from the current pose, where following a Cartesian path would drag
-        the arm into its limits; move there in joint space.
-        """
-        rng = np.random.default_rng(seed)
-        span = self.q_max - self.q_min
-        seeds = [np.asarray(q_seed, float)] + [
-            self.q_min + 0.1 * span + rng.random(7) * 0.8 * span for _ in range(n_seeds)
-        ]
-        best, best_margin = None, -np.inf
-        for q0 in seeds:
-            sol = self.ik(T_target, q0, max_iters=300)
-            if not sol.converged:
-                continue
-            margin = float(
-                np.min(np.minimum(sol.q - self.q_min, self.q_max - sol.q) / span)
-            )
-            if margin > best_margin:
-                best, best_margin = sol, margin
-        return best if best is not None else self.ik(T_target, q_seed)

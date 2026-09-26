@@ -11,6 +11,10 @@ DROID exterior cameras at the reference step) in the robot base frame and
    matching top-down footprints (yaw about the support normal plus in-plane
    shift), then puts objects that rested on the support back in contact with it.
 
+Points above the support are clustered, and each cluster is matched to at most one
+object: the one whose surface and the cluster's points lie closest on average, so a
+flat object does not take a tall one's points.
+
 Mesh shape, scale and tilt are kept; only where the objects stand changes.
 """
 
@@ -25,6 +29,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
 from scipy.optimize import linear_sum_assignment
+from scipy.spatial import cKDTree  # pylint: disable=no-name-in-module
 from scipy.spatial.transform import Rotation
 
 from r2s2r.assets import urdf_visual_points
@@ -46,7 +51,10 @@ class RefineConfig:
     outline_margin: float = 0.05  # object points may overhang the outline
     cluster_voxel: float = 0.01
     min_cluster_points: int = 30
-    max_match_distance: float = 0.25
+    # An object matches a cluster whose points and its surface lie this close on
+    # average (each way); the matching is one-to-one.
+    max_match_cost: float = 0.05
+    match_points: int = 2000  # of the model and of each cluster, for matching
     model_points: int = 4000
     min_iou_gain: float = 0.02  # keep the backend's pose unless the fit improves
     contact_tolerance: float = 0.03  # objects this close to the support rest on it
@@ -206,10 +214,25 @@ def register_footprint(
     return T, before, after
 
 
-def refine_scene(
+@dataclass
+class Observation:
+    """What the fused depth shows: the support's outline, and the clusters of points
+    above it, matched one-to-one to the scene's objects."""
+
+    T_base_support: NDArray[np.float64]  # at the outline's centre, turned with it
+    size: tuple[float, float]  # the outline's rectangle
+    yaw: float  # its turn from the backend's support frame
+    above: NDArray[np.float64]  # points above the support, in the frame above
+    groups: list  # clusters: index arrays into ``above``
+    matches: dict[int, int]  # object index -> cluster index
+
+
+def observe(
     scene: SceneSpec, views: list[DepthView], cfg: RefineConfig | None = None
-) -> tuple[SceneSpec, dict[str, Any]]:
-    """Refit the support outline and object placements from ``views``."""
+) -> Observation:
+    """Fit the support's outline to ``views``, cluster the points above it, and match
+    the clusters to the objects one-to-one, by how close each cluster's points and the
+    object's surface lie."""
     cfg = cfg or RefineConfig()
     pts = np.concatenate([view_points(v, cfg.max_depth) for v in views])
     pts_s = to_frame(scene.T_base_support, pts)
@@ -228,8 +251,7 @@ def refine_scene(
     centre, size, yaw = fit_support_outline(
         pts_s, obj_xy.mean(0), cfg.support_band, cfg.support_cell
     )
-    T_old_new = _planar(yaw, *centre)
-    T_base_support = scene.T_base_support @ T_old_new
+    T_base_support = scene.T_base_support @ _planar(yaw, *centre)
     pts_s = to_frame(T_base_support, pts)
     half = np.array(size) / 2 + cfg.outline_margin
 
@@ -240,29 +262,58 @@ def refine_scene(
         & np.all(np.abs(pts_s[:, :2]) < half, axis=1)
     ]
     groups = cluster(above, cfg.cluster_voxel, cfg.min_cluster_points)
+    rng = np.random.default_rng(0)
+    clusters = [
+        cKDTree(above[rng.choice(g, min(cfg.match_points, len(g)), replace=False)])
+        for g in groups
+    ]
+    cost = np.full((len(scene.objects), max(len(groups), 1)), 1e6)
+    for i, obj in enumerate(scene.objects):
+        T = invert(T_base_support) @ obj.T_base_obj
+        model = urdf_visual_points(obj.asset_path, cfg.match_points)
+        surface = cKDTree(model @ T[:3, :3].T + T[:3, 3])
+        for j, tree in enumerate(clusters):
+            cost[i, j] = 0.5 * (
+                surface.query(tree.data)[0].mean() + tree.query(surface.data)[0].mean()
+            )
+    matches = match_clusters(cost, cfg.max_match_cost) if groups else {}
+    return Observation(T_base_support, size, yaw, above, groups, matches)
+
+
+def match_clusters(cost: NDArray[np.float64], max_cost: float) -> dict[int, int]:
+    """One-to-one object -> cluster matches of least total cost, among the pairs under
+    ``max_cost``.
+
+    Gating first matters: otherwise an object that fits no cluster can
+    take the cluster of one that does, leaving both unmatched.
+    """
+    feasible = cost < max_cost
+    rows, cols = linear_sum_assignment(np.where(feasible, cost, 1e6))
+    return {int(r): int(c) for r, c in zip(rows, cols) if feasible[r, c]}
+
+
+def refine_scene(
+    scene: SceneSpec, views: list[DepthView], cfg: RefineConfig | None = None
+) -> tuple[SceneSpec, dict[str, Any]]:
+    """Refit the support outline and object placements from ``views``."""
+    cfg = cfg or RefineConfig()
+    obs = observe(scene, views, cfg)
     report: dict[str, Any] = {
         "views": [{"camera": v.camera, "step": v.step} for v in views],
-        "support": {"size": list(size), "yaw_deg": float(np.rad2deg(yaw))},
-        "clusters": [int(len(g)) for g in groups],
+        "support": {"size": list(obs.size), "yaw_deg": float(np.rad2deg(obs.yaw))},
+        "clusters": [int(len(g)) for g in obs.groups],
         "objects": {},
     }
-
-    T_support_objs = [invert(T_base_support) @ o.T_base_obj for o in scene.objects]
-    cost = np.full((len(scene.objects), max(len(groups), 1)), 1e6)
-    for i, T_so in enumerate(T_support_objs):
-        for j, g in enumerate(groups):
-            cost[i, j] = np.linalg.norm(above[g, :2].mean(0) - T_so[:2, 3])
-    rows, cols = linear_sum_assignment(cost) if groups else ([], [])
-    matches = {r: c for r, c in zip(rows, cols) if cost[r, c] < cfg.max_match_distance}
+    T_support_objs = [invert(obs.T_base_support) @ o.T_base_obj for o in scene.objects]
 
     new_objects: list[ObjectSpec] = []
     for i, (obj, T_so) in enumerate(zip(scene.objects, T_support_objs)):
-        entry: dict[str, Any] = {"matched": i in matches}
+        entry: dict[str, Any] = {"matched": i in obs.matches}
         report["objects"][obj.name] = entry
-        if i not in matches:
+        if i not in obs.matches:
             new_objects.append(obj)
             continue
-        observed = above[groups[matches[i]]]
+        observed = obs.above[obs.groups[obs.matches[i]]]
         model_obj = urdf_visual_points(obj.asset_path, cfg.model_points)
         model = model_obj @ T_so[:3, :3].T + T_so[:3, 3]
         T_fix, before, after = register_footprint(model, observed)
@@ -280,13 +331,13 @@ def refine_scene(
             shift_m=float(np.linalg.norm(T_new[:3, 3] - T_so[:3, 3])),
             yaw_change_deg=float(np.rad2deg(np.arctan2(T_fix[1, 0], T_fix[0, 0]))),
         )
-        new_objects.append(replace(obj, T_base_obj=T_base_support @ T_new))
+        new_objects.append(replace(obj, T_base_obj=obs.T_base_support @ T_new))
 
     refined = replace(
         scene,
         objects=new_objects,
-        T_base_support=T_base_support,
-        support_extent=size,
+        T_base_support=obs.T_base_support,
+        support_extent=obs.size,
         provenance={**scene.provenance, "refinement": report},
     )
     return refined, report

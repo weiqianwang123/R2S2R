@@ -180,7 +180,7 @@ def _ask_vlm(
     with_image = [v for v in views if v.image is not None]
     if not with_image:
         return fallback, "no image"
-    for k in range(len(renderer.links)):  # the object alone, over nothing
+    for k in range(len(renderer.bodies)):  # the object alone, over nothing
         renderer.pose(k, None)
     renders = {}
     best_view, best_area = None, 0

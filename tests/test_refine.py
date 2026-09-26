@@ -7,6 +7,7 @@ from scipy.spatial.transform import Rotation
 
 from r2s2r.reconstruct.refine import (
     fit_support_outline,
+    match_clusters,
     refine_scene,
     register_footprint,
 )
@@ -120,3 +121,16 @@ def test_refine_scene_moves_misplaced_object(tmp_path):
     assert refined.support_extent == pytest.approx(TABLE, abs=0.03) or (
         refined.support_extent == pytest.approx(TABLE[::-1], abs=0.03)
     )
+
+
+def test_matching_gates_before_assigning():
+    """An object that fits no cluster does not take the cluster of one that does (a flat
+    marker beside a mug, their points merged into one cluster)."""
+    cost = np.array(
+        [
+            [0.069, 0.227, 0.263],  # the marker: nothing under 5 cm
+            [0.022, 0.172, 0.224],  # the mug: the merged cluster
+        ]
+    )
+    assert match_clusters(cost, 0.05) == {1: 0}
+    assert not match_clusters(np.full((2, 2), 0.3), 0.05)

@@ -37,27 +37,3 @@ def test_ik_round_trip():
     assert sol.converged
     assert np.allclose(kin.fk(sol.q), target, atol=1e-3)
     assert np.all(sol.q >= kin.q_min) and np.all(sol.q <= kin.q_max)
-
-
-def test_solve_reaches_a_far_reorientation_away_from_limits():
-    """A hand facing sideways from the ready pose: the multi-start solution reaches it
-    and keeps more margin to the joint limits than plain IK from the seed."""
-    kin = PandaKinematics()
-    z = np.array([1.0, 0.0, 0.0])  # the hand points along +x, fingers close vertically
-    y = np.array([0.0, 0.0, 1.0])
-    target = np.eye(4)
-    target[:3, :3] = np.column_stack([np.cross(y, z), y, z])
-    target[:3, 3] = [0.45, 0.15, 0.2]
-
-    def margin(q):
-        return np.min(
-            np.minimum(q - kin.q_min, kin.q_max - q) / (kin.q_max - kin.q_min)
-        )
-
-    sol = kin.solve(target, Q_READY)
-    assert sol.converged
-    assert np.allclose(kin.fk(sol.q), target, atol=1e-3)
-    plain = kin.ik(target, Q_READY)
-    if plain.converged:
-        assert margin(sol.q) >= margin(plain.q)
-    assert margin(sol.q) > 0.0

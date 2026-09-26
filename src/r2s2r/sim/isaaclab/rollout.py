@@ -83,26 +83,8 @@ def run_pick(
         "scene_backend": spec.provenance.get("backend"),
         "policy": policy,
         **score_lift(before, positions(), target),
-        "articulated_objects": _articulations(scene, names),
     }
     save_rollout(out_dir, result, robot.log)
     if video is not None:
         video.close()
     return result
-
-
-def _articulations(scene: InteractiveScene, names: dict[str, str]) -> dict[str, Any]:
-    """Joints of the articulated objects as simulated: names, limits, positions."""
-    out = {}
-    for key, art in scene.articulations.items():
-        if key not in names:  # the robot
-            continue
-        limits = art.data.joint_pos_limits[0].cpu().numpy()
-        out[names[key]] = {
-            name: {
-                "position": float(art.data.joint_pos[0, i]),
-                "limits": [float(v) for v in limits[i]],
-            }
-            for i, name in enumerate(art.joint_names)
-        }
-    return out

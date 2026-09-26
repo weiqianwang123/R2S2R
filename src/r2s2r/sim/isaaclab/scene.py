@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import isaaclab.sim as sim_utils
 import numpy as np
-from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
@@ -72,38 +71,8 @@ def support_cfg(scene: SceneSpec, extent: tuple[float, float]) -> AssetBaseCfg:
     )
 
 
-def articulated_object_cfg(obj: ObjectSpec, index: int) -> ArticulationCfg:
-    """A reconstructed articulated object (drawer, door, lid): its base is fixed, as for
-    furniture, and its joints are passive with a little damping."""
-    pos, rot = _pose(obj.T_base_obj)
-    return ArticulationCfg(
-        prim_path=f"{{ENV_REGEX_NS}}/Object_{index}",
-        spawn=sim_utils.UrdfFileCfg(
-            asset_path=obj.asset_path,
-            fix_base=True,
-            merge_fixed_joints=True,
-            collider_type="convex_hull",
-            joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-                target_type="none",
-                gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
-                    stiffness=0.0
-                ),
-            ),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-        ),
-        init_state=ArticulationCfg.InitialStateCfg(pos=pos, rot=rot),
-        actuators={
-            "passive": ImplicitActuatorCfg(
-                joint_names_expr=[".*"], stiffness=0.0, damping=2.0
-            )
-        },
-    )
-
-
-def object_cfg(obj: ObjectSpec, index: int) -> RigidObjectCfg | ArticulationCfg:
+def object_cfg(obj: ObjectSpec, index: int) -> RigidObjectCfg:
     """A reconstructed object, spawned from the backend's URDF."""
-    if obj.articulated:
-        return articulated_object_cfg(obj, index)
     pos, rot = _pose(obj.T_base_obj)
     return RigidObjectCfg(
         prim_path=f"{{ENV_REGEX_NS}}/Object_{index}",

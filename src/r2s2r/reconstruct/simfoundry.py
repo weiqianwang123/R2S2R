@@ -11,7 +11,8 @@ This module only
    measured depth is written where FoundationStereo would put it (``s2_fs/``);
 2. removes the robot from every candidate's depth (:mod:`r2s2r.robots.mask`), so
    frame selection and refinement do not take the arm for an object;
-3. runs stages 2-12 (13-14 import into OmniGibson, which r2s2r does not use);
+3. runs stages 2-8 and 10-12 (9 makes objects articulated, which r2s2r leaves out
+   for now; 13-14 import into OmniGibson, which r2s2r does not use);
 4. reads the stage outputs back and re-expresses them in the robot base frame.
 
 SimFoundry reconstructs from the one candidate its frame selection picks, and
@@ -28,6 +29,7 @@ import os
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -49,11 +51,11 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SIMFOUNDRY_DIR = REPO_ROOT / "third_party" / "SimFoundry"
 FRAME_MAP_FILENAME = "r2s2r_frames.json"
-# 13-14 import into OmniGibson. Stage 9 (articulated objects) runs when
-# articulate-anything is installed (scripts/setup/install_articulation.sh).
-DEFAULT_STAGES = ("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12")
+# 13-14 import into OmniGibson; 9 turns objects into articulated ones, and every
+# object here is rigid.
+DEFAULT_STAGES = ("2", "3", "4", "5", "6", "7", "8", "10", "11", "12")
 # Stages that call a VLM (Gemini upstream; Codex with the r2s2r fork).
-GEMINI_STAGES = {"3", "5", "6", "8", "9", "11"}
+GEMINI_STAGES = {"3", "5", "6", "8", "11"}
 
 
 @dataclass
@@ -85,7 +87,10 @@ class SimFoundryConfig:
     # RGB-D input is downscaled like FoundationStereo's output (s2_fs.fs.scale), so
     # stages 3-12 see the same resolution whichever depth source was used.
     rgbd_scale: float = 0.5
-    mask_robot: bool = True  # remove the robot from candidate depth (MuJoCo models)
+    mask_robot: bool = True  # remove the robot from candidate depth (its model)
+    # When SimFoundry finds no object, rebuild from up to this many other frames
+    # (see SimFoundryBackend.retry_empty); 0: never.
+    retry_frames: int = 3
     overrides: list[str] = field(default_factory=list)  # extra Hydra overrides
 
 
@@ -213,25 +218,21 @@ class SimFoundryBackend(ReconstructionBackend):
         if not self.config.mask_robot:
             return None
         # MuJoCo (and an EGL context) only when masking is on.
-        from r2s2r.robots.mask import (  # pylint: disable=import-outside-toplevel
-            RobotMasker,
-        )
-        from r2s2r.robots.mujoco_models import (  # pylint: disable=import-outside-toplevel
-            EMBODIMENTS,
-        )
+        # pylint: disable=import-outside-toplevel
+        from r2s2r.robots.mask import robot_masker
 
-        if capture.embodiment not in EMBODIMENTS:
-            logger.warning(
-                "no robot model for %s: depth not masked", capture.embodiment
-            )
-            return None
-        return RobotMasker(capture.embodiment)
+        return robot_masker(capture.embodiment)
 
     # -------------------------------------------------------------------- run
     def build_command(
-        self, capture: Capture, workdir: Path, stages: tuple[str, ...] | None = None
+        self,
+        capture: Capture,
+        workdir: Path,
+        stages: tuple[str, ...] | None = None,
+        extra: tuple[str, ...] = (),
     ) -> tuple[list[str], dict[str, str], Path]:
-        """The orchestrator call, its environment and working directory."""
+        """The orchestrator call, its environment and working directory; ``extra`` Hydra
+        overrides go last."""
         cfg = self.config
         stages = stages or cfg.stages
         upsample = _hydra_bool(cfg.upsample_source_image)
@@ -243,6 +244,7 @@ class SimFoundryBackend(ReconstructionBackend):
             f"s5_scene.use_upsampled_source_image={upsample}",
             f"s7_mesh.low_vram={_hydra_bool(cfg.mesh_low_vram)}",
             *cfg.overrides,
+            *extra,
         ]
         cmd = [
             cfg.mamba_exe,
@@ -267,8 +269,6 @@ class SimFoundryBackend(ReconstructionBackend):
             cfg.env_nerfstudio,
             "--env-b1k",
             cfg.env_simfoundry,
-            # Stage 9 is only planned with this flag; --include alone cannot add it.
-            *(["--detect-articulation"] if "9" in stages else []),
             *overrides,
         ]
         env = dict(os.environ)
@@ -296,12 +296,6 @@ class SimFoundryBackend(ReconstructionBackend):
         its depth before stages 3+ read it.
         """
         stages = stages or self.config.stages
-        if "9" in stages and not self.articulation_installed():
-            logger.warning(
-                "stage 9 skipped: articulate-anything is not installed "
-                "(scripts/setup/install_articulation.sh); objects stay rigid"
-            )
-            stages = tuple(s for s in stages if s != "9")
         vlm_stages = sorted(GEMINI_STAGES & set(stages))
         if (
             vlm_stages
@@ -325,16 +319,14 @@ class SimFoundryBackend(ReconstructionBackend):
         if stages:
             self._run_stages(capture, workdir, stages)
 
-    def articulation_installed(self) -> bool:
-        """Whether stage 9's articulate-anything checkout exists."""
-        return (
-            self.config.repo_dir / "deps" / "articulate-anything" / "simfoundry"
-        ).is_dir()
-
     def _run_stages(
-        self, capture: Capture, workdir: Path, stages: tuple[str, ...]
+        self,
+        capture: Capture,
+        workdir: Path,
+        stages: tuple[str, ...],
+        extra: tuple[str, ...] = (),
     ) -> None:
-        cmd, env, cwd = self.build_command(capture, workdir, stages)
+        cmd, env, cwd = self.build_command(capture, workdir, stages, extra)
         logger.info("running SimFoundry stages %s in %s", ",".join(stages), cwd)
         subprocess.run(cmd, cwd=cwd, env=env, check=True)
 
@@ -342,7 +334,7 @@ class SimFoundryBackend(ReconstructionBackend):
     def parse(self, capture: Capture, workdir: Path) -> SceneSpec:
         """Read stages 3-12 and express the scene in the robot base frame."""
         scene_dir = self.scene_dir(capture, workdir)
-        selection = _read_json(scene_dir / "s3_ground" / "frame_selection.json")
+        selection = _frame_selection(scene_dir)
         idx = int(selection["selected_idx"])
         frame_map = _read_json(scene_dir / "s1_zed" / FRAME_MAP_FILENAME)
         ref_frame = _frame(
@@ -365,11 +357,10 @@ class SimFoundryBackend(ReconstructionBackend):
             T_world_obj = pos_quat_to_matrix(pos, quat_xyzw_to_wxyz(quat_xyzw))
             urdf = scene_dir / "s11_sim" / "objects" / category / model / "urdf"
             urdf = urdf / f"{model}.urdf"
-            articulated = bool(obj.get("is_articulated", False))
             asset = urdf
             if urdf.exists():
                 # SimFoundry's world frame is the support plane.
-                asset = make_sim_ready(urdf, T_world_obj, articulated)
+                asset = make_sim_ready(urdf, T_world_obj)
             objects.append(
                 ObjectSpec(
                     name=name,
@@ -378,7 +369,6 @@ class SimFoundryBackend(ReconstructionBackend):
                     T_base_obj=T_base_world @ T_world_obj,
                     mass=_urdf_mass(urdf),
                     friction=obj.get("friction"),
-                    articulated=articulated,
                 )
             )
 
@@ -399,10 +389,61 @@ class SimFoundryBackend(ReconstructionBackend):
             },
         )
 
+    def retry_empty(self, capture: Capture, workdir: Path) -> SceneSpec | None:
+        """After a run that found no object: stages 3-12 again, pinned to other frames
+        until one gives objects (the camera with the fewest empty frames first, then the
+        best frame score); None if none does.
+
+        Stage 3 fits the support surface in one frame, choosing the largest surface it
+        detects, and from some viewpoints that is not the one the objects stand on (on
+        DROID, the robot's own mounting table, whose clamps also pass for objects in the
+        frame scores). Another camera, or another moment, sees it differently. Stage 2's
+        depth covers every candidate, so it is kept; a frame that gives no objects costs
+        little, since stage 5 then ends at once.
+        """
+        scene_dir = self.scene_dir(capture, workdir)
+        selection = _frame_selection(scene_dir)
+        scores = [s for s in selection.get("scores", []) if s.get("eligible")]
+        camera = {
+            int(m["index"]): m["camera"]
+            for m in _read_json(scene_dir / "s1_zed" / FRAME_MAP_FILENAME)
+        }
+        failed = [int(selection["selected_idx"])]
+        for _ in range(self.config.retry_frames):
+            left = [s for s in scores if int(s["idx"]) not in failed]
+            if not left:
+                return None
+            # The camera with the fewest empty frames first, then the best score.
+            fails = Counter(camera[i] for i in failed)
+            _, _, idx = max(
+                (-fails[camera[int(s["idx"])]], s["score"], int(s["idx"])) for s in left
+            )
+            logger.warning(
+                "no objects from frame(s) %s; rebuilding from frame %d (camera %s)",
+                failed,
+                idx,
+                camera[idx],
+            )
+            for d in scene_dir.iterdir():
+                prefix = d.name.split("_", 1)[0]
+                if d.is_dir() and prefix[1:].isdigit() and 3 <= int(prefix[1:]) <= 12:
+                    shutil.rmtree(d)
+            stages = tuple(st for st in self.config.stages if int(st) >= 3)
+            self._run_stages(capture, workdir, stages, (f"s3_ground.img_idx={idx}",))
+            scene = self.parse(capture, workdir)
+            if scene.objects:
+                scene.provenance["retried"] = {"empty_frames": failed, "frame": idx}
+                return scene
+            failed.append(idx)
+        return None
+
     def reconstruct(self, capture: Capture, workdir: Path) -> SceneSpec:
         self.prepare_inputs(capture, workdir)
         self.run(capture, workdir)
-        return self.parse(capture, workdir)
+        scene = self.parse(capture, workdir)
+        if not scene.objects and self.config.retry_frames:
+            scene = self.retry_empty(capture, workdir) or scene
+        return scene
 
 
 def load_stage2_views(
@@ -433,6 +474,18 @@ def _imread(path: Path) -> np.ndarray:
     if img is None:
         raise IOError(f"cannot read {path}")
     return img
+
+
+def _frame_selection(scene_dir: Path) -> dict[str, Any]:
+    """Stage 3's frame choice: its scored selection, or the frame it was pinned to
+    (``s3_ground.img_idx``), for which it writes only that frame's floor info."""
+    ground = scene_dir / "s3_ground"
+    if (ground / "frame_selection.json").exists():
+        return _read_json(ground / "frame_selection.json")
+    pinned = sorted(ground.glob("image_*_floor_info.json"))
+    if len(pinned) != 1:
+        raise FileNotFoundError(f"no frame selection in {ground}: did stage 3 run?")
+    return {"selected_idx": int(pinned[0].name.split("_")[1]), "decided_by": "pinned"}
 
 
 def _write_mask(path: Path, mask: np.ndarray) -> None:

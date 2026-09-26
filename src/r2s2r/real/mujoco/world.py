@@ -67,21 +67,6 @@ def default_objects() -> list[ObjectConfig]:
     ]
 
 
-@dataclass
-class CabinetConfig:
-    """A procedural cabinet with one drawer (a prismatic joint), fixed to the table.
-
-    Sizes are outer dimensions: depth along the drawer's travel, width, height.
-    ``yaw_deg`` 180 puts the drawer front toward the robot.
-    """
-
-    name: str
-    xy: tuple[float, float]
-    yaw_deg: float = 180.0
-    size: tuple[float, float, float] = (0.22, 0.26, 0.18)
-    travel: float = 0.14  # how far the drawer opens
-
-
 def default_cameras() -> list[CameraConfig]:
     """Two external views, front-left and right, like DROID's ext1/ext2."""
     return [
@@ -95,7 +80,6 @@ class MujocoWorldConfig:
     """Everything needed to rebuild the same world at capture and deploy time."""
 
     objects: list[ObjectConfig] = field(default_factory=default_objects)
-    cabinets: list[CabinetConfig] = field(default_factory=list)
     cameras: list[CameraConfig] = field(default_factory=default_cameras)
     wrist_camera: bool = True
     wrist_size: tuple[int, int] = (1280, 720)
@@ -103,9 +87,6 @@ class MujocoWorldConfig:
     # The capture motion points the wrist camera at this point from a few directions.
     scan_target: tuple[float, float, float] = (0.55, 0.0, 0.03)
     scan_distance: float = 0.5
-    # After the scan, the capture opens every drawer by this much and closes it
-    # again, like a teleoperated warmup demonstration (0: no interaction).
-    demo_pull: float = 0.0
     target: str = "crayon_box"  # ground-truth object a pick task should lift
     table_center: tuple[float, float] = (0.35, 0.0)
     table_size: tuple[float, float] = (1.2, 1.2)
@@ -126,28 +107,14 @@ class MujocoWorldConfig:
         d = dict(d)
         d["objects"] = [ObjectConfig(**o) for o in d["objects"]]
         d["cameras"] = [CameraConfig(**c) for c in d["cameras"]]
-        d["cabinets"] = [CabinetConfig(**c) for c in d.get("cabinets", [])]
         return cls(**d)
 
     @classmethod
     def preset(cls, name: str) -> MujocoWorldConfig:
-        """``pick``: crayon box, mug, figurine.
-
-        ``cabinet``: the mug is replaced by a drawer cabinet, to exercise articulated
-        objects.
-        """
+        """``pick``: a crayon box to pick, a mug and a figurine."""
         if name == "pick":
             return cls()
-        if name == "cabinet":
-            objects = [o for o in default_objects() if o.name != "blue_mug"]
-            return cls(
-                objects=objects,
-                cabinets=[CabinetConfig("drawer_cabinet", (0.66, 0.27))],
-                scan_target=(0.6, 0.1, 0.06),
-                scan_distance=0.62,
-                demo_pull=0.12,
-            )
-        raise KeyError(f"unknown world preset {name!r} (pick, cabinet)")
+        raise KeyError(f"unknown world preset {name!r} (pick)")
 
 
 def look_at(pos: NDArray, target: NDArray) -> NDArray[np.float64]:
@@ -221,127 +188,6 @@ def _add_gso_object(spec: Any, obj: ObjectConfig, gso_dir: Path) -> None:
             group=3,
             density=density,
             condim=4,
-        )
-
-
-def _add_cabinet_materials(spec: Any) -> None:
-    spec.add_texture(
-        name="cabinet_tex",
-        type=mujoco.mjtTexture.mjTEXTURE_2D,
-        builtin=mujoco.mjtBuiltin.mjBUILTIN_FLAT,
-        mark=mujoco.mjtMark.mjMARK_RANDOM,
-        random=0.05,
-        rgb1=[0.42, 0.27, 0.16],
-        markrgb=[0.34, 0.21, 0.12],
-        width=512,
-        height=512,
-    )
-    body_mat = spec.add_material(name="cabinet_mat", specular=0.15)
-    body_mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = "cabinet_tex"
-    spec.add_material(
-        name="drawer_front_mat", rgba=[0.86, 0.84, 0.78, 1.0], specular=0.2
-    )
-    spec.add_material(name="handle_mat", rgba=[0.12, 0.12, 0.13, 1.0], specular=0.6)
-
-
-def _add_cabinet(spec: Any, cab: CabinetConfig, wall: float = 0.012) -> None:
-    """A fixed carcass open at the front (+x in its frame) and a sliding drawer."""
-    dx, dy, dz = (v / 2 for v in cab.size)
-    yaw = np.deg2rad(cab.yaw_deg)
-    body = spec.worldbody.add_body(
-        name=cab.name,
-        pos=[cab.xy[0], cab.xy[1], 0.0],
-        quat=[np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)],
-    )
-    box = mujoco.mjtGeom.mjGEOM_BOX
-    panels = {  # name: (half sizes, centre)
-        "bottom": ((dx, dy, wall / 2), (0, 0, wall / 2)),
-        "top": ((dx, dy, wall / 2), (0, 0, 2 * dz - wall / 2)),
-        "left": ((dx, wall / 2, dz), (0, dy - wall / 2, dz)),
-        "right": ((dx, wall / 2, dz), (0, -dy + wall / 2, dz)),
-        "back": ((wall / 2, dy, dz), (-dx + wall / 2, 0, dz)),
-    }
-    for name, (size, pos) in panels.items():
-        body.add_geom(
-            name=f"{cab.name}_{name}",
-            type=box,
-            size=list(size),
-            pos=list(pos),
-            material="cabinet_mat",
-        )
-    # The drawer fills the opening; closed, its front is flush with the carcass.
-    inner_x, inner_y = dx - wall, dy - wall
-    inner_z = dz - wall - 0.004
-    drawer = body.add_body(name=f"{cab.name}_drawer", pos=[wall / 2, 0.0, dz])
-    # The drawer runs on rails: it slides along its joint without rubbing the carcass
-    # (MuJoCo's parent filter does not apply to a body welded to the world).
-    spec.add_exclude(bodyname1=cab.name, bodyname2=f"{cab.name}_drawer")
-    drawer.add_joint(
-        name=f"{cab.name}_slide",
-        type=mujoco.mjtJoint.mjJNT_SLIDE,
-        axis=[1, 0, 0],
-        range=[0.0, cab.travel],
-        damping=5.0,
-        frictionloss=0.5,
-    )
-    t = 0.008
-    for name, size, pos, mat in [
-        (
-            "front",
-            (t, dy - 0.004, dz - 0.004),
-            (inner_x - t / 2 + wall / 2, 0, 0),
-            "drawer_front_mat",
-        ),
-        (
-            "floor",
-            (inner_x - t, inner_y - 0.002, t / 2),
-            (-t, 0, -inner_z + t / 2),
-            "cabinet_mat",
-        ),
-        (
-            "side_l",
-            (inner_x - t, t / 2, inner_z * 0.7),
-            (-t, inner_y - t, -inner_z * 0.3),
-            "cabinet_mat",
-        ),
-        (
-            "side_r",
-            (inner_x - t, t / 2, inner_z * 0.7),
-            (-t, -inner_y + t, -inner_z * 0.3),
-            "cabinet_mat",
-        ),
-        (
-            "rear",
-            (t / 2, inner_y - 0.002, inner_z * 0.7),
-            (-inner_x + t, 0, -inner_z * 0.3),
-            "cabinet_mat",
-        ),
-    ]:
-        drawer.add_geom(
-            name=f"{cab.name}_drawer_{name}",
-            type=box,
-            size=list(size),
-            pos=list(pos),
-            material=mat,
-            mass=0.05,
-        )
-    drawer.add_geom(
-        name=f"{cab.name}_handle",
-        type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-        size=[0.008, 0.045, 0],
-        pos=[inner_x + wall / 2 + 0.022, 0, 0.02],
-        quat=[np.cos(np.pi / 4), np.cos(np.pi / 4), 0.0, 0.0],
-        material="handle_mat",
-        mass=0.02,
-    )
-    for side in (1, -1):
-        drawer.add_geom(
-            name=f"{cab.name}_handle_post{side}",
-            type=box,
-            size=[0.011, 0.005, 0.005],
-            pos=[inner_x + wall / 2 + 0.011, side * 0.035, 0.02],
-            material="handle_mat",
-            mass=0.005,
         )
 
 
@@ -473,10 +319,6 @@ def build_spec(cfg: MujocoWorldConfig) -> Any:
         )
     for obj in cfg.objects:
         _add_gso_object(spec, obj, Path(cfg.gso_dir))
-    if cfg.cabinets:
-        _add_cabinet_materials(spec)
-    for cabinet in cfg.cabinets:
-        _add_cabinet(spec, cabinet)
     for cam in cfg.cameras:
         _add_camera(spec, cam)
     return spec
@@ -516,10 +358,6 @@ class MujocoWorld:
     def finger_width(self) -> float:
         """Distance between the fingers."""
         return float(self.data.qpos[self._finger_qadr].sum())
-
-    def joint_position(self, name: str) -> float:
-        """Current position of a (1-dof) joint, e.g. a drawer's slide."""
-        return float(self.data.qpos[self.model.joint(name).qposadr[0]])
 
     def object_pose(self, name: str) -> NDArray[np.float64]:
         """Ground-truth ``T_base_obj`` (GSO origin: bottom centre)."""
@@ -627,6 +465,11 @@ class MujocoRobot(RobotInterface):
             self.on_step(self)
 
 
+def world_config_of(capture: Capture) -> MujocoWorldConfig:
+    """The world a MuJoCo capture was recorded in."""
+    return MujocoWorldConfig.from_dict(capture.metadata["world_config"])
+
+
 def world_from_capture(capture: Capture) -> MujocoWorld:
     """Rebuild the world a MuJoCo capture was recorded in."""
-    return MujocoWorld(MujocoWorldConfig.from_dict(capture.metadata["world_config"]))
+    return MujocoWorld(world_config_of(capture))

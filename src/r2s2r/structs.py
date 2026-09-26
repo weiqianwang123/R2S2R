@@ -73,16 +73,26 @@ class FrameRecord:
     camera: str  # CameraSpec.serial
     left_image: str  # path relative to the capture root
     right_image: str | None
-    T_base_cam: NDArray[np.float64]
+    T_base_cam: NDArray[np.float64]  # a static camera's frames may leave it out
     joint_positions: NDArray[np.float64]
-    gripper_position: float
+    gripper_position: float  # 0 open, 1 closed
     # Metric depth of the left image: uint16 PNG, DEPTH_PNG_SCALE meters per unit.
     depth_image: str | None = None
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> FrameRecord:
-        """Inverse of ``asdict``."""
+    def from_dict(
+        cls, d: dict[str, Any], camera: CameraSpec | None = None
+    ) -> FrameRecord:
+        """Inverse of ``asdict``; a frame without ``T_base_cam`` takes that of its
+        ``camera``, which must be static and calibrated."""
         d = dict(d)
+        if d.get("T_base_cam") is None:
+            if camera is None or not camera.is_static or camera.T_base_cam is None:
+                raise ValueError(
+                    f"frame {d.get('step')} of {d.get('camera')} has no T_base_cam, "
+                    "and its camera is not a static, calibrated one"
+                )
+            d["T_base_cam"] = camera.T_base_cam
         d["T_base_cam"] = _array(d["T_base_cam"])
         d["joint_positions"] = _array(d["joint_positions"])
         return cls(**d)
@@ -192,13 +202,16 @@ class Capture:
         """Read a capture saved by :meth:`save`."""
         root = Path(root)
         d = json.loads((root / CAPTURE_FILENAME).read_text(encoding="utf-8"))
+        cameras = {k: CameraSpec.from_dict(v) for k, v in d["cameras"].items()}
         return cls(
             name=d["name"],
             source=d["source"],
             embodiment=d["embodiment"],
             instruction=d["instruction"],
-            cameras={k: CameraSpec.from_dict(v) for k, v in d["cameras"].items()},
-            frames=[FrameRecord.from_dict(f) for f in d["frames"]],
+            cameras=cameras,
+            frames=[
+                FrameRecord.from_dict(f, cameras.get(f["camera"])) for f in d["frames"]
+            ],
             static_steps=(int(d["static_steps"][0]), int(d["static_steps"][1])),
             root=root,
             metadata=d.get("metadata", {}),
@@ -219,16 +232,14 @@ class DepthView:
 
 @dataclass
 class ObjectSpec:
-    """One object, placed in the robot base frame: rigid, or articulated when its URDF
-    has movable joints (drawers, doors, lids)."""
+    """One rigid object, placed in the robot base frame."""
 
     name: str
     category: str
     asset_path: str  # URDF produced by the backend (absolute path)
     T_base_obj: NDArray[np.float64]
-    mass: float | None = None  # total, all links
+    mass: float | None = None
     friction: float | None = None
-    articulated: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ObjectSpec:

@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 from r2s2r.mjrender import CameraRenderer, add_camera, mujoco
 from r2s2r.robots.mujoco_models import (
     ARM_JOINTS,
+    EMBODIMENTS,
     MENAGERIE_DIR,
     GripperPoser,
     robot_spec,
@@ -99,3 +100,13 @@ class RobotMasker:
     def close(self) -> None:
         """Free the GL contexts."""
         self.renderer.close()
+
+
+def robot_masker(embodiment: str) -> RobotMasker:
+    """A masker for ``embodiment``, whose model must be known."""
+    if embodiment not in EMBODIMENTS:
+        raise ValueError(
+            f"no robot model for {embodiment!r} (known: {sorted(EMBODIMENTS)}); add it "
+            "to r2s2r.robots.mujoco_models, or turn robot masking off"
+        )
+    return RobotMasker(embodiment)

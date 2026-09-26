@@ -1,6 +1,9 @@
 """Tests for reconstruct/simfoundry.py (no SimFoundry run needed)."""
 
+# pylint: disable=protected-access
+
 import json
+import shutil
 
 import cv2
 import numpy as np
@@ -8,8 +11,12 @@ import pytest
 
 from r2s2r.io.droid import load_droid_episode
 from r2s2r.reconstruct import make_backend
-from r2s2r.reconstruct.simfoundry import FRAME_MAP_FILENAME, SimFoundryBackend
-from r2s2r.structs import CameraSpec, Capture, FrameRecord, SceneSpec
+from r2s2r.reconstruct.simfoundry import (
+    FRAME_MAP_FILENAME,
+    SimFoundryBackend,
+    _frame_selection,
+)
+from r2s2r.structs import CameraSpec, Capture, FrameRecord, ObjectSpec, SceneSpec
 from r2s2r.transforms import (
     intrinsics_matrix,
     make_transform,
@@ -72,9 +79,7 @@ def test_build_command(capture, tmp_path):
     cmd, env, cwd = backend.build_command(capture, tmp_path)
     assert cmd[cmd.index("--include") + 1] == "2,3"
     assert cmd[cmd.index("--input-mode") + 1] == "stereo"
-    assert "--detect-articulation" not in cmd
-    cmd, _, _ = backend.build_command(capture, tmp_path, stages=("8", "9"))
-    assert "--detect-articulation" in cmd
+    assert "--detect-articulation" not in cmd  # every object stays rigid
     assert "s2_depth.backend=fs" in cmd and "s3_ground.use_fs=true" in cmd
     assert f"scene_name={capture.name}" in cmd
     assert env["PYTHONPATH"].split(":")[0] == str(cwd)
@@ -272,17 +277,76 @@ def test_run_masks_between_stage2_and_3(capture, tmp_path, monkeypatch):
     assert events == ["2", "mask"]
 
 
-def test_stage9_skipped_without_articulate_anything(capture, tmp_path, monkeypatch):
-    """Without articulate-anything, stage 9 is dropped and objects stay rigid."""
+def test_an_empty_scene_is_rebuilt_from_other_frames(capture, tmp_path, monkeypatch):
+    """No objects from one frame: stages 3-12 rerun pinned to other eligible frames,
+    another camera's best first, until one gives objects; stage 1-2 outputs kept."""
     backend = SimFoundryBackend(
-        cameras=("ext1",), max_frames=1, mask_robot=False, repo_dir=tmp_path / "sf"
+        cameras=("ext1", "ext2"), max_frames=4, mask_robot=False
     )
     backend.prepare_inputs(capture, tmp_path)
+    scene_dir = backend.scene_dir(capture, tmp_path)
+    frames = json.loads((scene_dir / "s1_zed" / FRAME_MAP_FILENAME).read_text())
+    ext1 = capture.camera_by_role("ext1").serial
+    first, second = [m["index"] for m in frames if m["camera"] == ext1]
+    others = [m["index"] for m in frames if m["camera"] != ext1]
+    scores = [
+        {
+            "idx": m["index"],
+            "eligible": True,
+            "score": 0.9 if m["camera"] == ext1 else 0.1,
+        }
+        for m in frames
+    ]
+    scores[others[1]]["score"] = 0.5  # the best frame of the other camera
+    scores[others[0]]["eligible"] = False
+    for sub in ("s2_fs", "s3_ground", "s5_scene", "s12_physics"):
+        (scene_dir / sub).mkdir(parents=True, exist_ok=True)
+    (scene_dir / "s3_ground" / "frame_selection.json").write_text(
+        json.dumps({"selected_idx": first, "scores": scores})
+    )
     calls = []
     monkeypatch.setattr(
         "r2s2r.reconstruct.simfoundry.subprocess.run",
-        lambda cmd, **kwargs: calls.append(cmd[cmd.index("--include") + 1]),
+        lambda cmd, **kwargs: calls.append(cmd),
     )
-    monkeypatch.setattr(backend, "mask_stage2_outputs", lambda *args: None)
-    backend.run(capture, tmp_path, stages=("8", "9", "10"))
-    assert calls == ["8,10"]
+    empty = SceneSpec("s", "droid_franka", [], np.eye(4), {}, ext1, 0, np.zeros(7))
+    found = SceneSpec(
+        "s",
+        "droid_franka",
+        [ObjectSpec("mug", "mug", "mug.urdf", np.eye(4))],
+        np.eye(4),
+        {},
+        ext1,
+        0,
+        np.zeros(7),
+    )
+    parsed = iter([empty, found])
+    monkeypatch.setattr(backend, "parse", lambda *args: next(parsed))
+    scene = backend.retry_empty(capture, tmp_path)
+    assert scene is found
+    assert scene.provenance["retried"] == {
+        "empty_frames": [first, others[1]],
+        "frame": second,
+    }
+    assert [cmd[-1] for cmd in calls] == [
+        f"s3_ground.img_idx={others[1]}",
+        f"s3_ground.img_idx={second}",
+    ]
+    assert calls[0][calls[0].index("--include") + 1] == "3,4,5,6,7,8,10,11,12"
+    assert (scene_dir / "s1_zed").exists() and (scene_dir / "s2_fs").exists()
+    assert (
+        not (scene_dir / "s3_ground").exists() and not (scene_dir / "s5_scene").exists()
+    )
+
+    # Pinned, stage 3 writes only that frame's floor info; parse reads the index there.
+    (scene_dir / "s3_ground").mkdir()
+    (scene_dir / "s3_ground" / f"image_{second}_floor_info.json").write_text("{}")
+    assert _frame_selection(scene_dir)["selected_idx"] == second
+    shutil.rmtree(scene_dir / "s3_ground")
+
+    # Nothing eligible elsewhere: nothing to retry.
+    (scene_dir / "s3_ground").mkdir()
+    (scene_dir / "s3_ground" / "frame_selection.json").write_text(
+        json.dumps({"selected_idx": first, "scores": scores[:1]})
+    )
+    assert backend.retry_empty(capture, tmp_path) is None

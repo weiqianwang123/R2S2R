@@ -1,15 +1,18 @@
 """Command-line entry points.
 
-Subcommands::
+Captures: the robot's calibrated cameras, poses in its base frame, with joint states::
 
     r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
     r2s2r mujoco-capture --out CAPTURE_DIR [--cameras ext1 ext2 wrist]
+
+Reconstruction and refinement::
+
     r2s2r reconstruct CAPTURE_DIR --workdir WORKDIR [--cameras ...] [--stages 2,3]
     r2s2r refine SCENE_DIR --capture CAPTURE_DIR (--views WORKDIR... | --capture-depth)
-        [--no-vlm | --no-orientation-check]
-    r2s2r calibrate-joints SCENE_DIR --capture CAPTURE_DIR --out OUT_DIR [--no-agent]
-    r2s2r joints-eval WORKSPACE URDF      (these two: the calibrating agent's tools)
-    r2s2r urdf-info URDF [--workspace WORKSPACE]
+        [--keep-unseen] [--no-vlm | --no-orientation-check]
+
+MuJoCo as the real world::
+
     r2s2r mujoco-eval SCENE_DIR --capture CAPTURE_DIR
     r2s2r mujoco-deploy (SCENE_DIR | --oracle) --capture CAPTURE_DIR --target NAME
         --out OUT_DIR
@@ -21,7 +24,6 @@ The Isaac Lab side runs as scripts, since the Omniverse app must start first:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import shutil
 from pathlib import Path
@@ -84,6 +86,8 @@ def _reconstruct(args: argparse.Namespace) -> None:
                 print(f"ran stages {','.join(config.stages)}; parse needs stage 12")
                 return
         scene = backend.parse(capture, workdir)
+        if not scene.objects and config.retry_frames and not args.parse_only:
+            scene = backend.retry_empty(capture, workdir) or scene
     path = scene.save(args.scene_out or workdir / capture.name / "scene")
     print(f"scene with {len(scene.objects)} objects -> {path}")
 
@@ -96,19 +100,32 @@ def _refine(args: argparse.Namespace) -> None:
     if args.capture_depth:
         masker = None
         if not args.no_robot_mask:
-            # MuJoCo only when masking.
-            from r2s2r.robots.mask import (  # pylint: disable=import-outside-toplevel
-                RobotMasker,
-            )
+            # MuJoCo renders the robot; imported only when used.
+            # pylint: disable=import-outside-toplevel
+            from r2s2r.robots.mask import robot_masker
 
-            masker = RobotMasker(capture.embodiment)
+            masker = robot_masker(capture.embodiment)
         views += capture_depth_views(
-            capture, args.cameras, args.max_views, steps, masker=masker
+            capture, args.cameras, args.max_views, steps, masker
         )
     for workdir in args.views:
         views += load_stage2_views(capture, workdir, steps=steps)
     if not views:
         raise SystemExit("no depth to refine with (--capture-depth or --views)")
+    if not args.keep_unseen:
+        # MuJoCo renders the objects; imported only when used.
+        # pylint: disable=import-outside-toplevel
+        from r2s2r.reconstruct.existence import drop_unseen
+
+        scene, seen = drop_unseen(scene, views)
+        for name, entry in seen["objects"].items():
+            if entry["dropped"]:
+                print(
+                    f"{name}: dropped (no measured points match it, and the cameras "
+                    f"see through {entry['seen_through']:.0%} of it)"
+                )
+        for name, fall in seen["settled"].items():
+            print(f"{name}: rested on a dropped object, lowered {fall * 100:.1f} cm")
     if not args.no_orientation_check:
         # MuJoCo renders the candidates; imported only when used.
         # pylint: disable=import-outside-toplevel
@@ -141,82 +158,6 @@ def _refine(args: argparse.Namespace) -> None:
     print(f"support {w:.2f} x {h:.2f} m from {len(views)} views -> {path}")
 
 
-def _calibrate_joints(args: argparse.Namespace) -> None:
-    # MuJoCo renders the joint positions; imported only when used.
-    # pylint: disable=import-outside-toplevel
-    from r2s2r.calibrate.agent import CodexAgent
-    from r2s2r.calibrate.articulation import (
-        CalibrationConfig,
-        calibrate_articulation,
-        final_fits,
-    )
-    from r2s2r.io.rgbd import capture_depth_steps
-    from r2s2r.robots.mask import RobotMasker
-
-    scene = SceneSpec.load(args.scene_dir)
-    capture = Capture.load(args.capture)
-    if not any(o.articulated for o in scene.objects):
-        (args.out / "joints_report.json").unlink(missing_ok=True)
-        print(f"no articulated objects -> {scene.save(args.out)}")
-        return
-    masker = None if args.no_robot_mask else RobotMasker(capture.embodiment)
-    steps = capture_depth_steps(capture, args.cameras, args.max_steps, masker)
-    start, end = capture.static_steps
-    agent = None
-    if not args.no_agent:
-        agent = CodexAgent(model=args.codex_model, reasoning=args.codex_reasoning)
-    calibrated, report = calibrate_articulation(
-        args.scene_dir,
-        args.capture,
-        steps,
-        [t for t in steps if start <= t < end],
-        args.out / "calibration",
-        agent,
-        CalibrationConfig(budget=args.budget),
-        force=args.force,
-    )
-    path = calibrated.save(args.out)
-    for name, data in (("calibration", report), ("joints_report", final_fits(report))):
-        (args.out / f"{name}.json").write_text(json.dumps(data, indent=2), "utf-8")
-    for name, entry in report.items():
-        base, final = entry["baseline"], entry["final"]
-        print(
-            f"{name}: {entry['decision']}; score {base['score_mm']} -> "
-            f"{final['score_mm']} mm, consistent {base['consistent']} -> "
-            f"{final['consistent']}"
-        )
-        for joint, j in final["joints"].items():
-            print(f"  {joint}: {j}")
-    print(f"{len(steps)} steps -> {path}")
-
-
-def _joints_eval(args: argparse.Namespace) -> None:
-    # pylint: disable=import-outside-toplevel
-    from r2s2r.calibrate.articulation import brief
-    from r2s2r.calibrate.tools import LEDGER_FILE, Workspace, dumps, evaluate
-
-    ws = Workspace.load(args.workspace)
-    name = args.name or args.urdf.stem
-    summary = evaluate(ws, args.urdf, ws.root / "evals" / name)
-    with open(ws.root / LEDGER_FILE, "a", encoding="utf-8") as ledger:
-        ledger.write(json.dumps({"name": name, **brief(summary)}) + "\n")
-    print(dumps({k: v for k, v in summary.items() if k != "fitted_urdf"}))
-
-
-def _urdf_info(args: argparse.Namespace) -> None:
-    # pylint: disable=import-outside-toplevel
-    from r2s2r.calibrate.tools import Workspace, dumps, urdf_info
-
-    T_base_obj = None
-    if args.workspace is not None:
-        ws = Workspace.load(args.workspace)
-        scene = SceneSpec.load(ws.scene_dir)
-        T_base_obj = next(
-            o.T_base_obj for o in scene.objects if o.name == ws.object_name
-        )
-    print(dumps(urdf_info(args.urdf, T_base_obj)))
-
-
 def _mujoco_capture(args: argparse.Namespace) -> None:
     # Imported here so the other subcommands work without MuJoCo and a GL driver.
     # pylint: disable=import-outside-toplevel
@@ -238,7 +179,7 @@ def _mujoco_capture(args: argparse.Namespace) -> None:
 
 def _print_scene_errors(scene: SceneSpec, capture: Capture) -> None:
     # pylint: disable=import-outside-toplevel
-    from r2s2r.real.mujoco.deploy import articulation_errors, scene_errors
+    from r2s2r.real.mujoco.deploy import scene_errors
 
     for name, err in scene_errors(scene, capture).items():
         print(
@@ -246,11 +187,6 @@ def _print_scene_errors(scene: SceneSpec, capture: Capture) -> None:
             f"{err['center_error_m'] * 100:.1f} cm, size {err['size_m']} "
             f"(true {err['ground_truth_size_m']})"
         )
-    for name, entry in articulation_errors(scene, capture).items():
-        for joint in entry["joints"]:
-            print(f"{name} joint {joint['name']}: {joint}")
-        if not entry["joints"]:
-            print(f"{name}: articulated but no movable joint")
 
 
 def _mujoco_eval(args: argparse.Namespace) -> None:
@@ -262,15 +198,6 @@ def _mujoco_eval(args: argparse.Namespace) -> None:
         print(match_target(scene, capture))
         return
     _print_scene_errors(scene, capture)
-    report = args.scene_dir / "joints_report.json"  # written by calibrate-joints
-    if report.exists():
-        # pylint: disable=import-outside-toplevel
-        from r2s2r.real.mujoco.deploy import trajectory_errors
-
-        fitted = json.loads(report.read_text(encoding="utf-8"))
-        for name, rows in trajectory_errors(scene, capture, fitted).items():
-            for row in rows:
-                print(f"{name} joint trajectory: {row}")
 
 
 def _mujoco_deploy(args: argparse.Namespace) -> None:
@@ -290,6 +217,15 @@ def _mujoco_deploy(args: argparse.Namespace) -> None:
     target = args.target or match_target(scene, capture)
     result = run_pick(capture, scene, target, args.out, args.video_camera)
     print(f"{summarize(result)} -> {args.out}")
+
+
+def _robot_mask_argument(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--no-robot-mask",
+        action="store_true",
+        help="keep the robot in depth (default: cut out by rendering its model at the "
+        "recorded joints)",
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -316,9 +252,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--cameras", nargs="+", help="roles or serials to draw candidates from (all)"
     )
-    p.add_argument(
-        "--no-robot-mask", action="store_true", help="keep the robot in depth"
-    )
+    _robot_mask_argument(p)
     p.add_argument("--max-frames", type=int, default=12)
     p.add_argument("--mamba", help="path to the mamba executable")
     p.add_argument("--vlm-backend", default="codex", choices=["codex", "gemini"])
@@ -346,8 +280,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--step", type=int, help="only this step (default: static period)")
     p.add_argument("--cameras", nargs="+", help="capture-depth cameras (all)")
     p.add_argument("--max-views", type=int, default=12, help="capture-depth views")
+    _robot_mask_argument(p)
     p.add_argument(
-        "--no-robot-mask", action="store_true", help="keep the robot in depth"
+        "--keep-unseen",
+        action="store_true",
+        help="keep objects the depth sees through and no measured points match",
     )
     p.add_argument(
         "--no-orientation-check",
@@ -363,41 +300,6 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_refine)
 
-    p = sub.add_parser(
-        "calibrate-joints",
-        help="fit joints to the video; a Codex agent remodels those that fail the check",
-    )
-    p.add_argument("scene_dir", type=Path)
-    p.add_argument("--capture", type=Path, required=True)
-    p.add_argument("--cameras", nargs="+", help="cameras to use (all)")
-    p.add_argument("--max-steps", type=int, default=48, help="video steps sampled")
-    p.add_argument(
-        "--no-robot-mask", action="store_true", help="keep the robot in depth"
-    )
-    p.add_argument("--budget", type=int, default=10, help="evaluations per object")
-    p.add_argument(
-        "--force", action="store_true", help="call the agent even when the check passes"
-    )
-    p.add_argument("--no-agent", action="store_true", help="only fit and check")
-    p.add_argument("--codex-model", default="gpt-6-astra")
-    p.add_argument("--codex-reasoning", default="medium")
-    p.add_argument("--out", type=Path, required=True)
-    p.set_defaults(func=_calibrate_joints)
-
-    p = sub.add_parser(
-        "joints-eval",
-        help="evaluate a candidate joint model in a calibration workspace",
-    )
-    p.add_argument("workspace", type=Path)
-    p.add_argument("urdf", type=Path)
-    p.add_argument("--name", help="evaluation name (default: the URDF's stem)")
-    p.set_defaults(func=_joints_eval)
-
-    p = sub.add_parser("urdf-info", help="links and joints of a URDF, in both frames")
-    p.add_argument("urdf", type=Path)
-    p.add_argument("--workspace", type=Path, help="calibration workspace (base frame)")
-    p.set_defaults(func=_urdf_info)
-
     p = sub.add_parser("mujoco-capture", help="record a capture in the MuJoCo world")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--name", default="mujoco_pick")
@@ -405,9 +307,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--cameras", nargs="+", help="cameras to record (default: ext1 ext2 wrist)"
     )
-    p.add_argument(
-        "--world", default="pick", help="world preset: pick, or cabinet (articulated)"
-    )
+    p.add_argument("--world", default="pick", help="world preset (pick)")
     p.set_defaults(func=_mujoco_capture)
 
     p = sub.add_parser("mujoco-eval", help="score a scene against MuJoCo ground truth")
