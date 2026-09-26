@@ -69,6 +69,7 @@ def _reconstruct(args: argparse.Namespace) -> None:
             cameras=tuple(args.cameras) if args.cameras else None,
             max_frames=args.max_frames,
             mask_robot=not args.no_robot_mask,
+            frame_selection=args.frame_selection,
             vlm_backend=args.vlm_backend,
             codex_reasoning=args.codex_reasoning,
             overrides=args.override,
@@ -123,6 +124,13 @@ def _refine(args: argparse.Namespace) -> None:
                 print(
                     f"{name}: dropped (no measured points match it, and the cameras "
                     f"see through {entry['seen_through']:.0%} of it)"
+                )
+            elif entry.get("unexplained_points_under"):
+                under = entry["unexplained_points_under"]
+                print(
+                    f"{name}: kept, though the cameras see through "
+                    f"{entry['seen_through']:.0%} of it: {under} measured points under "
+                    "it match no object (its shape is likely off)"
                 )
         for name, fall in seen["settled"].items():
             print(f"{name}: rested on a dropped object, lowered {fall * 100:.1f} cm")
@@ -254,6 +262,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     _robot_mask_argument(p)
     p.add_argument("--max-frames", type=int, default=12)
+    p.add_argument(
+        "--frame-selection",
+        default="hybrid",
+        choices=["hybrid", "heuristic", "vlm", "codex"],
+        help="how SimFoundry picks the frame to rebuild from; codex: Codex (xhigh) sees "
+        "every candidate and the task and picks the frame and the support surface",
+    )
     p.add_argument("--mamba", help="path to the mamba executable")
     p.add_argument("--vlm-backend", default="codex", choices=["codex", "gemini"])
     p.add_argument("--codex-reasoning", default="medium")

@@ -88,6 +88,11 @@ class SimFoundryConfig:
     # stages 3-12 see the same resolution whichever depth source was used.
     rgbd_scale: float = 0.5
     mask_robot: bool = True  # remove the robot from candidate depth (its model)
+    # How stage 3 picks the frame to rebuild from: SimFoundry's "hybrid" (geometric
+    # scores, then a VLM among the best few), "heuristic", "vlm", or "codex" (Codex, at
+    # xhigh effort, sees every candidate and the capture's instruction and picks the
+    # frame and the support surface in it).
+    frame_selection: str = "hybrid"
     # When SimFoundry finds no object, rebuild from up to this many other frames
     # (see SimFoundryBackend.retry_empty); 0: never.
     retry_frames: int = 3
@@ -243,6 +248,12 @@ class SimFoundryBackend(ReconstructionBackend):
             "s3_ground.use_fs=true",
             f"s5_scene.use_upsampled_source_image={upsample}",
             f"s7_mesh.low_vram={_hydra_bool(cfg.mesh_low_vram)}",
+            f"s3_ground.frame_selection.mode={cfg.frame_selection}",
+            *(
+                [f"s3_ground.frame_selection.task={_hydra_str(capture.instruction)}"]
+                if cfg.frame_selection == "codex" and capture.instruction
+                else []
+            ),
             *cfg.overrides,
             *extra,
         ]
@@ -486,6 +497,11 @@ def _frame_selection(scene_dir: Path) -> dict[str, Any]:
     if len(pinned) != 1:
         raise FileNotFoundError(f"no frame selection in {ground}: did stage 3 run?")
     return {"selected_idx": int(pinned[0].name.split("_")[1]), "decided_by": "pinned"}
+
+
+def _hydra_str(text: str) -> str:
+    """``text`` as a quoted Hydra override value."""
+    return json.dumps(text, ensure_ascii=False)
 
 
 def _write_mask(path: Path, mask: np.ndarray) -> None:

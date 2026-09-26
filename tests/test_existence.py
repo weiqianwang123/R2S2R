@@ -113,3 +113,16 @@ def test_nothing_changes_without_ghosts(tmp_path):
     kept, report = drop_unseen(scene, _views(scene))
     assert kept is scene and not report["settled"]
     assert report["objects"]["box"] == {"matched": True, "dropped": False}
+
+
+def test_a_real_object_with_a_wrong_shape_is_kept(tmp_path):
+    """A box reconstructed as a thin tower matches no cluster and is mostly seen
+    through, but the box's own points stand under it: it is kept, and flagged."""
+    box = _box(tmp_path, "box", (0.06, 0.06, 0.09))
+    tower = _box(tmp_path, "tower", (0.04, 0.04, 0.35))
+    views = _views(_scene([_at(box, (0.5, 0.0, 0.0))]))
+    kept, report = drop_unseen(_scene([_at(tower, (0.5, 0.0, 0.0))]), views)
+    entry = report["objects"]["tower"]
+    assert not entry["matched"] and entry["seen_through"] > 0.5
+    assert not entry["dropped"] and entry["unexplained_points_under"] > 0
+    assert [o.name for o in kept.objects] == ["tower"]

@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import pytest
 
-from r2s2r.io.droid import load_droid_episode
+from r2s2r.io.droid import ROLES, load_droid_episode
 from r2s2r.reconstruct import make_backend
 from r2s2r.reconstruct.simfoundry import (
     FRAME_MAP_FILENAME,
@@ -27,9 +27,11 @@ from r2s2r.transforms import (
 
 @pytest.fixture(name="capture")
 def fixture_capture(droid_episode, tmp_path):
-    """A capture built from the synthetic episode."""
+    """A capture built from the synthetic episode, with all three of its cameras."""
     episode, calib = droid_episode
-    return load_droid_episode(episode, tmp_path / "capture", calib_dir=calib, stride=2)
+    return load_droid_episode(
+        episode, tmp_path / "capture", calib_dir=calib, roles=ROLES, stride=2
+    )
 
 
 def _intrinsic_file(path):
@@ -80,6 +82,12 @@ def test_build_command(capture, tmp_path):
     assert cmd[cmd.index("--include") + 1] == "2,3"
     assert cmd[cmd.index("--input-mode") + 1] == "stereo"
     assert "--detect-articulation" not in cmd  # every object stays rigid
+    assert "s3_ground.frame_selection.mode=hybrid" in cmd
+    assert not any("frame_selection.task" in c for c in cmd)
+    codex = SimFoundryBackend(frame_selection="codex")
+    cmd, _, _ = codex.build_command(capture, tmp_path)
+    assert "s3_ground.frame_selection.mode=codex" in cmd
+    assert f"s3_ground.frame_selection.task={json.dumps(capture.instruction)}" in cmd
     assert "s2_depth.backend=fs" in cmd and "s3_ground.use_fs=true" in cmd
     assert f"scene_name={capture.name}" in cmd
     assert env["PYTHONPATH"].split(":")[0] == str(cwd)

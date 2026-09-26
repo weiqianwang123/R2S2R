@@ -71,14 +71,14 @@ base frame. Nothing in the pipeline depends on the kind of object.
 A capture is a set of calibrated cameras whose poses are in the robot base frame. The
 setup assumed throughout is one exterior camera and the wrist camera, or either alone;
 more cameras work too (DROID episodes have two exterior cameras; `droid-capture` takes
-ext1 and the wrist unless `--roles` says otherwise). Each camera contributes one image
-or many; the recording can be a demonstration, play, or a few still views. A frame needs
-its image, its pose `T_base_cam`, the robot's state (`joint_positions`,
-`gripper_position`), and depth: metric depth (`depth_image`, uint16 PNG in millimetres,
-from an RGB-D camera) or a stereo partner (`right_image`, camera `stereo_baseline`;
-FoundationStereo computes the depth, as for DROID's ZEDs). A wrist camera's pose comes
-from the arm's kinematics at each frame; a static camera's pose can be given once, on
-the camera.
+ext2, the exterior view used, and the wrist unless `--roles` says otherwise). Each
+camera contributes one image or many; the recording can be a demonstration, play, or a
+few still views. A frame needs its image, its pose `T_base_cam`, the robot's state
+(`joint_positions`, `gripper_position`), and depth: metric depth (`depth_image`, uint16
+PNG in millimetres, from an RGB-D camera) or a stereo partner (`right_image`, camera
+`stereo_baseline`; FoundationStereo computes the depth, as for DROID's ZEDs). A wrist
+camera's pose comes from the arm's kinematics at each frame; a static camera's pose can
+be given once, on the camera.
 
 `r2s2r droid-capture` and `r2s2r mujoco-capture` write `capture.json`
 (`r2s2r.structs.Capture`); other data can be brought in by writing the same file:
@@ -140,7 +140,17 @@ orchestrator with `PYTHONPATH` pointing at the submodule. The backend
    camera, or another moment, sees it differently.
 
 SimFoundry reconstructs from the one frame its selection picks, so most of the video
-goes unused; refinement uses the rest.
+goes unused; refinement uses the rest. By default (`--frame-selection hybrid`) stage 3
+scores every candidate geometrically (the largest table-like surface SAM3 finds, and the
+geometry standing on it), and a VLM picks among the best four; the support surface is
+the largest one in the chosen frame. With `--frame-selection codex` (on the fork),
+Codex at xhigh reasoning effort sees every candidate from every camera and the capture's
+instruction. It ranks the usable frames (preferring views that show each object's sides:
+a mesh generated from a near-overhead view comes out too wide or too tall), and names the
+support surface the task's objects stand on, with its box in each ranked frame. The first
+frame in that ranking whose support SAM3 can segment there, with a plane stage 3 accepts,
+is used, and stage 3 segments that surface instead of the largest. If Codex fails,
+selection falls back to hybrid.
 
 Every VLM call goes through the local Codex CLI (`gpt-6-astra`, reasoning `medium`):
 the fork's `Gemini.__new__` returns a `CodexVLM` when `SIMFOUNDRY_VLM_BACKEND=codex`,
@@ -170,7 +180,9 @@ closest to on average, so a flat object does not take a tall one's points. Then 
    An object is dropped when no cluster is matched to it and, rendered with the rest of
    the scene, most of its visible surface lies more than 2 cm in front of the measured
    depth: the cameras see through it. Whatever rested on it settles on what is beneath.
-   Objects too flat for the depth to rule on, or seen by no view, stay (`--keep-unseen`
+   Objects too flat for the depth to rule on, or seen by no view, stay, and so does one
+   standing over measured points no object explains: a real object whose generated
+   shape is off (flagged in the report) is better kept than lost (`--keep-unseen`
    keeps all);
 2. **checks every object's turn about the support normal** (`reconstruct/orientation.py`).
    Each candidate (0, 90, 180, 270°) is rendered into every view and scored by its depth
@@ -238,7 +250,7 @@ mkdir -p $D/recordings && gsutil -m cp $E/metadata_*.json $E/trajectory.h5 $D/ \
 
 r2s2r droid-capture $D --calib data/droid/calib --out outputs/iris/capture
 r2s2r reconstruct outputs/iris/capture --workdir outputs/iris/simfoundry \
-    --cameras ext1                                   # or: wrist, or: ext1 wrist
+    --cameras ext2                                   # or: wrist, or: ext2 wrist
 r2s2r refine outputs/iris/simfoundry/<scene>/scene --capture outputs/iris/capture \
     --views outputs/iris/simfoundry --out outputs/iris/scene
 OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/render_overlay.py outputs/iris/scene \
@@ -399,6 +411,8 @@ simulators, one joint-target interface with shared IK).
   so frames from different stereo cameras, and RGB-D frames, share one run.
 - Stages 5 and 9 read stereo / RGB-D captures (upstream: video mode only); stage 6
   accepts the Codex stand-in.
+- Frame selection mode `codex`: Codex chooses the frame and the support surface among all
+  candidates, given the task; stage 3 segments that surface.
 - Stages 3 and 5 and the frame selection ignore pixels without depth (holes in RGB-D
   input, the robot cut out), which would back-project onto the camera centre and pull
   support planes through it; stage 5 skips an object whose points span no volume

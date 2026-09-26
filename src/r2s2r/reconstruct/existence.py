@@ -14,8 +14,10 @@ An object is dropped when both hold:
    more than ``see_through`` in front of the measured depth.
 
 An object seen by no view, or too flat to rise above the depth noise, is kept: there is
-no evidence either way. Objects that rested on a dropped one settle on what is beneath
-them, the support if nothing else.
+no evidence either way. So is one standing over measured points that no object explains:
+that is a real object whose reconstructed shape disagrees with the depth (a mug generated
+twice as tall from an overhead view), and keeping it wrong beats losing it. Objects that
+rested on a dropped one settle on what is beneath them, the support if nothing else.
 """
 
 from __future__ import annotations
@@ -27,9 +29,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from r2s2r.assets import urdf_visual_points
-from r2s2r.reconstruct.refine import RefineConfig, observe
+from r2s2r.reconstruct.refine import Observation, RefineConfig, observe
 from r2s2r.reconstruct.render import SceneRenderer
-from r2s2r.structs import DepthView, SceneSpec
+from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
 from r2s2r.transforms import invert
 
 
@@ -41,6 +43,10 @@ class ExistenceConfig:
     min_share: float = 0.5  # of an object's visible pixels, seen through, to drop it
     min_pixels: int = 500  # visible pixels over all views; fewer is no evidence
     model_points: int = 4000
+    # An unmatched cluster with at least this share of its points inside an object's
+    # footprint (grown by footprint_margin) counts as that object's own points.
+    min_share_under: float = 0.5
+    footprint_margin: float = 0.02
     max_size: tuple[int, int] = (2560, 1600)
     refine: RefineConfig = field(default_factory=RefineConfig)
 
@@ -55,6 +61,7 @@ def drop_unseen(
     report: dict[str, Any] = {"objects": {}, "settled": {}}
     unmatched = [i for i in range(len(scene.objects)) if i not in obs.matches]
     shares = _see_through(scene, views, unmatched, cfg) if unmatched else {}
+    free = [g for j, g in enumerate(obs.groups) if j not in obs.matches.values()]
     dropped = set()
     for i, obj in enumerate(scene.objects):
         entry: dict[str, Any] = {"matched": i in obs.matches}
@@ -62,7 +69,11 @@ def drop_unseen(
             pixels, share = shares[i]
             entry.update(pixels=pixels, seen_through=round(share, 3))
             if pixels >= cfg.min_pixels and share > cfg.min_share:
-                dropped.add(i)
+                under = _points_under(obs, obj, free, cfg)
+                if under:
+                    entry["unexplained_points_under"] = under
+                else:
+                    dropped.add(i)
         entry["dropped"] = i in dropped
         report["objects"][obj.name] = entry
     if not dropped:
@@ -102,6 +113,22 @@ def drop_unseen(
         provenance={**scene.provenance, "existence": report},
     )
     return kept, report
+
+
+def _points_under(
+    obs: Observation, obj: ObjectSpec, groups: list, cfg: ExistenceConfig
+) -> int:
+    """How many points of unmatched clusters stand within ``obj``'s footprint."""
+    T = invert(obs.T_base_support) @ obj.T_base_obj
+    pts = urdf_visual_points(obj.asset_path, cfg.model_points) @ T[:3, :3].T + T[:3, 3]
+    lo = pts[:, :2].min(axis=0) - cfg.footprint_margin
+    hi = pts[:, :2].max(axis=0) + cfg.footprint_margin
+    count = 0
+    for g in groups:
+        xy = obs.above[g, :2]
+        if np.all((xy >= lo) & (xy <= hi), axis=1).mean() >= cfg.min_share_under:
+            count += len(g)
+    return count
 
 
 def _see_through(

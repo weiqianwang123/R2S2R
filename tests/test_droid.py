@@ -31,10 +31,14 @@ def test_align_steps_to_video_removes_latency():
 
 def test_load_droid_episode(droid_episode, tmp_path):
     """Frames, calibration and robot state end up in a reloadable capture; by default
-    from one exterior camera and the wrist camera."""
+    from one exterior camera (ext2) and the wrist camera."""
     episode, calib = droid_episode
     out = tmp_path / "capture"
-    capture = load_droid_episode(episode, out, calib_dir=calib, stride=2)
+    default = load_droid_episode(episode, tmp_path / "default", calib, stride=2)
+    assert set(default.cameras) == {SERIALS["ext2"], SERIALS["wrist"]}
+    capture = load_droid_episode(
+        episode, out, calib_dir=calib, roles=("ext1", "wrist"), stride=2
+    )
 
     assert capture.instruction == "put the block in the bowl"
     assert capture.static_steps == (0, CLOSE_STEP)
