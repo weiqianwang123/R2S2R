@@ -292,44 +292,55 @@ it (`--match-target`), and the policy only sees the reconstruction.
 
 ## Results
 
-Every run below uses the same code (2026-09-26); the camera setup is the only change.
-The exterior rows were run with **two** exterior cameras (the MuJoCo world had a second
-one then, and DROID has two); the setup assumed now is a single exterior camera, whose
-results (ext1 alone, ext1 + wrist) are still to be run. The wrist-only rows are
-unaffected.
+One exterior camera throughout (ext1 in MuJoCo, whose world has one; ext2 on DROID, the
+exterior view used in practice), with SimFoundry's default frame selection (hybrid) and
+with `--frame-selection codex`. Codex runs marked "first prompt" predate the prompt's
+preference for views that show object sides, and the check that the support can be
+segmented in the chosen frame (2026-09-26).
 
 **MuJoCo as real.** Error is the distance between the centres of the reconstructed and
 true objects' boxes, in the base frame. Isaac and MuJoCo are how far the same program
 lifted the crayon box, with the same commands; with the ground-truth objects it lifts
-14.9 cm in every setup.
+14.9 cm. Every scene has the three objects and nothing else.
 
-| Cameras | Frame SimFoundry picked | Error: crayon box / mug / figurine | Isaac | MuJoCo |
-|---|---|---|---|---|
-| two exterior (ext1 + ext2) | ext1 | 0.7 / 0.3 / 0.9 cm | 14.6 cm | 14.9 cm |
-| wrist | wrist | 1.0 / 0.3 / 1.1 cm | 14.8 cm | 14.7 cm |
-| two exterior + wrist | wrist | 0.7 / 0.5 / 1.5 cm | 14.8 cm | 14.9 cm |
+| Cameras | Frame selection | Frame used | Error: crayon box / mug / figurine | Isaac | MuJoCo |
+|---|---|---|---|---|---|
+| ext1 | hybrid | ext1 | 0.2 / 0.3 / 1.1 cm | 14.8 cm | 14.9 cm |
+| ext1 | codex (first prompt) | ext1 | 0.6 / 0.6 / 1.3 cm | 14.8 cm | 14.9 cm |
+| wrist | hybrid | wrist | 1.0 / 0.3 / 1.1 cm | 14.8 cm | 14.7 cm |
+| ext1 + wrist | hybrid | wrist | 0.6 / 0.4 / 1.7 cm | 14.8 cm | 14.9 cm |
+| ext1 + wrist | codex (first prompt) | wrist | 0.5 / 0.4 / 1.1 cm | 14.8 cm | 14.9 cm |
 
-The two-exterior scene also has a 6 mm flat disc beside the figurine, a ghost too thin for
-the existence check to rule on; the others have exactly the three objects. SimFoundry
-takes about 13 minutes per scene, mostly Codex image edits and Hunyuan.
+SimFoundry takes about 13 minutes per scene, mostly Codex image edits and Hunyuan.
 
-**DROID (IRIS episode, "place the marker in the red mug").** No ground truth: each scene
-is rendered in Isaac Lab from both exterior cameras and laid over their images, which
-for the wrist-only scene is a check by cameras it never used. Distances are between the
-objects' box centres and those of the exterior-camera scene.
+**DROID (IRIS episode, "place the marker in the red mug").** No ground truth. Each scene
+is rendered in Isaac Lab from the real exterior cameras and laid over their images, and
+checked against the depth of ext1, which no run below used: "seen through" is the share
+of the mug's visible surface that ext1's depth lies more than 2 cm behind (the marker,
+flat and mostly behind the mug from ext1, scores high in every scene).
 
-| Cameras | Frame SimFoundry used | Objects | Mug / marker vs exterior | Table outline |
-|---|---|---|---|---|
-| two exterior (ext1 + ext2) | ext2, after 1 empty ext1 frame | marker, red mug | – | 0.37 × 0.44 m |
-| wrist | wrist | marker, mug | 4.5 / 0.7 cm | 0.40 × 0.47 m |
-| two exterior + wrist | ext2, after 3 empty frames | marker, red mug | 0.4 / 0.1 cm | 0.39 × 0.48 m |
+| Cameras | Frame selection | Frame used | Objects | Mug seen through | Table outline |
+|---|---|---|---|---|---|
+| ext2 | hybrid | ext2 | marker, red mug | 0.05 | 0.37 × 0.43 m |
+| ext2 | codex (first prompt) | ext2 | marker, red mug | 0.13 | 0.37 × 0.43 m |
+| wrist | hybrid | wrist | marker, mug 14.8 × 13.4 cm | 0.70 | 0.40 × 0.47 m |
+| wrist | codex | wrist, 22° off vertical | marker, mug 14 cm tall (kept, flagged) | 0.93 | 0.39 × 0.47 m |
+| ext2 + wrist | hybrid | ext2 | marker, red mug | 0.10 | 0.40 × 0.44 m |
+| ext2 + wrist | codex (first prompt) | wrist, near overhead | marker, mug 14.7 × 13.7 cm | 0.51 | 0.40 × 0.44 m |
+| ext2 + wrist | codex | ext2 | marker, red mug | 0.03 | 0.40 × 0.44 m |
 
-With exterior cameras, objects and table line up with the real images in both views.
-The wrist-only scene places the marker as well, but its mug, generated from close-up
-wrist views, came out pale and too large (14.8 × 13.4 cm against 8.6 × 10.7 cm), and its
-table outline overhangs by about 3 cm. "Empty" frames are ext1 frames, and one ext2
-frame with the arm over the table, where stage 3 took the robot's mounting table for
-the support; the retry (above) rebuilt from other frames.
+With ext2, objects and table line up with the real images. DROID's wrist camera looks
+down steeply during the episode (16–34° off vertical), and a mug generated from one such
+frame comes out wrong: too wide from the most overhead ones, twice as tall from a more
+oblique one; the marker, flat anyway, comes out right. Choosing among these frames
+cannot fix that; generating meshes from several frames would (see the roadmap). The
+first Codex prompt asked for objects as large as possible and so chose an overhead
+wrist frame; asked to prefer views that show the objects' sides, it chose ext2.
+
+From ext1, the other exterior view, hybrid selection took the robot's mounting table
+for the support in every frame and the scene came out empty after three retries; Codex
+chose the side table, but from there the marker hides behind the mug, so only the mug
+was reconstructed.
 
 What the runs exposed:
 
@@ -338,14 +349,25 @@ What the runs exposed:
 - **Ghost objects.** SimFoundry's erase-and-inpaint loop can leave a smudge where it
   erased an object, and then reconstruct the smudge. In one MuJoCo run a 31 × 23 × 4 cm
   slab appeared under the mug, which physics then set on top of it, 4 cm up. The
-  existence check dropped the slab and the mug settled back (4.7 → 0.8 cm off).
+  existence check dropped the slab and the mug settled back (4.7 → 0.8 cm off). A real
+  mug generated 14 cm tall then looked like a ghost to that check too; objects standing
+  over measured points that no object explains are now kept, and flagged.
 - **Two tables.** On DROID, SimFoundry often chose an ext1 frame and took the robot's
   mounting table for the support (stage 3 takes the largest surface it detects, and the
   clamps counted as four objects in the frame scores); the detector then found nothing
   on it. With the arm over the side table, an ext2 frame did the same. Such runs are
-  now rebuilt from other frames, the camera with the fewest empty frames first. With
-  ext1 as the only exterior camera, the retry has only ext1's other frames and the
-  wrist camera's to fall back on: that setup is the one to run next.
+  rebuilt from other frames, the camera with the fewest empty frames first, but with
+  ext1 as the only exterior camera every frame failed. Codex frame selection avoids it:
+  it names the surface the objects stand on, and stage 3 segments that one.
+- **One view per mesh.** Each object's mesh is generated from the one chosen frame, so a
+  near-overhead view gives a mug the wrong width or height. Asked only for large
+  objects, Codex chose such a view; asked to prefer views that show the objects' sides,
+  it chose well.
+- **A surface that will not segment.** In a close-up wrist frame the table Codex named
+  scored below SAM3's threshold; stage 3 fell back to the floor, 0.57 m lower, and the
+  scene landed 67 cm off. Another frame tripped stage 3's roll limit. Codex's frame is
+  now used only if stage 3 can segment its surface there, with a plane stage 3 accepts;
+  otherwise the next frame in Codex's ranking is.
 - **Holes in the depth.** Upstream SimFoundry always has dense depth; r2s2r's has none
   where the robot is cut out. SimFoundry back-projected those pixels onto the camera
   centre: support planes were fitted through it (a frame with the arm over the table
@@ -374,7 +396,8 @@ What the runs exposed:
 2. **Fixed verifiers, agent calibration** for object grounding, physical parameters
    (rest stability and sim-vs-real replay as verifiers) and geometry.
 3. **Isaac Lab env**: wrap the scene builder into a `ManagerBasedRLEnvCfg`.
-4. **Better shapes**: generate meshes from several views.
+4. **Better shapes**: generate meshes from several views. A single frame cannot give a
+   wrist-only DROID capture a right mug: every wrist frame looks down steeply.
 5. **Deployment** to the real DROID Franka: a `RobotInterface` over its controller.
 
 Scans without poses (a phone video, a hand-held RGB-D sweep, the robot located in them)
@@ -411,8 +434,9 @@ simulators, one joint-target interface with shared IK).
   so frames from different stereo cameras, and RGB-D frames, share one run.
 - Stages 5 and 9 read stereo / RGB-D captures (upstream: video mode only); stage 6
   accepts the Codex stand-in.
-- Frame selection mode `codex`: Codex chooses the frame and the support surface among all
-  candidates, given the task; stage 3 segments that surface.
+- Frame selection mode `codex`: Codex ranks all candidates, given the task, and names
+  the support surface; the first ranked frame whose surface segments, with a plane
+  stage 3 accepts, is used, and stage 3 segments that surface.
 - Stages 3 and 5 and the frame selection ignore pixels without depth (holes in RGB-D
   input, the robot cut out), which would back-project onto the camera centre and pull
   support planes through it; stage 5 skips an object whose points span no volume
