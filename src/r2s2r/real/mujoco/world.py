@@ -68,11 +68,8 @@ def default_objects() -> list[ObjectConfig]:
 
 
 def default_cameras() -> list[CameraConfig]:
-    """Two external views, front-left and right, like DROID's ext1/ext2."""
-    return [
-        CameraConfig("ext1", (1.05, 0.42, 0.52), (0.52, 0.0, 0.03)),
-        CameraConfig("ext2", (0.40, -0.72, 0.58), (0.54, 0.0, 0.03)),
-    ]
+    """One exterior view, front-left of the table (the wrist camera comes on top)."""
+    return [CameraConfig("ext1", (1.05, 0.42, 0.52), (0.52, 0.0, 0.03))]
 
 
 @dataclass

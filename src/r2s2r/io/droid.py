@@ -33,7 +33,8 @@ from r2s2r.transforms import intrinsics_matrix, pose6d_to_matrix
 
 logger = logging.getLogger(__name__)
 
-ROLES = ("ext1", "ext2", "wrist")
+ROLES = ("ext1", "ext2", "wrist")  # the cameras a DROID episode has
+DEFAULT_ROLES = ("ext1", "wrist")  # one exterior camera, and the wrist's
 IMPROVED_EXTRINSICS_FILES = (
     "cam2base_extrinsic_superset.json",
     "cam2base_extrinsics.json",
@@ -146,7 +147,7 @@ def load_droid_episode(
     episode_dir: str | Path,
     out_dir: str | Path,
     calib_dir: str | Path,
-    roles: Iterable[str] = ROLES,
+    roles: Iterable[str] = DEFAULT_ROLES,
     stride: int = 5,
     gripper_threshold: float = 0.05,
 ) -> Capture:

@@ -3,7 +3,7 @@
 Captures: the robot's calibrated cameras, poses in its base frame, with joint states::
 
     r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
-    r2s2r mujoco-capture --out CAPTURE_DIR [--cameras ext1 ext2 wrist]
+    r2s2r mujoco-capture --out CAPTURE_DIR [--cameras ext1 wrist]
 
 Reconstruction and refinement::
 
@@ -28,7 +28,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from r2s2r.io.droid import load_droid_episode
+from r2s2r.io.droid import DEFAULT_ROLES, load_droid_episode
 from r2s2r.io.rgbd import capture_depth_views
 from r2s2r.policy.scoring import summarize
 from r2s2r.reconstruct import make_backend, registered_backends
@@ -238,7 +238,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("episode_dir", type=Path)
     p.add_argument("--calib", type=Path, required=True, help="KarlP/droid JSON dir")
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--roles", nargs="+", default=["ext1", "ext2", "wrist"])
+    p.add_argument("--roles", nargs="+", default=list(DEFAULT_ROLES))
     p.add_argument("--stride", type=int, default=5)
     p.add_argument("--gripper-threshold", type=float, default=0.05)
     p.set_defaults(func=_droid_capture)
@@ -305,7 +305,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--name", default="mujoco_pick")
     p.add_argument("--every", type=int, default=5, help="save every n control steps")
     p.add_argument(
-        "--cameras", nargs="+", help="cameras to record (default: ext1 ext2 wrist)"
+        "--cameras", nargs="+", help="cameras to record (default: ext1 wrist)"
     )
     p.add_argument("--world", default="pick", help="world preset (pick)")
     p.set_defaults(func=_mujoco_capture)

@@ -281,7 +281,7 @@ def test_an_empty_scene_is_rebuilt_from_other_frames(capture, tmp_path, monkeypa
     """No objects from one frame: stages 3-12 rerun pinned to other eligible frames,
     another camera's best first, until one gives objects; stage 1-2 outputs kept."""
     backend = SimFoundryBackend(
-        cameras=("ext1", "ext2"), max_frames=4, mask_robot=False
+        cameras=("ext1", "wrist"), max_frames=4, mask_robot=False
     )
     backend.prepare_inputs(capture, tmp_path)
     scene_dir = backend.scene_dir(capture, tmp_path)

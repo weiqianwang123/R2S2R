@@ -3,13 +3,13 @@
 # the scene with its joint states -> SimFoundry -> refine -> pick in Isaac Lab ->
 # deploy the same program in MuJoCo, plus the ground-truth (oracle) baseline.
 #
-# Usage: CAMERAS="ext2 wrist" bash scripts/mujoco_demo.sh [OUT_DIR]
-#   CAMERAS: the cameras to record and reconstruct from (default: ext1 ext2 wrist).
+# Usage: CAMERAS="wrist" bash scripts/mujoco_demo.sh [OUT_DIR]
+#   CAMERAS: the cameras to record and reconstruct from (default: ext1 wrist).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-${ROOT}/outputs/mujoco_demo}"
-read -r -a CAMERAS <<< "${CAMERAS:-ext1 ext2 wrist}"
+read -r -a CAMERAS <<< "${CAMERAS:-ext1 wrist}"
 PY="${ROOT}/.venv/bin/python"
 R2S2R="${ROOT}/.venv/bin/r2s2r"
 export OMNI_KIT_ACCEPT_EULA=YES

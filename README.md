@@ -3,7 +3,7 @@
 R2S2R turns recordings from a robot's own cameras into a simulation of its workspace,
 and deploys what is learned there back to the robot. The input is what the robot
 records while it runs: teleoperated demonstrations, play data, or just a few views
-from its exterior cameras, its wrist camera, or both. Every camera is calibrated, every
+from its exterior camera, its wrist camera, or both. Every camera is calibrated, every
 pose is in the robot's base frame, and every frame carries the robot's joint state. The
 robot's model is known. The output is an Isaac Lab scene of rigid objects on their
 support, in the robot's base frame. MuJoCo can stand in for the real world: it records
@@ -19,7 +19,7 @@ camera).
 | Piece | State |
 |---|---|
 | Captures from DROID episodes, from MuJoCo, or any `capture.json` | done |
-| Any camera mix: exterior only, wrist only, or both, one to many images each | done: MuJoCo and DROID, all three |
+| One exterior camera, the wrist camera, or both; one to many images each | done: MuJoCo and DROID (see [Results](#results) for which setups were run) |
 | Robot removed from depth (its model rendered at the recorded joints) | done: Panda + Franka Hand, DROID's Panda + Robotiq |
 | SimFoundry backend (Codex as the VLM), stereo or RGB-D input | done |
 | Refinement: objects not there dropped, orientation check, position, support outline | done |
@@ -68,15 +68,17 @@ base frame. Nothing in the pipeline depends on the kind of object.
 
 ### Capture: the robot's cameras, poses in its base frame
 
-A capture is any set of calibrated cameras whose poses are in the robot base frame: one
-or two exterior cameras (DROID has two), the wrist camera alone, or both. Each camera
-contributes one image or many; the recording can be a demonstration, play, or a few
-still views. A frame needs its image, its pose `T_base_cam`, the robot's state
-(`joint_positions`, `gripper_position`), and depth: metric depth (`depth_image`, uint16
-PNG in millimetres, from an RGB-D camera) or a stereo partner (`right_image`, camera
-`stereo_baseline`; FoundationStereo computes the depth, as for DROID's ZEDs). A wrist
-camera's pose comes from the arm's kinematics at each frame; a static camera's pose can
-be given once, on the camera.
+A capture is a set of calibrated cameras whose poses are in the robot base frame. The
+setup assumed throughout is one exterior camera and the wrist camera, or either alone;
+more cameras work too (DROID episodes have two exterior cameras; `droid-capture` takes
+ext1 and the wrist unless `--roles` says otherwise). Each camera contributes one image
+or many; the recording can be a demonstration, play, or a few still views. A frame needs
+its image, its pose `T_base_cam`, the robot's state (`joint_positions`,
+`gripper_position`), and depth: metric depth (`depth_image`, uint16 PNG in millimetres,
+from an RGB-D camera) or a stereo partner (`right_image`, camera `stereo_baseline`;
+FoundationStereo computes the depth, as for DROID's ZEDs). A wrist camera's pose comes
+from the arm's kinematics at each frame; a static camera's pose can be given once, on
+the camera.
 
 `r2s2r droid-capture` and `r2s2r mujoco-capture` write `capture.json`
 (`r2s2r.structs.Capture`); other data can be brought in by writing the same file:
@@ -236,7 +238,7 @@ mkdir -p $D/recordings && gsutil -m cp $E/metadata_*.json $E/trajectory.h5 $D/ \
 
 r2s2r droid-capture $D --calib data/droid/calib --out outputs/iris/capture
 r2s2r reconstruct outputs/iris/capture --workdir outputs/iris/simfoundry \
-    --cameras ext1 ext2                              # or: wrist, or: ext1 ext2 wrist
+    --cameras ext1                                   # or: wrist, or: ext1 wrist
 r2s2r refine outputs/iris/simfoundry/<scene>/scene --capture outputs/iris/capture \
     --views outputs/iris/simfoundry --out outputs/iris/scene
 OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/render_overlay.py outputs/iris/scene \
@@ -246,17 +248,17 @@ OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/render_overlay.py outputs/iris/
 ## Quickstart: MuJoCo as real
 
 A Franka Panda with the Franka Hand stands on a table with Google Scanned Objects (a
-crayon box to pick, a mug, a figurine), watched by two RealSense-like RGB-D cameras
-(1280×720, f = 910 px) and a wrist camera (1280×720, f = 800 px); depth has no return
-nearer than 0.1 m or beyond 10 m. While recording, the arm points the wrist camera at
-the table from three directions. The pipeline sees only what a real rig would record
-(images, depth, calibration, joint states); ground truth goes into `capture.metadata`
-for scoring.
+crayon box to pick, a mug, a figurine), watched by a RealSense-like RGB-D camera in
+front of the table (1280×720, f = 910 px) and a wrist camera (1280×720, f = 800 px);
+depth has no return nearer than 0.1 m or beyond 10 m. While recording, the arm points
+the wrist camera at the table from three directions. The pipeline sees only what a
+real rig would record (images, depth, calibration, joint states); ground truth goes
+into `capture.metadata` for scoring.
 
 ```bash
-CAMERAS="ext1 ext2 wrist" bash scripts/mujoco_demo.sh outputs/mujoco_demo   # all of:
+CAMERAS="ext1 wrist" bash scripts/mujoco_demo.sh outputs/mujoco_demo   # all of:
 
-r2s2r mujoco-capture --out outputs/mujoco_demo/capture --cameras ext1 ext2 wrist
+r2s2r mujoco-capture --out outputs/mujoco_demo/capture --cameras ext1 wrist
 r2s2r reconstruct outputs/mujoco_demo/capture --workdir outputs/mujoco_demo/simfoundry
 r2s2r refine outputs/mujoco_demo/simfoundry/mujoco_pick/scene \
     --capture outputs/mujoco_demo/capture --capture-depth --out outputs/mujoco_demo/scene_refined
@@ -279,6 +281,10 @@ it (`--match-target`), and the policy only sees the reconstruction.
 ## Results
 
 Every run below uses the same code (2026-09-26); the camera setup is the only change.
+The exterior rows were run with **two** exterior cameras (the MuJoCo world had a second
+one then, and DROID has two); the setup assumed now is a single exterior camera, whose
+results (ext1 alone, ext1 + wrist) are still to be run. The wrist-only rows are
+unaffected.
 
 **MuJoCo as real.** Error is the distance between the centres of the reconstructed and
 true objects' boxes, in the base frame. Isaac and MuJoCo are how far the same program
@@ -287,11 +293,11 @@ lifted the crayon box, with the same commands; with the ground-truth objects it 
 
 | Cameras | Frame SimFoundry picked | Error: crayon box / mug / figurine | Isaac | MuJoCo |
 |---|---|---|---|---|
-| exterior (ext1 + ext2) | ext1 | 0.7 / 0.3 / 0.9 cm | 14.6 cm | 14.9 cm |
+| two exterior (ext1 + ext2) | ext1 | 0.7 / 0.3 / 0.9 cm | 14.6 cm | 14.9 cm |
 | wrist | wrist | 1.0 / 0.3 / 1.1 cm | 14.8 cm | 14.7 cm |
-| exterior + wrist | wrist | 0.7 / 0.5 / 1.5 cm | 14.8 cm | 14.9 cm |
+| two exterior + wrist | wrist | 0.7 / 0.5 / 1.5 cm | 14.8 cm | 14.9 cm |
 
-The exterior scene also has a 6 mm flat disc beside the figurine, a ghost too thin for
+The two-exterior scene also has a 6 mm flat disc beside the figurine, a ghost too thin for
 the existence check to rule on; the others have exactly the three objects. SimFoundry
 takes about 13 minutes per scene, mostly Codex image edits and Hunyuan.
 
@@ -302,9 +308,9 @@ objects' box centres and those of the exterior-camera scene.
 
 | Cameras | Frame SimFoundry used | Objects | Mug / marker vs exterior | Table outline |
 |---|---|---|---|---|
-| exterior (ext1 + ext2) | ext2, after 1 empty ext1 frame | marker, red mug | – | 0.37 × 0.44 m |
+| two exterior (ext1 + ext2) | ext2, after 1 empty ext1 frame | marker, red mug | – | 0.37 × 0.44 m |
 | wrist | wrist | marker, mug | 4.5 / 0.7 cm | 0.40 × 0.47 m |
-| exterior + wrist | ext2, after 3 empty frames | marker, red mug | 0.4 / 0.1 cm | 0.39 × 0.48 m |
+| two exterior + wrist | ext2, after 3 empty frames | marker, red mug | 0.4 / 0.1 cm | 0.39 × 0.48 m |
 
 With exterior cameras, objects and table line up with the real images in both views.
 The wrist-only scene places the marker as well, but its mug, generated from close-up
@@ -325,7 +331,9 @@ What the runs exposed:
   mounting table for the support (stage 3 takes the largest surface it detects, and the
   clamps counted as four objects in the frame scores); the detector then found nothing
   on it. With the arm over the side table, an ext2 frame did the same. Such runs are
-  now rebuilt from other frames, the camera with the fewest empty frames first.
+  now rebuilt from other frames, the camera with the fewest empty frames first. With
+  ext1 as the only exterior camera, the retry has only ext1's other frames and the
+  wrist camera's to fall back on: that setup is the one to run next.
 - **Holes in the depth.** Upstream SimFoundry always has dense depth; r2s2r's has none
   where the robot is cut out. SimFoundry back-projected those pixels onto the camera
   centre: support planes were fitted through it (a frame with the arm over the table
