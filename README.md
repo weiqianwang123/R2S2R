@@ -73,7 +73,7 @@ flowchart LR
 |:-:|:-:|:-:|
 | <img src="docs/robots/franka_panda.png" width="240"> | <img src="docs/robots/droid_franka.png" width="240"> | <img src="docs/robots/ur5e_2f140.png" width="240"> |
 | Panda + Franka Hand | Panda + Robotiq 2F-85 | UR5e + Robotiq 2F-140 |
-| MuJoCo world `panda_table`: RGB-D `ext1` + `wrist` | DROID: ZED 2 `ext1` `ext2` + ZED Mini `wrist`, stereo | [PhysCoder](https://github.com/Jaraxxus-Me/physcoder)'s robot and MuJoCo scene: `ext1` at its real front camera + `wrist` |
+| MuJoCo world `panda_table`: RGB-D `ext1` + `wrist` | DROID: ZED 2 `ext1` `ext2` + ZED Mini `wrist`, stereo | [PhysCoder](https://github.com/Jaraxxus-Me/physcoder)'s robot and MuJoCo scene: `wrist` (optional `ext1` at its real front camera) |
 | MuJoCo Menagerie, Isaac Lab's Franka | Menagerie, Isaac Lab's Franka + Robotiq | PhysCoder's MJCF and USD, used by path from its checkout |
 
 A robot is one `RobotSpec` module in [`src/r2s2r/robots/`](src/r2s2r/robots) (its MuJoCo
@@ -93,12 +93,10 @@ PhysCoder's UR5e scene in MuJoCo, agentic method, from the wrist camera alone:
 
 | method | robot, capture | cameras | time | against the ground truth | replay depth residual |
 |---|---|---|--:|---|---|
-| fixed | Panda, MuJoCo `panda_table` | ext1 + wrist | 15 min | 3 objects: centres 0.6-1.2 cm off, sizes up to 2.6 cm; support exact | ext1 1 mm, wrist < 1 mm |
-| fixed | DROID Franka, real (IRIS) | ext2 + wrist | 11 min | none | ext2 2 mm, wrist 4 mm |
-| fixed | UR5e, MuJoCo `physcoder_box_block` | ext1 + wrist | 9 min | block 0.3 cm; the box's floor taken for the support: box missing, support +4.1 cm | ext1 71 mm, wrist 52 mm |
-| fixed | UR5e, `physcoder_box_block` | wrist | 17 min | the box's floor taken for the support (+3.9 cm): box a flat slab 8.6 cm off; block 1.5 cm off, half its size | wrist 52 mm |
-| agentic | UR5e, `physcoder_box_block` | ext1 + wrist | 43 min | block and box within 0.1 cm, sizes 0.2 cm; support exact | ext1 1 mm, wrist 1 mm |
-| agentic | UR5e, `physcoder_box_block` | wrist | 41 min | block and box within 0.1 cm, sizes 0.1 cm; support +0.1 cm | wrist < 1 mm |
+| fixed | Panda, MuJoCo `panda_table` | ext1 + wrist | 15 min | centres 0.6-1.2 cm, sizes up to 2.6 cm | ext1 1 mm, wrist < 1 mm |
+| fixed | DROID Franka, real (IRIS) | ext2 + wrist | 11 min | – | ext2 2 mm, wrist 4 mm |
+| fixed | UR5e, MuJoCo `physcoder_box_block` | wrist | 17 min | the box's floor taken for the table: box lost | wrist 52 mm |
+| agentic | UR5e, MuJoCo `physcoder_box_block` | wrist | 41 min | centres within 0.1 cm, sizes within 0.1 cm | wrist < 1 mm |
 
 Ground truth: `r2s2r eval` of the final scene. Residual: the median absolute depth
 difference between the replay and the recording, over a camera's frames. The viewer, on
