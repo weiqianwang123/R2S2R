@@ -10,10 +10,10 @@ from typing import Any
 import numpy as np
 import trimesh
 
-from r2s2r.agentic.geometry import load_mesh
-from r2s2r.agentic.objects import render_preview
 from r2s2r.assets import urdf_visual_meshes
 from r2s2r.structs import SCENE_FILENAME, SceneSpec
+from r2s2r.tools.geometry import UP_ROTATIONS, load_mesh
+from r2s2r.tools.objects import render_preview
 
 SUPPORT_THICKNESS = 0.02
 SUPPORT_COLOR = [150, 170, 200, 110]
@@ -27,8 +27,10 @@ def mesh_glb(path: Path) -> bytes:
     return bytes(loaded.export(file_type="glb"))
 
 
-def mesh_preview(path: Path) -> bytes:
-    """Four views of a generated (y-up) mesh, as PNG."""
+def mesh_preview(path: Path, up: str) -> bytes:
+    """Four views of a mesh turned ``up``-axis up, as PNG."""
+    if up not in UP_ROTATIONS:
+        raise FileNotFoundError(f"no up axis {up!r}")
     with tempfile.TemporaryDirectory() as tmp:
         obj = Path(tmp) / "mesh.obj"
         if path.suffix.lower() == ".obj":
@@ -36,7 +38,7 @@ def mesh_preview(path: Path) -> bytes:
         else:
             load_mesh(path).export(obj)
         png = Path(tmp) / "preview.png"
-        render_preview(obj, png)
+        render_preview(obj, png, up)
         return png.read_bytes()
 
 

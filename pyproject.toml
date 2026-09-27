@@ -39,7 +39,7 @@ r2s2r = "r2s2r.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-r2s2r = ["py.typed", "agentic/briefs/*.md", "viewer/static/*"]
+r2s2r = ["py.typed", "pipeline/agentic/briefs/*.md", "viewer/static/*"]
 
 [tool.black]
 line-length = 88

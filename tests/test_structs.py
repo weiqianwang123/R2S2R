@@ -1,12 +1,22 @@
-"""Tests for structs.py: frame selection across cameras, static camera poses."""
+"""Tests for structs.py: frame selection across cameras, static camera poses, depth
+images, scenes that move with their assets."""
 
 import json
+import shutil
 from dataclasses import asdict
 
 import numpy as np
 import pytest
 
-from r2s2r.structs import CameraSpec, Capture, FrameRecord
+from r2s2r.structs import (
+    CameraSpec,
+    Capture,
+    FrameRecord,
+    ObjectSpec,
+    SceneSpec,
+    read_depth,
+    write_depth,
+)
 
 
 def _capture(frames_per_camera, static=(0, 100)):
@@ -47,6 +57,59 @@ def test_cameras_by_role_or_serial_and_static_window():
     assert capture.select_frames(["a"], max_frames=1)[0].step == 2
     only_even = capture.select_frames(keep=lambda f: f.step % 2 == 0)
     assert {f.step for f in only_even} == {2, 4}
+
+
+def test_frames_by_camera_and_step():
+    """A frame is found by camera serial or role and step; the static window is
+    half-open."""
+    capture = _capture({"a": ("ext1", 3), "b": ("wrist", 3)}, static=(1, 3))
+    assert capture.frame("wrist", 2) is capture.frame("b", 2)
+    assert capture.frame("b", 2).camera == "b" and capture.frame("b", 2).step == 2
+    with pytest.raises(KeyError):
+        capture.frame("ext1", 7)
+    assert [capture.in_static(step) for step in range(4)] == [False, True, True, False]
+
+
+def test_depth_png_round_trip(tmp_path):
+    """Depth comes back to the millimetre; out-of-range values are clipped."""
+    depth = np.array([[0.0, 0.2345], [1.5, 70.0]])
+    write_depth(tmp_path / "d.png", depth)
+    back = read_depth(tmp_path / "d.png")
+    assert back.dtype == np.float32
+    assert np.allclose(back, [[0.0, 0.2345], [1.5, 65.535]], atol=5e-4)
+
+
+def test_scene_asset_paths_are_relative_on_disk(tmp_path):
+    """A scene is saved with its asset paths relative to it, so a run moves as a whole;
+    in memory they are absolute, and old scenes' absolute paths still load."""
+    urdf = tmp_path / "run/s4_scene/scene/objects/box/box.urdf"
+    urdf.parent.mkdir(parents=True)
+    urdf.write_text("<robot/>")
+    scene = SceneSpec(
+        "t",
+        "franka_panda",
+        [ObjectSpec("box", "box", str(urdf), np.eye(4))],
+        np.eye(4),
+        {},
+        "c",
+        0,
+        np.zeros(7),
+    )
+    scene.save(tmp_path / "run/s4_scene/scene")
+    scene.save(tmp_path / "run/s5_settle/scene")  # a later stage refers to them
+    path = tmp_path / "run/s5_settle/scene/scene.json"
+    saved = json.loads(path.read_text())
+    assert saved["objects"][0]["asset_path"] == (
+        "../../s4_scene/scene/objects/box/box.urdf"
+    )
+    shutil.move(tmp_path / "run", tmp_path / "moved")
+    loaded = SceneSpec.load(tmp_path / "moved/s5_settle/scene")
+    moved = tmp_path / "moved/s4_scene/scene/objects/box/box.urdf"
+    assert loaded.objects[0].asset_path == str(moved.resolve())
+    saved["objects"][0]["asset_path"] = str(moved)  # as older scenes have it
+    (tmp_path / "moved/s5_settle/scene/scene.json").write_text(json.dumps(saved))
+    old = SceneSpec.load(tmp_path / "moved/s5_settle/scene")
+    assert old.objects[0].asset_path == str(moved.resolve())
 
 
 def test_a_static_cameras_pose_is_given_once(tmp_path):

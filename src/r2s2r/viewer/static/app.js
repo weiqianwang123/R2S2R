@@ -20,12 +20,14 @@ const ROLE_COLORS = ['#5aa9ff', '#f0b429', '#3fb97a', '#ef5b5b', '#b08cff'];
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const WS = new URLSearchParams(location.search).get('ws') || '';
-const Q = `ws=${encodeURIComponent(WS)}`;
+const RUN = new URLSearchParams(location.search).get('run') || '';
+const Q = `run=${encodeURIComponent(RUN)}`;
 const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
 const fileUrl = (p) => `/f/${enc(p)}?${Q}`;
 const thumbUrl = (p, w = 480) => `/thumb/${enc(p)}?w=${w}&${Q}`;
-const inWs = (p) => p && !p.startsWith('/');
+const inRun = (p) => p && !p.startsWith('/');
+// Turns a mesh file's up axis to z (as tools/geometry.py UP_ROTATIONS does).
+const UP_EULER = { y: [Math.PI / 2, 0, 0], '-y': [-Math.PI / 2, 0, 0], x: [0, -Math.PI / 2, 0], z: [0, 0, 0] };
 const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(+v) ? '—' : Number(v).toFixed(d));
 const iouClass = (v) => (v >= 0.85 ? 'iou-good' : v >= 0.7 ? 'iou-mid' : 'iou-bad');
 
@@ -39,7 +41,7 @@ const S = {
 // ------------------------------------------------------------------------ start
 async function init() {
   S.rec = await (await fetch(`/api/recording?${Q}`)).json();
-  listWorkspaces();
+  listRuns();
   $('capture-name').textContent = S.rec.name;
   $('instruction').textContent = S.rec.instruction ? `“${S.rec.instruction}”` : '';
   document.title = `R2S2R Run Viewer · ${S.rec.name}`;
@@ -54,12 +56,12 @@ async function init() {
   setInterval(poll, POLL_MS);
 }
 
-async function listWorkspaces() {
-  const names = await (await fetch('/api/workspaces')).json();
-  const sel = $('workspace-select');
+async function listRuns() {
+  const names = await (await fetch('/api/runs')).json();
+  const sel = $('run-select');
   sel.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
-  sel.value = WS || names[0] || '';
-  sel.onchange = () => { location.search = `?ws=${encodeURIComponent(sel.value)}`; };
+  sel.value = RUN || names[0] || '';
+  sel.onchange = () => { location.search = `?run=${encodeURIComponent(sel.value)}`; };
 }
 
 function bindUi() {
@@ -134,9 +136,9 @@ function renderAxis() {
   const running = S.state.stages.find((s) => s.status === 'running');
   const node = running && NODES.find((n) => n.stage === running.key);
   const failed = S.state.stages.find((s) => s.status === 'failed');
-  $('activity').textContent = failed ? `stage ${failed.key} failed`
+  $('activity').textContent = failed ? `stage ${failed.key} failed${failed.error ? `: ${failed.error.slice(0, 160)}` : ''}`
     : running ? `${node.label}${running.activity ? ` · ${running.activity}` : ''}`
-    : S.state.stages.every((s) => s.status === 'done') ? 'finished' : '';
+    : S.state.stages.every((s) => ['done', 'skipped'].includes(s.status)) ? 'finished' : '';
 }
 
 // ----------------------------------------------------------------------- panels
@@ -164,7 +166,7 @@ function renderPanel(force) {
 }
 
 const notYet = (stage) => `<div class="empty">Not ready yet (stage ${stage} is ${esc((S.state.stages.find((s) => s.key === stage) || {}).status || 'pending')}).</div>`;
-const card = (path, caption, w = 480) => (inWs(path)
+const card = (path, caption, w = 480) => (inRun(path)
   ? `<div class="card"><img loading="lazy" src="${thumbUrl(path, w)}" data-full="${fileUrl(path)}" data-caption="${esc(path)}"><div class="cap">${caption}</div></div>`
   : '');
 
@@ -192,13 +194,13 @@ const PANELS = {
     const objs = S.state.objects;
     if (!objs?.length) return notYet('3');
     let html = `<div class="grid">${objs.map((o, k) => {
-      const src = inWs(o.preview) ? thumbUrl(o.preview, 480) : inWs(o.glb) ? `/preview/${enc(o.glb)}?${Q}` : '';
+      const src = inRun(o.preview) ? thumbUrl(o.preview, 480) : inRun(o.glb) ? `/preview/${enc(o.glb)}?up=${encodeURIComponent(o.up)}&${Q}` : '';
       const iou = o.iou != null ? `<span class="${iouClass(o.iou)}" title="mean silhouette IoU over the fitted frames">IoU ${fmt(o.iou)}</span>` : '';
       return `<div class="card pick ${S.selected === k ? 'selected' : ''}" data-object="${k}">${src ? `<img src="${src}" data-object="${k}">` : ''}<div class="cap"><b>${esc(o.name)}</b>${iou}</div></div>`;
     }).join('')}</div>`;
     const o = objs[S.selected];
     if (o) {
-      html += `<div class="detail"><div class="summary-line"><b>${esc(o.name)}</b> ${inWs(o.glb) ? `<button data-glb="${esc(o.glb)}" data-caption="${esc(o.name)}">3D model</button>` : ''}</div>`;
+      html += `<div class="detail"><div class="summary-line"><b>${esc(o.name)}</b> ${inRun(o.glb) ? `<button data-glb="${esc(o.glb)}" data-up="${esc(o.up)}" data-caption="${esc(o.name)}">3D model</button>` : ''}</div>`;
       html += o.overlays.length
         ? `<div class="grid">${o.overlays.map((v) => card(v.path, `${esc(v.frame)} <span class="${iouClass(v.iou)}">IoU ${fmt(v.iou)}</span>`, 640)).join('')}</div>`
         : '<div class="empty">no fit yet</div>';
@@ -218,7 +220,7 @@ const PANELS = {
 
 function onPanelClick(e) {
   const t = e.target;
-  if (t.dataset.glb) { openModel(t.dataset.glb, t.dataset.caption); return; }
+  if (t.dataset.glb) { openModel(t.dataset.glb, t.dataset.caption, t.dataset.up); return; }
   const pick = t.closest('[data-object]');
   if (pick) {
     const k = +pick.dataset.object;
@@ -499,7 +501,7 @@ function openLightbox(src, caption) {
   $('lightbox').classList.remove('hidden');
 }
 
-function openModel(path, caption) {
+function openModel(path, caption, up) {
   $('lb-img').classList.add('hidden');
   const box = $('lb-model');
   box.classList.remove('hidden');
@@ -518,7 +520,7 @@ function openModel(path, caption) {
   gltf.load(`/glb/${enc(path)}?${Q}`, (g) => {
     const obj = g.scene;
     obj.traverse((o) => { if (o.isMesh) matte(o.material); });
-    obj.rotation.x = Math.PI / 2; // generated meshes are y-up
+    obj.rotation.set(...(UP_EULER[up] || UP_EULER.z));
     sc.add(obj);
     const bounds = new THREE.Box3().setFromObject(obj);
     const size = bounds.getSize(new THREE.Vector3()).length();

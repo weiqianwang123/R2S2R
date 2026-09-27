@@ -1,4 +1,4 @@
-"""Tests for reconstruct/simfoundry.py (no SimFoundry run needed)."""
+"""Tests for pipeline/fixed/simfoundry.py (no SimFoundry run needed)."""
 
 # pylint: disable=protected-access
 
@@ -9,9 +9,8 @@ import cv2
 import numpy as np
 import pytest
 
-from r2s2r.io.droid import ROLES, load_droid_episode
-from r2s2r.reconstruct import make_backend
-from r2s2r.reconstruct.simfoundry import (
+from r2s2r.capture.droid import ROLES, load_droid_episode
+from r2s2r.pipeline.fixed.simfoundry import (
     FRAME_MAP_FILENAME,
     SimFoundryBackend,
     _frame_selection,
@@ -76,8 +75,7 @@ def test_prepare_inputs_mixes_cameras(capture, tmp_path):
 
 def test_build_command(capture, tmp_path):
     """The orchestrator runs the submodule in stereo mode with FoundationStereo."""
-    backend = make_backend("simfoundry", stages=("2", "3"))
-    assert isinstance(backend, SimFoundryBackend)
+    backend = SimFoundryBackend(stages=("2", "3"))
     cmd, env, cwd = backend.build_command(capture, tmp_path)
     assert cmd[cmd.index("--include") + 1] == "2,3"
     assert cmd[cmd.index("--input-mode") + 1] == "stereo"
@@ -258,7 +256,7 @@ def test_run_skips_stage2_for_rgbd(tmp_path, monkeypatch):
     backend.prepare_inputs(capture, tmp_path)
     calls = []
     monkeypatch.setattr(
-        "r2s2r.reconstruct.simfoundry.subprocess.run",
+        "r2s2r.pipeline.fixed.simfoundry.subprocess.run",
         lambda cmd, **kwargs: calls.append(cmd),
     )
     backend.run(capture, tmp_path, stages=("2", "3"))
@@ -272,7 +270,7 @@ def test_run_masks_between_stage2_and_3(capture, tmp_path, monkeypatch):
     backend.prepare_inputs(capture, tmp_path)
     events = []
     monkeypatch.setattr(
-        "r2s2r.reconstruct.simfoundry.subprocess.run",
+        "r2s2r.pipeline.fixed.simfoundry.subprocess.run",
         lambda cmd, **kwargs: events.append(cmd[cmd.index("--include") + 1]),
     )
     monkeypatch.setattr(
@@ -314,7 +312,7 @@ def test_an_empty_scene_is_rebuilt_from_other_frames(capture, tmp_path, monkeypa
     )
     calls = []
     monkeypatch.setattr(
-        "r2s2r.reconstruct.simfoundry.subprocess.run",
+        "r2s2r.pipeline.fixed.simfoundry.subprocess.run",
         lambda cmd, **kwargs: calls.append(cmd),
     )
     empty = SceneSpec("s", "droid_franka", [], np.eye(4), {}, ext1, 0, np.zeros(7))

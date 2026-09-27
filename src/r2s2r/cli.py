@@ -2,19 +2,22 @@
 
 Captures: the robot's calibrated cameras, poses in its base frame, with joint states::
 
-    r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
+    r2s2r capture droid EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
     r2s2r mujoco-capture --out CAPTURE_DIR [--cameras ext1 wrist]
 
-Depth for a stereo capture's frames (FoundationStereo), for comparisons::
+Reconstruction, a run of a method on a capture (see :mod:`r2s2r.pipeline`), and the
+tools a method (or anyone) can use on a run::
+
+    r2s2r run CAPTURE_DIR --method agentic --out RUN_DIR [--cameras wrist]
+        [--stages 2 3 4 5 6] [--force]
+    r2s2r run RUN_DIR --method agentic            # resumes: done stages are skipped
+    r2s2r tool <frames|segment|crop|points|support|generate|fit|check|assemble|settle|
+                replay> ...
+    r2s2r viewer outputs/agentic [--port 8765]   # live progress in the browser
+
+The fixed method's steps, until they are a method of ``r2s2r run``::
 
     r2s2r stereo-depth CAPTURE_DIR --out CAPTURE_DIR [--all-steps]
-
-A scene replayed in Isaac Lab (``scripts/isaaclab/replay.py``), compared again::
-
-    r2s2r compare-replay REPLAY_DIR --scene SCENE_DIR --capture CAPTURE_DIR
-
-Reconstruction and refinement::
-
     r2s2r reconstruct CAPTURE_DIR --workdir WORKDIR [--cameras ...] [--stages 2,3]
     r2s2r refine SCENE_DIR --capture CAPTURE_DIR (--views WORKDIR... | --capture-depth)
         [--keep-unseen] [--no-vlm | --no-orientation-check]
@@ -25,38 +28,40 @@ MuJoCo as the real world::
     r2s2r mujoco-deploy (SCENE_DIR | --oracle) --capture CAPTURE_DIR --target NAME
         --out OUT_DIR
 
-Agentic reconstruction (a Codex agent with tools; see :mod:`r2s2r.agentic`)::
-
-    r2s2r agent CAPTURE_DIR --out WORKSPACE [--stages 2 3 4 5 6]
-    r2s2r tool <frames|segment|crop|points|support|generate|fit|check|assemble|settle|
-                replay> ...
-    r2s2r viewer outputs/agentic [--port 8765]   # live progress in the browser
-
-The Isaac Lab side runs as scripts, since the Omniverse app must start first:
-``scripts/isaaclab/run_pick.py`` and ``scripts/isaaclab/render_overlay.py``.
+The Isaac Lab side runs as scripts, since the Omniverse app must start first
+(``scripts/isaaclab/``).
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import shutil
 from pathlib import Path
+from typing import Callable
 
+import cv2
 import numpy as np
 
-from r2s2r.agentic.cli import add_agent_parser, add_tool_parser
-from r2s2r.io.droid import DEFAULT_ROLES, load_droid_episode
-from r2s2r.io.rgbd import capture_depth_views
-from r2s2r.policy.scoring import summarize
-from r2s2r.reconstruct import make_backend, registered_backends
-from r2s2r.reconstruct.refine import refine_scene
-from r2s2r.reconstruct.simfoundry import (
+from r2s2r.capture.droid import DEFAULT_ROLES, load_droid_episode
+from r2s2r.pipeline.agentic.method import AgentConfig, AgentMethod
+from r2s2r.pipeline.fixed.refine import refine_scene
+from r2s2r.pipeline.fixed.simfoundry import (
     SimFoundryBackend,
     SimFoundryConfig,
     load_stage2_views,
 )
-from r2s2r.structs import Capture, SceneSpec
+from r2s2r.pipeline.run import Method, run
+from r2s2r.pipeline.stages import STAGES
+from r2s2r.policy.scoring import summarize
+from r2s2r.structs import Capture, DepthView, SceneSpec, read_depth
+from r2s2r.tools.cli import add_tool_parser, print_json
+
+
+def _agentic(args: argparse.Namespace) -> Method:
+    return AgentMethod(AgentConfig(model=args.model, reasoning=args.reasoning))
+
+
+METHODS: dict[str, Callable[[argparse.Namespace], Method]] = {"agentic": _agentic}
 
 
 def _droid_capture(args: argparse.Namespace) -> None:
@@ -75,38 +80,39 @@ def _droid_capture(args: argparse.Namespace) -> None:
     )
 
 
+def _run(args: argparse.Namespace) -> None:
+    stages = tuple(args.stages) if args.stages else None
+    method = METHODS[args.method](args)
+    print_json(run(args.source, args.out, method, stages, args.force, args.cameras))
+
+
 def _reconstruct(args: argparse.Namespace) -> None:
     capture = Capture.load(args.capture_dir)
     workdir = Path(args.workdir)
-    if args.backend != "simfoundry":
-        scene = make_backend(args.backend).reconstruct(capture, workdir)
-    else:
-        mamba = args.mamba or shutil.which("mamba") or "mamba"
-        config = SimFoundryConfig(
-            mamba_exe=mamba,
-            cameras=tuple(args.cameras) if args.cameras else None,
-            max_frames=args.max_frames,
-            mask_robot=not args.no_robot_mask,
-            frame_selection=args.frame_selection,
-            vlm_backend=args.vlm_backend,
-            codex_reasoning=args.codex_reasoning,
-            overrides=args.override,
-        )
-        if args.stages:
-            config.stages = tuple(s.strip() for s in args.stages.split(","))
-        backend = SimFoundryBackend(config)
-        if not args.parse_only:
-            backend.prepare_inputs(capture, workdir)
-            if args.prepare_only:
-                print(f"inputs written to {backend.scene_dir(capture, workdir)}")
-                return
-            backend.run(capture, workdir)
-            if config.stages[-1] != "12":
-                print(f"ran stages {','.join(config.stages)}; parse needs stage 12")
-                return
-        scene = backend.parse(capture, workdir)
-        if not scene.objects and config.retry_frames and not args.parse_only:
-            scene = backend.retry_empty(capture, workdir) or scene
+    config = SimFoundryConfig(
+        cameras=tuple(args.cameras) if args.cameras else None,
+        max_frames=args.max_frames,
+        mask_robot=not args.no_robot_mask,
+        frame_selection=args.frame_selection,
+        vlm_backend=args.vlm_backend,
+        codex_reasoning=args.codex_reasoning,
+        overrides=args.override,
+    )
+    if args.stages:
+        config.stages = tuple(s.strip() for s in args.stages.split(","))
+    backend = SimFoundryBackend(config)
+    if not args.parse_only:
+        backend.prepare_inputs(capture, workdir)
+        if args.prepare_only:
+            print(f"inputs written to {backend.scene_dir(capture, workdir)}")
+            return
+        backend.run(capture, workdir)
+        if config.stages[-1] != "12":
+            print(f"ran stages {','.join(config.stages)}; parse needs stage 12")
+            return
+    scene = backend.parse(capture, workdir)
+    if not scene.objects and config.retry_frames and not args.parse_only:
+        scene = backend.retry_empty(capture, workdir) or scene
     path = scene.save(args.scene_out or workdir / capture.name / "scene")
     print(f"scene with {len(scene.objects)} objects -> {path}")
 
@@ -115,18 +121,7 @@ def _refine(args: argparse.Namespace) -> None:
     scene = SceneSpec.load(args.scene_dir)
     capture = Capture.load(args.capture)
     steps = None if args.step is None else {args.step}
-    views = []
-    if args.capture_depth:
-        masker = None
-        if not args.no_robot_mask:
-            # MuJoCo renders the robot; imported only when used.
-            # pylint: disable=import-outside-toplevel
-            from r2s2r.robots.mask import robot_masker
-
-            masker = robot_masker(capture.embodiment)
-        views += capture_depth_views(
-            capture, args.cameras, args.max_views, steps, masker
-        )
+    views = _capture_depth_views(capture, args, steps) if args.capture_depth else []
     for workdir in args.views:
         views += load_stage2_views(capture, workdir, steps=steps)
     if not views:
@@ -134,7 +129,7 @@ def _refine(args: argparse.Namespace) -> None:
     if not args.keep_unseen:
         # MuJoCo renders the objects; imported only when used.
         # pylint: disable=import-outside-toplevel
-        from r2s2r.reconstruct.existence import drop_unseen
+        from r2s2r.pipeline.fixed.existence import drop_unseen
 
         scene, seen = drop_unseen(scene, views)
         for name, entry in seen["objects"].items():
@@ -155,8 +150,8 @@ def _refine(args: argparse.Namespace) -> None:
     if not args.no_orientation_check:
         # MuJoCo renders the candidates; imported only when used.
         # pylint: disable=import-outside-toplevel
-        from r2s2r.reconstruct.orientation import check_orientations
-        from r2s2r.vlm import CodexVLM
+        from r2s2r.pipeline.fixed.orientation import check_orientations
+        from r2s2r.pipeline.fixed.vlm import CodexVLM
 
         vlm = None if args.no_vlm else CodexVLM(reasoning=args.codex_reasoning)
         scene, turns = check_orientations(
@@ -184,43 +179,63 @@ def _refine(args: argparse.Namespace) -> None:
     print(f"support {w:.2f} x {h:.2f} m from {len(views)} views -> {path}")
 
 
+def _capture_depth_views(
+    capture: Capture, args: argparse.Namespace, steps: set[int] | None
+) -> list[DepthView]:
+    """The capture's own depth (robot cut out unless ``--no-robot-mask``) of up to
+    ``--max-views`` static frames, spread over the cameras like SimFoundry's
+    candidates."""
+    masker = None
+    if not args.no_robot_mask:
+        # MuJoCo renders the robot; imported only when used.
+        # pylint: disable=import-outside-toplevel
+        from r2s2r.robots.mask import robot_masker
+
+        masker = robot_masker(capture.embodiment)
+    views = []
+    for frame in capture.select_frames(
+        args.cameras,
+        args.max_views,
+        lambda f: f.depth_image is not None and (steps is None or f.step in steps),
+    ):
+        assert frame.depth_image is not None
+        cam = capture.cameras[frame.camera]
+        depth = read_depth(capture.root / frame.depth_image)
+        if masker is not None:
+            depth, _ = masker.mask_depth(
+                depth,
+                cam.K,
+                frame.T_base_cam,
+                frame.joint_positions,
+                frame.gripper_position,
+            )
+        bgr = cv2.imread(str(capture.root / frame.left_image))
+        rgb = None if bgr is None else cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        views.append(
+            DepthView(
+                frame.camera,
+                frame.step,
+                depth.astype(float),
+                cam.K,
+                frame.T_base_cam,
+                None if rgb is None else np.asarray(rgb, np.uint8),
+            )
+        )
+    return views
+
+
 def _stereo_depth(args: argparse.Namespace) -> None:
     # pylint: disable=import-outside-toplevel
-    from r2s2r.io.stereo import add_stereo_depth
+    from r2s2r.capture.stereo import add_stereo_depth
 
-    mamba = args.mamba or shutil.which("mamba") or "mamba"
     capture = add_stereo_depth(
         Capture.load(args.capture_dir),
         args.out,
-        SimFoundryConfig(mamba_exe=mamba),
+        SimFoundryConfig(),
         static_only=not args.all_steps,
     )
     with_depth = sum(f.depth_image is not None for f in capture.frames)
     print(f"{with_depth} of {len(capture.frames)} frames have depth -> {args.out}")
-
-
-def _compare_replay(args: argparse.Namespace) -> None:
-    # MuJoCo renders the object outlines; imported only when used.
-    # pylint: disable=import-outside-toplevel
-    import json
-
-    from r2s2r.sim.compare import compare_replay
-
-    log = json.loads((args.replay_dir / "replay.json").read_text(encoding="utf-8"))
-    out = args.out or args.replay_dir / "compare"
-    summary = compare_replay(
-        log,
-        SceneSpec.load(args.scene),
-        Capture.load(args.capture),
-        out,
-        args.replay_dir,
-    )
-    residuals = [
-        f["depth_residual_m"] for f in summary["frames"] if f.get("depth_residual_m")
-    ]
-    median = f"{np.median(residuals) * 100:.1f} cm" if residuals else "no depth"
-    frames = len(summary["frames"])
-    print(f"{frames} frames compared; depth residual median {median} -> {out}")
 
 
 def _mujoco_capture(args: argparse.Namespace) -> None:
@@ -306,7 +321,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("droid-capture", help="raw DROID episode -> capture")
+    capture = sub.add_parser("capture", help="recorded data -> a capture")
+    sources = capture.add_subparsers(dest="source", required=True)
+    p = sources.add_parser("droid", help="a raw DROID episode -> a capture")
     p.add_argument("episode_dir", type=Path)
     p.add_argument("--calib", type=Path, required=True, help="KarlP/droid JSON dir")
     p.add_argument("--out", type=Path, required=True)
@@ -315,10 +332,32 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--gripper-threshold", type=float, default=0.05)
     p.set_defaults(func=_droid_capture)
 
-    p = sub.add_parser("reconstruct", help="capture -> scene spec")
+    p = sub.add_parser("run", help="a method's run on a capture (new, or resumed)")
+    p.add_argument("source", type=Path, help="a capture (a new run), or a run")
+    p.add_argument("--method", required=True, choices=sorted(METHODS))
+    p.add_argument("--out", type=Path, help="the new run's directory")
+    p.add_argument(
+        "--stages", nargs="+", choices=STAGES, help="default: all of the method's"
+    )
+    p.add_argument("--force", action="store_true", help="rerun stages already done")
+    p.add_argument(
+        "--cameras", nargs="+", help="only these cameras (roles), for a new run"
+    )
+    agentic = p.add_argument_group("agentic")
+    agentic.add_argument("--model", default=AgentConfig.model)
+    agentic.add_argument("--reasoning", default=AgentConfig.reasoning)
+    p.set_defaults(func=_run)
+    add_tool_parser(sub)
+
+    p = sub.add_parser("viewer", help="live web viewer of runs")
+    p.add_argument("paths", type=Path, nargs="+", help="runs, or their parents")
+    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8765)
+    p.set_defaults(func=_viewer)
+
+    p = sub.add_parser("reconstruct", help="capture -> scene spec (SimFoundry)")
     p.add_argument("capture_dir", type=Path)
     p.add_argument("--workdir", type=Path, required=True)
-    p.add_argument("--backend", default="simfoundry", choices=registered_backends())
     p.add_argument("--scene-out", type=Path)
     p.add_argument("--stages", help="comma-separated SimFoundry stage ids")
     p.add_argument(
@@ -333,7 +372,6 @@ def main(argv: list[str] | None = None) -> None:
         help="how SimFoundry picks the frame to rebuild from; codex: Codex (xhigh) sees "
         "every candidate and the task and picks the frame and the support surface",
     )
-    p.add_argument("--mamba", help="path to the mamba executable")
     p.add_argument("--vlm-backend", default="codex", choices=["codex", "gemini"])
     p.add_argument("--codex-reasoning", default="medium")
     p.add_argument("--override", action="append", default=[], help="Hydra override")
@@ -388,17 +426,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--all-steps", action="store_true", help="every frame, not only the static ones"
     )
-    p.add_argument("--mamba", help="path to the mamba executable")
     p.set_defaults(func=_stereo_depth)
-
-    p = sub.add_parser(
-        "compare-replay", help="compare an Isaac Lab replay with a capture, again"
-    )
-    p.add_argument("replay_dir", type=Path, help="scripts/isaaclab/replay.py's --out")
-    p.add_argument("--scene", type=Path, required=True)
-    p.add_argument("--capture", type=Path, required=True)
-    p.add_argument("--out", type=Path, help="default: REPLAY_DIR/compare")
-    p.set_defaults(func=_compare_replay)
 
     p = sub.add_parser("mujoco-capture", help="record a capture in the MuJoCo world")
     p.add_argument("--out", type=Path, required=True)
@@ -433,15 +461,6 @@ def main(argv: list[str] | None = None) -> None:
         "--oracle", action="store_true", help="use ground-truth objects, not SCENE_DIR"
     )
     p.set_defaults(func=_mujoco_deploy)
-
-    add_agent_parser(sub)
-    add_tool_parser(sub)
-
-    p = sub.add_parser("viewer", help="live web viewer of agentic runs")
-    p.add_argument("paths", type=Path, nargs="+", help="workspaces, or their parents")
-    p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=8765)
-    p.set_defaults(func=_viewer)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)

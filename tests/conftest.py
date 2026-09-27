@@ -1,5 +1,5 @@
-"""Shared fixtures: a tiny synthetic DROID episode and its calibration files; the ``gl``
-marker for tests that render with MuJoCo."""
+"""Shared fixtures: a tiny synthetic DROID episode and its calibration files, a small
+RGB-D capture; the ``gl`` marker for tests that render with MuJoCo."""
 
 from __future__ import annotations
 
@@ -14,12 +14,24 @@ import h5py
 import numpy as np
 import pytest
 
+from r2s2r.structs import (
+    CameraSpec,
+    Capture,
+    FrameRecord,
+    RobotTrajectory,
+    write_depth,
+)
+from r2s2r.transforms import intrinsics_matrix
+
 UUID = "LAB+abc12345+2026-01-01-00h-00m-00s"
 SERIALS = {"ext1": "111", "ext2": "222", "wrist": "333"}
 SIZE = {"ext1": (32, 24), "ext2": (32, 24), "wrist": (16, 12)}  # per-eye (w, h)
 NUM_STEPS = 12
 CLOSE_STEP = 8  # gripper starts closing here
 LATENCY_MS = 41
+RGBD_K = intrinsics_matrix(300.0, 300.0, 159.5, 119.5)
+RGBD_SIZE = (320, 240)
+HOME_Q = np.array([0, -0.785, 0, -2.356, 0, 1.571, 0.785])  # the Panda's
 
 
 @cache
@@ -121,3 +133,69 @@ def fixture_droid_episode(tmp_path: Path) -> tuple[Path, Path]:
     lang = {UUID: {"language_instruction1": "put the block in the bowl"}}
     (calib / "droid_language_annotations.json").write_text(json.dumps(lang))
     return episode, calib
+
+
+def rgbd_capture(
+    root: Path,
+    cameras: dict[str, tuple[str, np.ndarray]],
+    steps: int = 5,
+    images: dict[str, np.ndarray] | None = None,
+    depths: dict[str, np.ndarray] | None = None,
+) -> Capture:
+    """A Panda's RGB-D capture at ``root``: ``cameras`` ``{serial: (role, T_base_cam)}``
+    (a ``wrist`` moves with the hand), ``steps`` frames each, all of the static period;
+    grey images at 0.8 m unless ``images`` / ``depths`` ``{serial: array}`` are given.
+    Its metadata holds a secret besides how its depth was made."""
+    specs, frames = {}, []
+    w, h = RGBD_SIZE
+    for serial, (role, T) in cameras.items():
+        static = role != "wrist"
+        specs[serial] = CameraSpec(
+            serial,
+            role,
+            w,
+            h,
+            RGBD_K,
+            is_static=static,
+            T_base_cam=T if static else None,
+        )
+        (root / serial).mkdir(parents=True)
+        for step in range(steps):
+            rgb = np.full((h, w, 3), 40 * step, np.uint8)
+            depth = np.full((h, w), 0.8)
+            if images is not None and depths is not None:
+                rgb, depth = images[serial], depths[serial]
+            cv2.imwrite(str(root / f"{serial}/{step}.png"), rgb[..., ::-1])
+            write_depth(root / f"{serial}/{step}_d.png", depth)
+            frames.append(
+                FrameRecord(
+                    step,
+                    serial,
+                    f"{serial}/{step}.png",
+                    None,
+                    T,
+                    HOME_Q,
+                    0.0,
+                    f"{serial}/{step}_d.png",
+                )
+            )
+    trajectory = RobotTrajectory(
+        np.arange(steps),
+        np.arange(steps) * 0.1,
+        np.tile(HOME_Q, (steps, 1)),
+        np.zeros(steps),
+    )
+    capture = Capture(
+        "t",
+        "test",
+        "franka_panda",
+        "pick",
+        specs,
+        frames,
+        (0, steps),
+        root,
+        metadata={"truth": "hidden", "depth": "measured"},
+        trajectory=trajectory,
+    )
+    capture.save()
+    return capture

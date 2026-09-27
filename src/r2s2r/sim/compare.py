@@ -18,12 +18,21 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from r2s2r.io.rgbd import read_depth
-from r2s2r.structs import Capture, DepthView, SceneSpec
+from r2s2r.structs import Capture, DepthView, SceneSpec, read_depth
 from r2s2r.transforms import pos_quat_to_matrix
 
 RESIDUAL_CLIP = 0.05  # metres; the residual image saturates here
-COLORS = [(255, 64, 64), (64, 200, 64), (64, 128, 255), (255, 200, 0), (200, 64, 255)]
+# Object outlines (RGB), one colour per object in turn.
+COLORS = [
+    (255, 64, 64),
+    (64, 200, 64),
+    (64, 128, 255),
+    (255, 200, 0),
+    (200, 64, 255),
+    (0, 220, 220),
+    (255, 128, 0),
+    (160, 160, 160),
+]
 
 
 def compare_replay(
@@ -35,12 +44,11 @@ def compare_replay(
 ) -> dict[str, Any]:
     """Write the comparison images under ``out_dir`` and return the numbers.
 
-    The real images and depth come from ``capture``, which may have gained depth since
-    the replay (``r2s2r stereo-depth``).
+    The real images and depth come from ``capture``.
     """
     # MuJoCo renders the outlines; imported here so the module loads without it.
     # pylint: disable=import-outside-toplevel
-    from r2s2r.reconstruct.render import SceneRenderer
+    from r2s2r.mjrender import SceneRenderer
 
     out_dir, replay_dir = Path(out_dir), Path(replay_dir)
     (out_dir / "frames").mkdir(parents=True, exist_ok=True)
@@ -54,13 +62,12 @@ def compare_replay(
         max(c.height for c in capture.cameras.values()),
     )
     renderer = SceneRenderer(spec, size)
-    frames_by_key = {(f.step, f.camera): f for f in capture.frames}
     summary: dict[str, Any] = {"frames": [], "motion_m": {}}
     sheets: dict[str, list[NDArray[np.uint8]]] = {}
     try:
         for entry in log["frames"]:
             step, serial = int(entry["step"]), entry["camera"]
-            frame = frames_by_key[(step, serial)]
+            frame = capture.frame(serial, step)
             cam = capture.cameras[serial]
             real = _read_rgb(capture.root / frame.left_image)
             sim = _read_rgb(replay_dir / entry["sim_rgb"])

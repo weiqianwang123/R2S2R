@@ -2,14 +2,15 @@
 
 r2s2r viewer PATH [PATH ...] [--port 8765] [--host 0.0.0.0]
 
-Each PATH is a workspace, or a directory whose sub-directories are workspaces (new ones
-show up as they are made). Routes, each for the workspace ``?ws=<name>`` (default: the
-first): ``/`` the page; ``/api/workspaces``, ``/api/recording``, ``/api/state`` (JSON);
-``/api/robot.json`` and ``/robot.glb`` (the robot along the trajectory); ``/f/<path>`` a
-workspace file; ``/thumb/<path>?w=N`` an image scaled down (JPEG); ``/glb/<path>`` a
-mesh as GLB; ``/preview/<path>`` four views of a mesh (PNG); ``/scene.glb?path=<path>``
-a scene directory or objects file, posed, as GLB. Paths are relative to the workspace,
-and nothing outside it can be read through them.
+Each PATH is a run (any method's: a directory with ``run.json``), or a directory whose
+sub-directories are runs (new ones show up as they are made). Routes, each for the run
+``?run=<name>`` (default: the first): ``/`` the page; ``/api/runs``, ``/api/recording``,
+``/api/state`` (JSON); ``/api/robot.json`` and ``/robot.glb`` (the robot along the
+trajectory); ``/f/<path>`` a file of the run; ``/thumb/<path>?w=N`` an image scaled down
+(JPEG); ``/glb/<path>`` a mesh as GLB; ``/preview/<path>?up=y`` four views of a mesh
+(PNG) turned up-axis up; ``/scene.glb?path=<path>`` a scene directory or objects file,
+posed, as GLB. Paths are relative to the run, and nothing outside it can be read through
+them.
 """
 
 from __future__ import annotations
@@ -27,18 +28,18 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import cv2
 
-from r2s2r.agentic.workspace import WORKSPACE_FILENAME, Workspace
+from r2s2r.pipeline.workspace import RUN_FILENAME, Workspace
 from r2s2r.viewer.robot import robot_glb, robot_poses
 from r2s2r.viewer.scenes import mesh_glb, mesh_preview, scene_glb
-from r2s2r.viewer.state import recording, workspace_state
+from r2s2r.viewer.state import recording, run_state
 
 logger = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
 
 
 class Viewer:
-    """A workspace, and caches of what is slow to make (on disk, beside the workspace,
-    so the agent never sees them)."""
+    """A run, and caches of what is slow to make (on disk, beside the run, so an agent
+    never sees them)."""
 
     def __init__(self, root: Path, cache: Path | None = None) -> None:
         self.ws = Workspace.load(root)
@@ -48,7 +49,7 @@ class Viewer:
         self.lock = threading.Lock()
 
     def resolve(self, rel: str) -> Path:
-        """A path inside the workspace (or its cache), else ``PermissionError``."""
+        """A path inside the run (or its cache), else ``PermissionError``."""
         path = (self.root / unquote(rel)).resolve()
         if not (path.is_relative_to(self.root) or path.is_relative_to(self.cache)):
             raise PermissionError(rel)
@@ -83,7 +84,7 @@ class Viewer:
 
 
 class Viewers:
-    """The workspaces served, found afresh on each request."""
+    """The runs served, found afresh on each request."""
 
     def __init__(self, paths: list[Path]) -> None:
         self.paths = [Path(p).resolve() for p in paths]
@@ -91,22 +92,22 @@ class Viewers:
         self.lock = threading.Lock()
 
     def roots(self) -> list[Path]:
-        """Every workspace under the paths, in order."""
+        """Every run under the paths, in order."""
         found = []
         for path in self.paths:
-            if (path / WORKSPACE_FILENAME).exists():
+            if (path / RUN_FILENAME).exists():
                 found.append(path)
             elif path.is_dir():
                 found += sorted(
-                    d for d in path.iterdir() if (d / WORKSPACE_FILENAME).exists()
+                    d for d in path.iterdir() if (d / RUN_FILENAME).exists()
                 )
         return found
 
     def get(self, name: str | None) -> Viewer:
-        """The workspace called ``name`` (default: the first)."""
+        """The run called ``name`` (default: the first)."""
         roots = self.roots()
         if not roots:
-            raise FileNotFoundError("no workspace")
+            raise FileNotFoundError("no run")
         root = (
             next((r for r in roots if r.name == name), roots[0]) if name else roots[0]
         )
@@ -120,7 +121,7 @@ def make_handler(viewers: Viewers) -> type[BaseHTTPRequestHandler]:
     """The request handler for ``viewers``."""
 
     class Handler(BaseHTTPRequestHandler):
-        """Serves the page, the APIs and the workspace's files."""
+        """Serves the page, the APIs and the run's files."""
 
         def log_message(self, *args: Any) -> None:  # pylint: disable=arguments-differ
             logger.debug(*args)
@@ -130,7 +131,7 @@ def make_handler(viewers: Viewers) -> type[BaseHTTPRequestHandler]:
             url = urlparse(self.path)
             query = parse_qs(url.query)
             try:
-                if url.path == "/api/workspaces":
+                if url.path == "/api/runs":
                     self._json([r.name for r in viewers.roots()])
                     return
                 if url.path in ("/", "/index.html"):
@@ -139,11 +140,11 @@ def make_handler(viewers: Viewers) -> type[BaseHTTPRequestHandler]:
                 if url.path.startswith("/static/"):
                     self._file((STATIC / url.path[len("/static/") :]).resolve(), STATIC)
                     return
-                viewer = viewers.get(query.get("ws", [None])[0])
+                viewer = viewers.get(query.get("run", [None])[0])
                 if url.path == "/api/recording":
                     self._json(recording(viewer.ws))
                 elif url.path == "/api/state":
-                    self._json(workspace_state(viewer.ws))
+                    self._json(run_state(viewer.ws))
                 elif url.path == "/api/robot.json":
                     self._file(viewer.robot()[1])
                 elif url.path == "/robot.glb":
@@ -165,10 +166,11 @@ def make_handler(viewers: Viewers) -> type[BaseHTTPRequestHandler]:
                         self._file(viewer.cached(key, ".glb", lambda: mesh_glb(path)))
                 elif url.path.startswith("/preview/"):
                     path = viewer.resolve(url.path[9:])
-                    key = f"preview:{path}:{path.stat().st_mtime}"
+                    up = query.get("up", ["z"])[0]
+                    key = f"preview:{path}:{path.stat().st_mtime}:{up}"
                     self._send(
                         viewer.cached(
-                            key, ".png", lambda: mesh_preview(path)
+                            key, ".png", lambda: mesh_preview(path, up)
                         ).read_bytes(),
                         "image/png",
                         True,

@@ -1,6 +1,12 @@
-"""What the viewer shows of a workspace, read afresh on every request: the recording,
-each stage's status, and the products worth a look: the chosen frames, the support, the
-objects, their physical parameters, and the latest replay."""
+"""What the viewer shows of a run, read afresh on every request: the recording, each
+stage's status, and the products worth a look: the chosen frames, the support, the
+objects, their physical parameters, and the latest replay.
+
+A stage's status is what ``run.json`` says (:mod:`r2s2r.pipeline.run`), unless its
+product has since become invalid or stale (then "stopped"), or it has been "running"
+without writing anything for a long time (the run was killed: "stopped" too). An agent's
+last message (``codex_*.jsonl``) is a running stage's activity.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +18,16 @@ from typing import Any
 
 import numpy as np
 
-from r2s2r.agentic.runner import STAGE_DIRS, VALIDATORS
-from r2s2r.agentic.workspace import Workspace
+from r2s2r.pipeline.stages import (
+    STAGE_DIRS,
+    STAGES,
+    VALIDATORS,
+    newer_than_previous,
+    read_json,
+)
+from r2s2r.pipeline.workspace import RUN_FILENAME, Workspace
 
-ACTIVE_S = 15 * 60  # a stage written to this recently counts as running
+ACTIVE_S = 15 * 60  # a running stage that wrote nothing for longer has stopped
 ACTIVITY_CHARS = 140
 
 
@@ -41,7 +53,7 @@ def recording(ws: Workspace) -> dict[str, Any]:
             "step": f.step,
             "image": _rel(ws, ws.image_path(f)),
             "depth": f.depth_image is not None,
-            "static": ws.is_static(f),
+            "static": ws.capture.in_static(f.step),
             "T_base_cam": np.round(f.T_base_cam, 5).tolist(),
         }
         for f in sorted(cap.frames, key=lambda f: (f.step, f.camera))
@@ -57,22 +69,16 @@ def recording(ws: Workspace) -> dict[str, Any]:
     }
 
 
-def workspace_state(ws: Workspace) -> dict[str, Any]:
+def run_state(ws: Workspace) -> dict[str, Any]:
     """Stage statuses and products (everything but the recording and the robot)."""
-    run = _json(ws.root / "run.json") or {}
+    run = _json(ws.root / RUN_FILENAME) or {}
     dirs = {key: ws.root / name for key, name in STAGE_DIRS.items()}
     return {
-        "workspace": str(ws.root),
+        "run": str(ws.root),
+        "method": run.get("method"),
         "now": time.time(),
         "stages": [
-            _stage(
-                ws,
-                key,
-                d,
-                run.get("stages", {}).get(key),
-                run.get("started", {}).get(key),
-            )
-            for key, d in dirs.items()
+            _stage(ws, key, (run.get("stages") or {}).get(key) or {}) for key in STAGES
         ],
         "frames": _frames(dirs["2"]),
         "support": _support(ws, dirs["2"]),
@@ -84,47 +90,41 @@ def workspace_state(ws: Workspace) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------------- stages
-def _stage(
-    ws: Workspace,
-    key: str,
-    d: Path,
-    run_entry: dict[str, Any] | None,
-    started: float | None,
-) -> dict[str, Any]:
-    out: dict[str, Any] = {"key": key, "status": "pending"}
-    if not d.exists():
+def _stage(ws: Workspace, key: str, entry: dict[str, Any]) -> dict[str, Any]:
+    status = entry.get("status", "pending")
+    out: dict[str, Any] = {
+        "key": key,
+        "status": status,
+        "started": entry.get("started"),
+        "seconds": entry.get("seconds"),
+    }
+    if status == "failed":
+        out["error"] = entry.get("error")
+    d = ws.root / STAGE_DIRS[key]
+    if status not in ("running", "done") or not d.exists():
         return out
-    mtimes = [p.stat().st_mtime for p in d.rglob("*") if p.is_file()] or [
-        d.stat().st_mtime
-    ]
-    # The runner records when it starts a stage; files copied into the stage keep older
-    # times, so the oldest file is only a fallback.
-    out["started"], out["updated"] = started or min(mtimes), max(mtimes)
-    failed, open_turn, message = _agent(d)
-    try:
-        problems = VALIDATORS[key](ws, d)
-    except Exception as exc:  # pylint: disable=broad-except
-        problems = [f"{type(exc).__name__}: {exc}"]
-    recent = time.time() - out["updated"] < ACTIVE_S
-    if failed:
-        out["status"] = "failed"
-    elif (open_turn or (key == "5" and problems)) and recent:
-        out["status"] = "running"  # the agent is still at it, whatever it wrote
-    elif not problems:
-        out["status"] = "done"
-    else:
-        out["status"] = "stopped"
-    if out["status"] == "running" and message:
-        out["activity"] = _first_sentence(message)
-    if run_entry:
-        out["seconds"] = run_entry.get("seconds")
+    if status == "running":
+        out["updated"] = max(
+            (p.stat().st_mtime for p in d.rglob("*") if p.is_file()),
+            default=d.stat().st_mtime,
+        )
+        if time.time() - out["updated"] > ACTIVE_S:
+            out["status"] = "stopped"
+        message = _agent_message(d)
+        if message:
+            out["activity"] = _first_sentence(message)
+    elif status == "done":
+        try:
+            valid = newer_than_previous(ws.root, key) and not VALIDATORS[key](ws, d)
+        except Exception:  # pylint: disable=broad-except
+            valid = False
+        if not valid:
+            out["status"] = "stopped"
     return out
 
 
-def _agent(d: Path) -> tuple[bool, bool, str | None]:
-    """Whether a turn failed, whether the last turn is still open, and the agent's last
-    message."""
-    failed = open_turn = False
+def _agent_message(d: Path) -> str | None:
+    """The agent's last message in the stage, if an agent works there."""
     message = None
     for path in sorted(d.glob("codex_*.jsonl")):
         for line in path.read_text(errors="replace").splitlines():
@@ -132,18 +132,12 @@ def _agent(d: Path) -> tuple[bool, bool, str | None]:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            kind = event.get("type")
-            if kind in ("thread.started", "turn.started"):
-                open_turn = True
-            elif kind == "turn.completed":
-                open_turn = False
-            elif kind == "turn.failed":
-                failed, open_turn = True, False
-            elif kind == "item.completed":
-                item = event.get("item", {})
-                if item.get("type") == "agent_message":
-                    message = item.get("text")
-    return failed, open_turn, message
+            item = event.get("item") or {}
+            if event.get("type") == "item.completed" and item.get("type") == (
+                "agent_message"
+            ):
+                message = item.get("text")
+    return message
 
 
 def _first_sentence(text: str) -> str:
@@ -189,7 +183,7 @@ def _support(ws: Workspace, d: Path) -> dict[str, Any] | None:
 
 def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
     """The objects file's objects (or, before it exists, every generated mesh), each
-    with its preview and its latest fit."""
+    with its preview, its up axis and its latest fit."""
     fits = []  # (mesh, fit directory, summary), oldest first
     for path in sorted(d.rglob("fit.json"), key=lambda p: p.stat().st_mtime):
         fit = _json(path)
@@ -215,14 +209,18 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
         for obj in spec.get("objects", []):
             mesh = Path(obj.get("mesh", ""))
             meshes.append(
-                (str(obj.get("name")), mesh if mesh.is_absolute() else d / mesh)
+                (
+                    str(obj.get("name")),
+                    mesh if mesh.is_absolute() else d / mesh,
+                    str(obj.get("up", "z")),
+                )
             )
-    else:
+    else:  # generated meshes are y-up
         previews = sorted(d.rglob("preview.png"), key=lambda p: p.stat().st_mtime)
         latest = {p.parent.name: p.parent / "mesh.glb" for p in previews}
-        meshes = list(latest.items())
+        meshes = [(name, mesh, "y") for name, mesh in latest.items()]
     out = []
-    for name, mesh in meshes:
+    for name, mesh, up in meshes:
         mesh = mesh.resolve()
         preview = mesh.parent / "preview.png"
         # The latest fit of this mesh, else the latest whose directory names the object.
@@ -233,6 +231,7 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "glb": _rel(ws, mesh) if mesh.exists() else None,
+                "up": up,
                 "preview": _rel(ws, preview) if preview.exists() else None,
                 "iou": fit.get("iou"),
                 "overlays": fit.get("overlays", []),
@@ -314,7 +313,8 @@ def _rel(ws: Workspace, path: Path) -> str:
 
 
 def _json(path: Path) -> Any:
+    """:func:`read_json`, or None when there is nothing to read yet."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return read_json(path)
+    except (OSError, ValueError):
         return None

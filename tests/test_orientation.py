@@ -1,4 +1,4 @@
-"""Tests for reconstruct/orientation.py on synthetic objects (needs GL rendering)."""
+"""Tests for pipeline/fixed/orientation.py on synthetic objects (needs GL rendering)."""
 
 import json
 
@@ -9,14 +9,19 @@ import trimesh
 pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
-from r2s2r.reconstruct import orientation  # noqa: E402
-from r2s2r.reconstruct.render import SceneRenderer  # noqa: E402
+from r2s2r.mjrender import SceneRenderer  # noqa: E402
+from r2s2r.pipeline.fixed import orientation  # noqa: E402
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec  # noqa: E402
-from r2s2r.transforms import intrinsics_matrix, make_transform  # noqa: E402
+from r2s2r.transforms import (  # noqa: E402
+    intrinsics_matrix,
+    look_at,
+    make_transform,
+)
 
 pytestmark = pytest.mark.gl
 
 K = intrinsics_matrix(300.0, 300.0, 159.5, 119.5)
+TARGET = (0.5, 0.0, 0.04)  # where the cameras look
 
 
 def _object(tmp_path, name, parts):
@@ -40,14 +45,6 @@ def _yaw(degrees, xy=(0.5, 0.0)):
     return make_transform([[c, -s, 0], [s, c, 0], [0, 0, 1]], [xy[0], xy[1], 0.0])
 
 
-def _look_at(eye, target=(0.5, 0.0, 0.04)):
-    eye, target = np.asarray(eye, float), np.asarray(target, float)
-    fwd = (target - eye) / np.linalg.norm(target - eye)
-    right = np.cross(fwd, [0, 0, 1.0])
-    right /= np.linalg.norm(right)
-    return make_transform(np.column_stack([right, np.cross(fwd, right), fwd]), eye)
-
-
 def _scene(urdf, T):
     obj = ObjectSpec("thing", "thing", str(urdf), T)
     return SceneSpec(
@@ -68,7 +65,7 @@ def _views(scene):
     renderer.pose(0, scene.objects[0].T_base_obj)
     views = []
     for eye in ((0.1, 0.3, 0.4), (0.5, -0.45, 0.35), (0.95, 0.2, 0.4)):
-        T = _look_at(eye)
+        T = look_at(eye, TARGET)
         stub = DepthView("cam", 0, np.zeros((240, 320)), K, T)
         out = renderer.render(stub, 0)
         views.append(DepthView("cam", 0, out["depth"].astype(float), K, T, out["rgb"]))

@@ -30,11 +30,34 @@ def invert(T: ArrayLike) -> NDArray[np.float64]:
     return make_transform(R.T, -R.T @ T[:3, 3])
 
 
-def pose6d_to_matrix(pose: ArrayLike) -> NDArray[np.float64]:
-    """Convert DROID's ``[x, y, z, rx, ry, rz]`` (extrinsic xyz Euler) to 4x4."""
-    pose = np.asarray(pose, dtype=np.float64)
-    assert pose.shape == (6,), f"expected a 6-vector, got {pose.shape}"
-    return make_transform(Rotation.from_euler("xyz", pose[3:]).as_matrix(), pose[:3])
+def is_rigid(T: ArrayLike, atol: float = 1e-4) -> bool:
+    """Whether ``T`` is a 4x4 rigid transform (a rotation, no scale or mirroring)."""
+    try:
+        T = np.asarray(T, dtype=np.float64)
+    except (TypeError, ValueError):  # not numbers, or ragged
+        return False
+    if T.shape != (4, 4):
+        return False
+    R = T[:3, :3]
+    return bool(np.allclose(R @ R.T, np.eye(3), atol=atol) and np.linalg.det(R) > 0)
+
+
+def transform_points(T_a_b: ArrayLike, points_b: ArrayLike) -> NDArray[np.float64]:
+    """Nx3 points in frame ``b`` expressed in frame ``a``."""
+    T = np.asarray(T_a_b, dtype=np.float64)
+    return np.asarray(points_b, dtype=np.float64) @ T[:3, :3].T + T[:3, 3]
+
+
+def look_at(eye: ArrayLike, target: ArrayLike) -> NDArray[np.float64]:
+    """``T_base_cam`` of an OpenCV camera at ``eye`` looking at ``target``, level (its x
+    axis horizontal; z is up)."""
+    eye, target = np.asarray(eye, dtype=np.float64), np.asarray(
+        target, dtype=np.float64
+    )
+    fwd = (target - eye) / np.linalg.norm(target - eye)
+    right = np.cross(fwd, [0.0, 0.0, 1.0])
+    right /= np.linalg.norm(right)
+    return make_transform(np.column_stack([right, np.cross(fwd, right), fwd]), eye)
 
 
 def quat_xyzw_to_wxyz(quat: ArrayLike) -> NDArray[np.float64]:
@@ -60,8 +83,12 @@ def matrix_to_pos_quat(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Split a transform into a position and a (w, x, y, z) quaternion."""
     T = np.asarray(T, dtype=np.float64)
-    quat = quat_xyzw_to_wxyz(Rotation.from_matrix(T[:3, :3]).as_quat())
-    return T[:3, 3].copy(), quat
+    return T[:3, 3].copy(), rotation_to_quat(T[:3, :3])
+
+
+def rotation_to_quat(R: ArrayLike) -> NDArray[np.float64]:
+    """The (w, x, y, z) quaternion of a 3x3 rotation (MuJoCo's order too)."""
+    return quat_xyzw_to_wxyz(Rotation.from_matrix(np.asarray(R, np.float64)).as_quat())
 
 
 def intrinsics_matrix(
@@ -76,8 +103,7 @@ def project_points(
 ) -> NDArray[np.float64]:
     """Project Nx3 base-frame points to Nx2 pixels (NaN behind the camera)."""
     pts = np.atleast_2d(np.asarray(points_base, dtype=np.float64))
-    T_cam_base = invert(T_base_cam)
-    pts_cam = pts @ T_cam_base[:3, :3].T + T_cam_base[:3, 3]
+    pts_cam = transform_points(invert(T_base_cam), pts)
     uvw = pts_cam @ np.asarray(K, dtype=np.float64).T
     with np.errstate(divide="ignore", invalid="ignore"):
         uv = uvw[:, :2] / uvw[:, 2:3]

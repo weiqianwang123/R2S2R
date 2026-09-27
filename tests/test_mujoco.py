@@ -10,10 +10,10 @@ pytest.importorskip("mujoco")
 # pylint: disable=wrong-import-position
 from r2s2r.real.mujoco import world as mw  # noqa: E402
 from r2s2r.real.mujoco.capture import record_capture  # noqa: E402
-from r2s2r.reconstruct.refine import view_points  # noqa: E402
 from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH, PandaKinematics  # noqa: E402
 from r2s2r.robots.mask import NO_ROBOT, RobotMasker  # noqa: E402
 from r2s2r.structs import DepthView  # noqa: E402
+from r2s2r.tools.geometry import view_points  # noqa: E402
 
 pytestmark = [
     pytest.mark.gl,
@@ -45,7 +45,7 @@ def test_depth_backprojects_onto_the_table(world):
     spec = world.camera_spec("ext1")
     _, depth = world.render("ext1")
     view = DepthView("ext1", 0, depth.astype(float), spec.K, spec.T_base_cam)
-    z = view_points(view, max_depth=3.0)[:, 2]
+    z = view_points(view, max_depth=3.0)[0][:, 2]
     near = z[np.abs(z) < 0.02]
     assert len(near) > 0.3 * len(z)
     assert abs(np.median(near)) < 0.002

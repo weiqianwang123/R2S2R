@@ -17,12 +17,18 @@ import numpy as np
 import trimesh
 from numpy.typing import NDArray
 
-from r2s2r.mjrender import CV_TO_MJ, mujoco, quat_wxyz, set_clip_planes
+from r2s2r.mjrender import CV_TO_MJ, mujoco, set_clip_planes
+from r2s2r.paths import CACHE_DIR
 from r2s2r.policy.robot import RobotInterface
 from r2s2r.robots.franka import FRANKA_HAND_TCP, Q_READY, PandaKinematics
-from r2s2r.robots.mujoco_models import CACHE_DIR, MENAGERIE_DIR, robot_spec
+from r2s2r.robots.mujoco_models import MENAGERIE_DIR, robot_spec
 from r2s2r.structs import CameraSpec, Capture
-from r2s2r.transforms import intrinsics_matrix, make_transform
+from r2s2r.transforms import (
+    intrinsics_matrix,
+    look_at,
+    make_transform,
+    rotation_to_quat,
+)
 
 ARM_JOINTS = [f"joint{i}" for i in range(1, 8)]
 FINGER_JOINTS = ["finger_joint1", "finger_joint2"]
@@ -114,16 +120,6 @@ class MujocoWorldConfig:
         raise KeyError(f"unknown world preset {name!r} (pick)")
 
 
-def look_at(pos: NDArray, target: NDArray) -> NDArray[np.float64]:
-    """``T_base_cam`` of an OpenCV camera (x right, y down, z forward)."""
-    pos, target = np.asarray(pos, float), np.asarray(target, float)
-    fwd = (target - pos) / np.linalg.norm(target - pos)
-    right = np.cross(fwd, [0.0, 0.0, 1.0])
-    right /= np.linalg.norm(right)
-    down = np.cross(fwd, right)
-    return make_transform(np.column_stack([right, down, fwd]), pos)
-
-
 def camera_intrinsics(cam: CameraConfig) -> NDArray[np.float64]:
     """MuJoCo renders a symmetric frustum: the principal point is the image centre."""
     return intrinsics_matrix(
@@ -194,7 +190,7 @@ def _add_camera(spec: Any, cam: CameraConfig) -> None:
     spec.worldbody.add_camera(
         name=cam.role,
         pos=list(cam.pos),
-        quat=quat_wxyz(T[:3, :3] @ CV_TO_MJ),
+        quat=rotation_to_quat(T[:3, :3] @ CV_TO_MJ).tolist(),
         fovy=float(fovy),
     )
 
@@ -232,7 +228,7 @@ def build_spec(cfg: MujocoWorldConfig) -> Any:
         hand.add_camera(
             name="wrist",
             pos=[0.06, 0.0, 0.02],
-            quat=quat_wxyz(CV_TO_MJ),
+            quat=rotation_to_quat(CV_TO_MJ).tolist(),
             fovy=float(
                 np.rad2deg(2 * np.arctan(cfg.wrist_size[1] / 2 / cfg.wrist_focal))
             ),

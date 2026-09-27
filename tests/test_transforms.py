@@ -6,13 +6,16 @@ from scipy.spatial.transform import Rotation
 from r2s2r.transforms import (
     intrinsics_matrix,
     invert,
+    is_rigid,
+    look_at,
     make_transform,
     matrix_to_pos_quat,
     pos_quat_to_matrix,
-    pose6d_to_matrix,
     project_points,
     quat_wxyz_to_xyzw,
     quat_xyzw_to_wxyz,
+    rotation_to_quat,
+    transform_points,
 )
 
 
@@ -24,12 +27,27 @@ def test_invert_roundtrip():
     assert np.allclose(invert(T) @ T, np.eye(4))
 
 
-def test_pose6d_matches_droid_convention():
-    """DROID poses are extrinsic xyz Euler angles plus a translation."""
-    pose = [0.1, 0.2, 0.3, 0.4, -0.5, 0.6]
-    T = pose6d_to_matrix(pose)
-    assert np.allclose(T[:3, 3], pose[:3])
-    assert np.allclose(T[:3, :3], Rotation.from_euler("xyz", pose[3:]).as_matrix())
+def test_is_rigid_and_transform_points():
+    """Rotations with translations are rigid; scale, mirroring or a bad shape are not.
+    Points map like the homogeneous product."""
+    T = make_transform(Rotation.from_euler("z", 0.7).as_matrix(), [1.0, 2.0, 3.0])
+    assert is_rigid(T) and is_rigid(T.tolist())
+    assert not is_rigid(np.diag([2.0, 1.0, 1.0, 1.0]))
+    assert not is_rigid(np.diag([-1.0, 1.0, 1.0, 1.0]))
+    assert not is_rigid(np.eye(3)) and not is_rigid([[1, 2], [3]])
+    pts = np.array([[0.1, 0.2, 0.3], [1.0, -1.0, 0.5]])
+    homogeneous = (T @ np.c_[pts, np.ones(2)].T).T[:, :3]
+    assert np.allclose(transform_points(T, pts), homogeneous)
+
+
+def test_look_at_points_the_optical_axis_at_the_target():
+    """The camera's z runs to the target, its x stays level, its y points down."""
+    T = look_at([1.0, 0.5, 0.8], [0.2, 0.0, 0.1])
+    fwd = np.array([0.2, 0.0, 0.1]) - [1.0, 0.5, 0.8]
+    assert is_rigid(T)
+    assert np.allclose(T[:3, 2], fwd / np.linalg.norm(fwd))
+    assert abs(T[2, 0]) < 1e-12 and T[2, 1] < 0
+    assert np.allclose(T[:3, 3], [1.0, 0.5, 0.8])
 
 
 def test_quaternion_conventions():
@@ -42,6 +60,7 @@ def test_quaternion_conventions():
     pos, quat = matrix_to_pos_quat(T)
     assert np.allclose(pos, [1.0, 2.0, 3.0])
     assert np.isclose(abs(np.dot(quat, q_wxyz)), 1.0)
+    assert np.allclose(rotation_to_quat(T[:3, :3]), quat)
 
 
 def test_project_points():

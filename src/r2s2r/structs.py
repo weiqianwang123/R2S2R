@@ -1,7 +1,7 @@
-"""Backend-independent data structures.
+"""Method-independent data structures.
 
 A :class:`Capture` is what the robot recorded (images, calibration, robot state);
-a :class:`SceneSpec` is what a reconstruction backend produced from it; a
+a :class:`SceneSpec` is what a reconstruction method produced from it; a
 :class:`DepthView` is one calibrated metric depth image. Captures and scenes are
 plain data saved as JSON next to their files, so every stage can be run, inspected
 and re-run on its own. Frame and quaternion conventions are those of
@@ -11,10 +11,12 @@ and re-run on its own. Frame and quaternion conventions are those of
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 
@@ -22,6 +24,21 @@ CAPTURE_FILENAME = "capture.json"
 TRAJECTORY_FILENAME = "trajectory.npz"
 SCENE_FILENAME = "scene.json"
 DEPTH_PNG_SCALE = 0.001  # meters per unit of uint16 depth PNGs
+
+
+def read_depth(path: str | Path) -> NDArray[np.float32]:
+    """Metric depth from a uint16 PNG (:data:`DEPTH_PNG_SCALE` metres per unit)."""
+    raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if raw is None:
+        raise IOError(f"cannot read {path}")
+    return raw.astype(np.float32) * DEPTH_PNG_SCALE
+
+
+def write_depth(path: str | Path, depth: NDArray) -> None:
+    """Metric depth as a uint16 PNG, the inverse of :func:`read_depth` (clipped to its
+    range; 0 is no depth)."""
+    units = np.clip(np.round(np.asarray(depth) / DEPTH_PNG_SCALE), 0, 65535)
+    cv2.imwrite(str(path), units.astype(np.uint16))
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -106,7 +123,7 @@ class RobotTrajectory:
 
     steps: NDArray[np.int64]  # the capture's step indices
     times: NDArray[np.float64]  # seconds since the first step
-    joint_positions: NDArray[np.float64]  # (N, 7) arm joints
+    joint_positions: NDArray[np.float64]  # (N, dof) arm joints
     gripper_position: NDArray[np.float64]  # (N,) 0 open, 1 closed
 
     def save(self, path: str | Path) -> None:
@@ -153,6 +170,19 @@ class Capture:
             (f for f in self.frames if f.camera == camera), key=lambda f: f.step
         )
 
+    def frame(self, camera: str, step: int) -> FrameRecord:
+        """The frame of ``camera`` (serial or role) at ``step``."""
+        serial = self.resolve_cameras([camera])[0]
+        for f in self.frames:
+            if f.camera == serial and f.step == step:
+                return f
+        raise KeyError(f"no frame of {camera} at step {step} in capture {self.name}")
+
+    def in_static(self, step: int) -> bool:
+        """Whether ``step`` is in the static period (objects not yet touched)."""
+        start, end = self.static_steps
+        return start <= step < end
+
     def camera_by_role(self, role: str) -> CameraSpec:
         """Look up a camera by role (e.g. ``"ext1"``)."""
         for cam in self.cameras.values():
@@ -183,13 +213,12 @@ class Capture:
         with fewer frames leaves its share to the others) and spread evenly over each
         camera's frames. ``keep`` filters frames first.
         """
-        start, end = self.static_steps
         pools = {}
         for serial in self.resolve_cameras(cameras):
             pool = [
                 f
                 for f in self.frames_of(serial)
-                if start <= f.step < end and (keep is None or keep(f))
+                if self.in_static(f.step) and (keep is None or keep(f))
             ]
             if pool:
                 pools[serial] = pool
@@ -278,7 +307,9 @@ class ObjectSpec:
 
     name: str
     category: str
-    asset_path: str  # URDF produced by the backend (absolute path)
+    # The simulation-ready URDF: absolute in memory, saved relative to the scene
+    # directory.
+    asset_path: str
     T_base_obj: NDArray[np.float64]
     mass: float | None = None
     friction: float | None = None
@@ -300,7 +331,7 @@ class SceneSpec:
     objects: list[ObjectSpec]
     T_base_support: NDArray[np.float64]  # support plane: z = normal, origin on it
     cameras: dict[str, CameraSpec]
-    reference_camera: str  # the frame the backend reconstructed from
+    reference_camera: str  # the frame the method reconstructed from
     reference_step: int
     joint_positions: NDArray[np.float64]  # robot state at the reference step
     provenance: dict[str, Any] = field(default_factory=dict)
@@ -309,23 +340,33 @@ class SceneSpec:
     support_extent: tuple[float, float] | None = None
 
     def save(self, root: str | Path) -> Path:
-        """Write ``scene.json`` into ``root``."""
-        root = Path(root)
+        """Write ``scene.json`` into ``root``, asset paths relative to it (a run can be
+        moved as a whole)."""
+        root = Path(root).resolve()
         root.mkdir(parents=True, exist_ok=True)
         payload = asdict(self)
         payload["cameras"] = {k: asdict(v) for k, v in self.cameras.items()}
+        for obj in payload["objects"]:
+            obj["asset_path"] = os.path.relpath(Path(obj["asset_path"]).resolve(), root)
         path = root / SCENE_FILENAME
         path.write_text(json.dumps(_to_jsonable(payload), indent=2), encoding="utf-8")
         return path
 
     @classmethod
     def load(cls, root: str | Path) -> SceneSpec:
-        """Read a scene saved by :meth:`save`."""
-        d = json.loads((Path(root) / SCENE_FILENAME).read_text(encoding="utf-8"))
+        """Read a scene saved by :meth:`save`; asset paths come back absolute (older
+        scenes saved them absolute, which reads the same)."""
+        root = Path(root).resolve()
+        d = json.loads((root / SCENE_FILENAME).read_text(encoding="utf-8"))
+        objects = []
+        for o in d["objects"]:
+            obj = ObjectSpec.from_dict(o)
+            obj.asset_path = str((root / obj.asset_path).resolve())
+            objects.append(obj)
         return cls(
             name=d["name"],
             embodiment=d["embodiment"],
-            objects=[ObjectSpec.from_dict(o) for o in d["objects"]],
+            objects=objects,
             T_base_support=_array(d["T_base_support"]),
             cameras={k: CameraSpec.from_dict(v) for k, v in d["cameras"].items()},
             reference_camera=d["reference_camera"],

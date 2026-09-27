@@ -31,7 +31,6 @@ from isaaclab.sim import SimulationCfg, SimulationContext
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-from r2s2r.io.rgbd import write_depth
 from r2s2r.sim.isaaclab.scene import (
     PANDA_JOINTS,
     build_scene_cfg,
@@ -39,7 +38,7 @@ from r2s2r.sim.isaaclab.scene import (
     centered_render_size,
     make_scene,
 )
-from r2s2r.structs import CameraSpec, Capture, SceneSpec
+from r2s2r.structs import CameraSpec, Capture, SceneSpec, write_depth
 from r2s2r.transforms import matrix_to_pos_quat, pos_quat_to_matrix
 
 # Joints that open and close each embodiment's gripper, and whether the joint's upper
@@ -80,7 +79,7 @@ class _Session:
         if traj is None:
             raise ValueError(
                 f"capture {capture.name} has no robot trajectory: record it again "
-                "(droid-capture / mujoco-capture write trajectory.npz)"
+                "(capture droid / mujoco-capture write trajectory.npz)"
             )
         self.traj = traj
         self.sim = SimulationContext(SimulationCfg(dt=physics_dt, device=device))

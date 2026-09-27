@@ -36,6 +36,8 @@ section { background: var(--panel); border: 1px solid var(--line); border-radius
 .node.running .name { color: var(--text); }
 .node.failed .dot { background: var(--failed); border-color: var(--failed); }
 .node.stopped .dot { background: var(--stopped); border-color: var(--stopped); }
+.node.skipped .dot { border-style: dashed; }
+.node.skipped .name { text-decoration: line-through; }
 .node.viewable { cursor: pointer; }
 .node.viewable .name { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
 .node.viewable:hover .dot { transform: scale(1.15); }

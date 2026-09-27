@@ -1,17 +1,14 @@
-"""Tests for reconstruct/refine.py on synthetic geometry."""
+"""Tests for the fixed method's refinement (pipeline/fixed/refine.py) and the footprint
+and outline fits it shares (tools/geometry.py), on synthetic geometry."""
 
 import numpy as np
 import pytest
 import trimesh
 from scipy.spatial.transform import Rotation
 
-from r2s2r.reconstruct.refine import (
-    fit_support_outline,
-    match_clusters,
-    refine_scene,
-    register_footprint,
-)
+from r2s2r.pipeline.fixed.refine import match_clusters, refine_scene
 from r2s2r.structs import CameraSpec, DepthView, ObjectSpec, SceneSpec
+from r2s2r.tools.geometry import fit_support_outline, register_footprint
 from r2s2r.transforms import intrinsics_matrix, make_transform
 
 BOX = (0.12, 0.06, 0.05)  # object size (m)

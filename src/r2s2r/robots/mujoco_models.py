@@ -7,7 +7,6 @@ Robotiq 2F-85 on the flange, as on the DROID platform. Assets are fetched into
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +14,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from r2s2r.mjrender import mujoco
+from r2s2r.paths import CACHE_DIR
 from r2s2r.robots.franka import FLANGE_OFFSET, FRANKA_HAND_MAX_WIDTH
 
-CACHE_DIR = Path(os.environ.get("R2S2R_CACHE", Path.home() / ".cache" / "r2s2r"))
 MENAGERIE_DIR = CACHE_DIR / "mujoco_menagerie"
 ARM_JOINTS = [f"joint{i}" for i in range(1, 8)]
 EMBODIMENTS = ("franka_panda", "droid_franka")

@@ -1,4 +1,4 @@
-"""Tests for reconstruct/existence.py on synthetic objects (needs GL rendering)."""
+"""Tests for pipeline/fixed/existence.py on synthetic objects (needs GL rendering)."""
 
 import numpy as np
 import pytest
@@ -7,14 +7,19 @@ import trimesh
 pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
-from r2s2r.reconstruct.existence import drop_unseen  # noqa: E402
-from r2s2r.reconstruct.render import SceneRenderer  # noqa: E402
+from r2s2r.mjrender import SceneRenderer  # noqa: E402
+from r2s2r.pipeline.fixed.existence import drop_unseen  # noqa: E402
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec  # noqa: E402
-from r2s2r.transforms import intrinsics_matrix, make_transform  # noqa: E402
+from r2s2r.transforms import (  # noqa: E402
+    intrinsics_matrix,
+    look_at,
+    make_transform,
+)
 
 pytestmark = pytest.mark.gl
 
 K = intrinsics_matrix(300.0, 300.0, 159.5, 119.5)
+TARGET = (0.5, 0.0, 0.03)  # where the cameras look
 
 
 def _box(tmp_path, name, extents):
@@ -49,14 +54,6 @@ def _scene(objects):
     )
 
 
-def _look_at(eye, target=(0.5, 0.0, 0.03)):
-    eye, target = np.asarray(eye, float), np.asarray(target, float)
-    fwd = (target - eye) / np.linalg.norm(target - eye)
-    right = np.cross(fwd, [0, 0, 1.0])
-    right /= np.linalg.norm(right)
-    return make_transform(np.column_stack([right, np.cross(fwd, right), fwd]), eye)
-
-
 def _views(scene):
     """Depth of ``scene`` from three cameras around the table."""
     renderer = SceneRenderer(scene, (320, 240))
@@ -64,7 +61,7 @@ def _views(scene):
         renderer.pose(k, obj.T_base_obj)
     views = []
     for eye in ((0.1, 0.35, 0.45), (0.5, -0.5, 0.4), (0.95, 0.25, 0.45)):
-        T = _look_at(eye)
+        T = look_at(eye, TARGET)
         out = renderer.render(DepthView("cam", 0, np.zeros((240, 320)), K, T), 0)
         views.append(DepthView("cam", 0, out["depth"].astype(float), K, T))
     renderer.close()

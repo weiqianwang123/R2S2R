@@ -11,8 +11,7 @@ import trimesh
 pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
-from r2s2r.io.rgbd import write_depth  # noqa: E402
-from r2s2r.reconstruct.render import SceneRenderer  # noqa: E402
+from r2s2r.mjrender import SceneRenderer  # noqa: E402
 from r2s2r.sim.compare import compare_replay  # noqa: E402
 from r2s2r.structs import (  # noqa: E402
     CameraSpec,
@@ -21,20 +20,18 @@ from r2s2r.structs import (  # noqa: E402
     FrameRecord,
     ObjectSpec,
     SceneSpec,
+    write_depth,
 )
-from r2s2r.transforms import intrinsics_matrix, make_transform  # noqa: E402
+from r2s2r.transforms import (  # noqa: E402
+    intrinsics_matrix,
+    look_at,
+    make_transform,
+)
 
 pytestmark = pytest.mark.gl
 
 K = intrinsics_matrix(300.0, 300.0, 159.5, 119.5)
-
-
-def _look_at(eye, target=(0.5, 0.0, 0.04)):
-    eye, target = np.asarray(eye, float), np.asarray(target, float)
-    fwd = (target - eye) / np.linalg.norm(target - eye)
-    right = np.cross(fwd, [0, 0, 1.0])
-    right /= np.linalg.norm(right)
-    return make_transform(np.column_stack([right, np.cross(fwd, right), fwd]), eye)
+TARGET = (0.5, 0.0, 0.04)  # where the cameras look
 
 
 def _scene(tmp_path, xy):
@@ -64,7 +61,7 @@ def test_compare_replay_scores_the_depth_and_outlines_the_objects(tmp_path):
 
     Where the replay matches the capture, the residual is zero; the moved box shows up.
     """
-    T = _look_at((0.9, 0.3, 0.45))
+    T = look_at((0.9, 0.3, 0.45), TARGET)
     truth = _scene(tmp_path, (0.5, 0.0))
     real_rgb, real_depth = _render(truth, T)
     root = tmp_path / "capture"

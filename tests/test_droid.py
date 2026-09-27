@@ -1,17 +1,26 @@
-"""Tests for io/droid.py."""
+"""Tests for capture/droid.py."""
 
 import cv2
 import numpy as np
 from conftest import CLOSE_STEP, NUM_STEPS, SERIALS, SIZE
+from scipy.spatial.transform import Rotation
 
-from r2s2r.io.droid import (
+from r2s2r.capture.droid import (
     ROLES,
     align_steps_to_video,
     load_droid_episode,
+    pose6d_to_matrix,
     static_step_range,
 )
 from r2s2r.structs import Capture
-from r2s2r.transforms import pose6d_to_matrix
+
+
+def test_pose6d_matches_droid_convention():
+    """DROID poses are extrinsic xyz Euler angles plus a translation."""
+    pose = [0.1, 0.2, 0.3, 0.4, -0.5, 0.6]
+    T = pose6d_to_matrix(pose)
+    assert np.allclose(T[:3, 3], pose[:3])
+    assert np.allclose(T[:3, :3], Rotation.from_euler("xyz", pose[3:]).as_matrix())
 
 
 def test_static_step_range():
