@@ -179,14 +179,15 @@ const PANELS = {
     return `<div class="grid">${frames.map((f) => {
       const fr = S.frameById[f.id];
       if (!fr) return '';
-      return `<div class="card" title="${esc(f.note)}"><img loading="lazy" src="${thumbUrl(fr.image, 640)}" data-full="${fileUrl(fr.image)}" data-caption="${esc(f.id)}"><div class="cap"><b>${esc(f.id)}</b></div></div>`;
+      const tag = f.selected ? '<span class="iou-good" title="the frame the scene was rebuilt from">selected</span>' : '';
+      return `<div class="card ${f.selected ? 'selected' : ''}" title="${esc(f.note)}"><img loading="lazy" src="${thumbUrl(fr.image, 640)}" data-full="${fileUrl(fr.image)}" data-caption="${esc(f.id)}${f.note ? ` · ${esc(f.note)}` : ''}"><div class="cap"><b>${esc(f.id)}</b>${tag}</div></div>`;
     }).join('')}</div>`;
   },
 
   support: () => {
     const s = S.state.support;
     if (!s) return notYet('2');
-    const line = `<div class="summary-line"><b>${s.extent ? s.extent.map((v) => fmt(v)).join(' × ') : '—'} m</b> · tilt <b>${fmt(s.tilt_deg, 1)}°</b> · plane RMS <b>${fmt((s.rms_m || 0) * 1000, 1)} mm</b></div>`;
+    const line = `<div class="summary-line"><b>${s.extent ? s.extent.map((v) => fmt(v)).join(' × ') : '—'} m</b> · tilt <b>${fmt(s.tilt_deg, 1)}°</b> · plane RMS <b>${fmt(s.rms_m == null ? null : s.rms_m * 1000, 1)} mm</b>${s.description ? ` · ${esc(s.description)}` : ''}</div>`;
     return line + `<div class="grid">${s.overlays.map((p) => card(p, esc(p.split('_').pop().replace('.png', '')), 640)).join('')}</div>`;
   },
 

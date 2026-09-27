@@ -89,7 +89,7 @@ def test_state_reads_stage_status_and_products(tmp_path):
     assert stages["3"]["status"] == "running" and stages["3"]["started"] == now
     assert stages["3"]["activity"] == "Fitting the mug now."
     assert stages["4"]["status"] == "pending"
-    assert state["frames"][1] == {"id": "ext1@1", "note": "sharp"}
+    assert state["frames"][1] == {"id": "ext1@1", "note": "sharp", "selected": False}
     assert state["support"]["extent"] == [1, 1]
     assert state["support"]["overlays"] == ["s2_frames/support_ext1@0.png"]
     assert not state["objects"] and not state["physics"]
@@ -132,6 +132,64 @@ def test_state_of_another_methods_run(tmp_path):
     objects = run_state(ws)["objects"]
     assert [o["up"] for o in objects] == ["z", "z"]  # z when not said
     assert objects[0]["glb"] == "s3_objects/gen/mug/mesh.glb" and not objects[1]["glb"]
+
+
+def test_state_of_a_fixed_run(tmp_path):
+    """SimFoundry's stage is a running fixed stage's activity; the frames say which
+    was selected; the support's extent is the refined one of the objects file; the
+    objects show their previews; the unrefined scene can be looked at."""
+    ws = _run(tmp_path, method="fixed")
+    s2, s3 = ws.root / "s2_frames", ws.root / "s3_objects"
+    s2.mkdir()
+    (s2 / "simfoundry.log").write_text(
+        "[Stage 3] Segment ground plane\n[Stage 3] completed in 70.1s\n"
+        "[Stage 5] Decompose scene\n[Stage 5] cmd: mamba run -n simfoundry python\n"
+        "Detecting objects...\n"
+    )
+    _stages(ws, **{"2": {"status": "running", "started": time.time()}})
+    stages = {s["key"]: s for s in run_state(ws)["stages"]}
+    assert stages["2"]["activity"] == "SimFoundry Stage 5: Decompose scene"
+
+    (s2 / "support.json").write_text(
+        json.dumps({"T_base_support": np.eye(4).tolist(), "tilt_deg": 1.5})
+    )
+    (s2 / "output.json").write_text(
+        json.dumps(
+            {
+                "frames": ["ext1@0", "ext1@1"],
+                "selected": "ext1@1",
+                "decided_by": "codex",
+                "frame_notes": {"ext1@1": "sees every object"},
+                "support": {"file": "support.json", "description": "a table"},
+            }
+        )
+    )
+    (s2 / "parsed").mkdir()
+    (s2 / "parsed" / "scene.json").write_text("{}")
+    (s3 / "mug").mkdir(parents=True)
+    (s3 / "mug" / "mesh.obj").write_text("v 0 0 0\n")
+    (s3 / "mug" / "preview.png").write_bytes(b"")
+    support = {"T_base_support": np.eye(4).tolist(), "extent": [0.4, 0.44]}
+    (s3 / "objects.json").write_text(
+        json.dumps(
+            {
+                "support": support,
+                "objects": [{"name": "mug", "mesh": "mug/mesh.obj", "up": "z"}],
+            }
+        )
+    )
+    state = run_state(ws)
+    assert state["frames"] == [
+        {"id": "ext1@0", "note": "", "selected": False},
+        {"id": "ext1@1", "note": "sees every object", "selected": True},
+    ]
+    assert state["support"]["extent"] == [0.4, 0.44]
+    assert state["support"]["tilt_deg"] == 1.5
+    assert state["support"]["description"] == "a table"
+    assert len(state["objects"]) == 1
+    obj = state["objects"][0]
+    assert obj["preview"] == "s3_objects/mug/preview.png" and obj["up"] == "z"
+    assert "s2_frames/parsed" in [s["path"] for s in state["scenes"]]
 
 
 def test_server_serves_the_run_and_nothing_else(tmp_path):

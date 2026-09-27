@@ -1,14 +1,14 @@
-"""Metric depth for a capture's stereo frames, from FoundationStereo (SimFoundry's stage
-2), so that stereo captures can be compared with renders in depth too.
+"""Metric depth for a capture's stereo frames, from FoundationStereo.
 
-The capture is copied to ``out_dir`` and every stereo frame in the chosen steps gets a
-``depth_image`` at its left image's resolution. The robot is left in the depth: a
-comparison renders it as well.
+A run works on depth; a stereo camera (DROID's ZED cameras) records image pairs. Every
+static-period frame of a stereo camera that has no depth yet gets FoundationStereo's:
+SimFoundry's stage-2 backend with its settings (half resolution), run as a job in
+SimFoundry's environment (``scripts/tools/stereo_job.py``), scaled back to the left
+image's resolution. The robot is left in the depth: a run cuts it out itself.
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -16,72 +16,68 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from r2s2r.pipeline.fixed.simfoundry import (
-    FRAME_MAP_FILENAME,
-    SimFoundryBackend,
-    SimFoundryConfig,
-)
-from r2s2r.structs import Capture, write_depth
+from r2s2r.paths import ENV_SIMFOUNDRY
+from r2s2r.structs import Capture, FrameRecord, write_depth
+from r2s2r.tools.envjobs import run_env_job
+
+DEPTH_NOTE = "FoundationStereo, static frames of the stereo cameras"
 
 
-def add_stereo_depth(
-    capture: Capture,
-    out_dir: str | Path,
-    config: SimFoundryConfig | None = None,
-    static_only: bool = True,
-) -> Capture:
-    """``capture`` copied to ``out_dir`` with FoundationStereo depth on its stereo
-    frames (those of the static period, unless ``static_only`` is off)."""
-    out_dir = Path(out_dir)
-    if out_dir.resolve() != capture.root.resolve():
-        shutil.copytree(capture.root, out_dir, dirs_exist_ok=True)
-    work = out_dir / "stereo_depth"
-    cfg = replace(config or SimFoundryConfig(), max_frames=10_000, stages=("2",))
-    frames = capture.frames
-    source = (
-        capture
-        if static_only
-        else replace(
-            capture,
-            static_steps=(min(f.step for f in frames), max(f.step for f in frames) + 1),
+def stereo_frames(capture: Capture) -> list[FrameRecord]:
+    """The static-period frames of stereo cameras that have no depth yet."""
+    return [
+        f
+        for f in capture.frames
+        if f.depth_image is None
+        and f.right_image is not None
+        and capture.cameras[f.camera].stereo_baseline is not None
+        and capture.in_static(f.step)
+    ]
+
+
+def add_stereo_depth(capture: Capture, jobs_dir: Path) -> Capture:
+    """``capture`` (saved in place) with FoundationStereo depth on its
+    :func:`stereo_frames`, as ``depth/<camera>/<step>.png``; the job's files go to
+    ``jobs_dir``."""
+    frames = stereo_frames(capture)
+    if not frames:
+        return capture
+    work = jobs_dir.resolve() / "stereo_depth"
+    pairs = []
+    for f in frames:
+        cam = capture.cameras[f.camera]
+        assert f.right_image is not None and cam.stereo_baseline is not None
+        pairs.append(
+            {
+                "left": str((capture.root / f.left_image).resolve()),
+                "right": str((capture.root / f.right_image).resolve()),
+                "K": cam.K.tolist(),
+                "baseline": cam.stereo_baseline,
+            }
         )
+    result = run_env_job(
+        "stereo_job.py", {"work": str(work), "pairs": pairs}, jobs_dir, ENV_SIMFOUNDRY
     )
-    backend = SimFoundryBackend(cfg)
-    backend.prepare_inputs(source, work)
-    backend.run(source, work, stages=("2",))
-    fs_dir = backend.scene_dir(source, work) / "s2_fs"
-    depth_of = {}
-    frame_map = backend.scene_dir(source, work) / "s1_zed" / FRAME_MAP_FILENAME
-    for m in json.loads(frame_map.read_text(encoding="utf-8")):
-        if m["depth"] != "stereo":
-            continue
-        stem = fs_dir / f"image_{m['index']}"
-        raw = Path(f"{stem}_depth_meter_raw.npy")  # before the robot was cut out
-        depth_of[(m["camera"], int(m["step"]))] = np.load(
-            raw if raw.exists() else f"{stem}_depth_meter.npy"
-        )
-    new_frames = []
-    for frame in frames:
-        depth = depth_of.get((frame.camera, frame.step))
-        if depth is None:
-            new_frames.append(frame)
-            continue
-        cam = capture.cameras[frame.camera]
+    written = {}
+    for f, path in zip(frames, result["depth"]):
+        cam = capture.cameras[f.camera]
         full = cv2.resize(
-            depth.astype(np.float32),
+            np.load(path).astype(np.float32),
             (cam.width, cam.height),
             interpolation=cv2.INTER_NEAREST,
         )
-        rel = f"depth/{frame.camera}/{frame.step:04d}.png"
-        (out_dir / rel).parent.mkdir(parents=True, exist_ok=True)
-        write_depth(out_dir / rel, full)
-        new_frames.append(replace(frame, depth_image=rel))
+        rel = f"depth/{f.camera}/{f.step:04d}.png"
+        (capture.root / rel).parent.mkdir(parents=True, exist_ok=True)
+        write_depth(capture.root / rel, full)
+        written[(f.camera, f.step)] = rel
     shutil.rmtree(work)
     out = replace(
         capture,
-        frames=new_frames,
-        root=out_dir,
-        metadata={**capture.metadata, "depth": "FoundationStereo (stage 2)"},
+        frames=[
+            replace(f, depth_image=written.get((f.camera, f.step), f.depth_image))
+            for f in capture.frames
+        ],
+        metadata={**capture.metadata, "depth": DEPTH_NOTE},
     )
     out.save()
     return out

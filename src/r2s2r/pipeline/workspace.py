@@ -6,7 +6,9 @@
       inputs/
         capture/          the capture, copied (only the chosen cameras), its metadata
                           dropped but how its depth was made (a simulated capture's
-                          metadata holds the true scene)
+                          metadata holds the true scene); stereo cameras' frames of the
+                          static period get FoundationStereo depth here
+                          (:mod:`r2s2r.capture.stereo`)
         frames.json       every frame: id, camera, step, image, depth, pose, ...
         sheets/<role>.png contact sheets of the frames that can be reconstructed from
       cache/depth/        robot-free depth per frame; cache/jobs/: model job logs
@@ -28,6 +30,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from r2s2r.capture.stereo import add_stereo_depth
 from r2s2r.structs import Capture, DepthView, FrameRecord, read_depth
 
 if TYPE_CHECKING:  # MuJoCo is imported only when the robot is cut out
@@ -62,7 +65,8 @@ class Workspace:
         frames.
 
         Only ``cameras`` (roles or serials; default: all) are kept, and only the files
-        their frames refer to are copied.
+        their frames refer to are copied. Stereo frames of the static period without
+        depth get FoundationStereo's.
         """
         root = Path(root).resolve()
         if (root / RUN_FILENAME).exists():
@@ -83,6 +87,7 @@ class Workspace:
             metadata={k: v for k, v in capture.metadata.items() if k in KEPT_METADATA},
         )
         clean.save()
+        add_stereo_depth(clean, root / "cache" / "jobs")
         ws = cls(root, Capture.load(copy))
         (root / "inputs" / "frames.json").write_text(
             json.dumps(ws.frame_index(), indent=1), encoding="utf-8"

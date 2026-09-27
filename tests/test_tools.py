@@ -87,8 +87,8 @@ def test_pattern_search_climbs_to_the_maximum():
 
 
 def test_assemble_writes_a_simulation_ready_scene(tmp_path):
-    """A scaled mesh becomes a scene of a sim-ready URDF; scale in the pose is
-    refused."""
+    """A scaled mesh becomes a scene of a sim-ready URDF, with the object's own
+    collision parts when it has them; scale in the pose is refused."""
     capture = rgbd_capture(tmp_path / "capture", CAMERAS)
     ws = Workspace.create(capture, tmp_path / "run", "agentic")
     mesh = trimesh.creation.box(extents=(0.12, 0.08, 0.16))  # twice the true size
@@ -123,6 +123,18 @@ def test_assemble_writes_a_simulation_ready_scene(tmp_path):
     assert float(root.find("link/inertial/mass").attrib["value"]) == pytest.approx(0.2)
     names = [c.attrib.get("name") for c in root.iter("collision")]
     assert "hull_0" in names and "r2s2r_resting_base" in names
+
+    assert scene.provenance["method"] == "agentic"
+
+    # Collision parts of its own: kept (scaled like the mesh), none made.
+    trimesh.creation.box(extents=(0.1, 0.1, 0.1)).export(tmp_path / "part.obj")
+    objects["objects"][0]["collision"] = ["part.obj", "part.obj"]
+    (tmp_path / "objects.json").write_text(json.dumps(objects))
+    report = assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "coacd")
+    assert report["objects"]["box_1"]["hulls"] == 2
+    hull = trimesh.load(tmp_path / "scene/objects/box_1/collision/hull_1.obj")
+    assert np.allclose(hull.extents, 0.05)
+    del objects["objects"][0]["collision"]
 
     objects["objects"][0]["T_base_obj"] = (2 * np.eye(4)).tolist()
     (tmp_path / "objects.json").write_text(json.dumps(objects))

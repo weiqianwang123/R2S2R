@@ -4,8 +4,9 @@ objects, their physical parameters, and the latest replay.
 
 A stage's status is what ``run.json`` says (:mod:`r2s2r.pipeline.run`), unless its
 product has since become invalid or stale (then "stopped"), or it has been "running"
-without writing anything for a long time (the run was killed: "stopped" too). An agent's
-last message (``codex_*.jsonl``) is a running stage's activity.
+without writing anything for a long time (the run was killed: "stopped" too). A running
+stage's activity is an agent's last message (``codex_*.jsonl``), or the SimFoundry stage
+the fixed method is at (the last ``[Stage N]`` line of ``simfoundry.log``).
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ def run_state(ws: Workspace) -> dict[str, Any]:
             _stage(ws, key, (run.get("stages") or {}).get(key) or {}) for key in STAGES
         ],
         "frames": _frames(dirs["2"]),
-        "support": _support(ws, dirs["2"]),
+        "support": _support(ws, dirs["2"], dirs["3"]),
         "objects": _objects(ws, dirs["3"]),
         "physics": _physics(dirs["4"]),
         "replay_panels": _replay_panels(ws, dirs["6"]) or _replay_panels(ws, dirs["5"]),
@@ -107,6 +108,8 @@ def _stage(ws: Workspace, key: str, entry: dict[str, Any]) -> dict[str, Any]:
         message = _agent_message(d)
         if message:
             out["activity"] = _first_sentence(message)
+        elif (d / "simfoundry.log").exists():
+            out["activity"] = _simfoundry_stage(d / "simfoundry.log")
     elif status == "done":
         try:
             valid = fresh(ws.root, key) and not VALIDATORS[key](ws, d)
@@ -134,6 +137,15 @@ def _agent_message(d: Path) -> str | None:
     return message
 
 
+def _simfoundry_stage(log: Path) -> str | None:
+    """The SimFoundry stage a log's last ``[Stage N] <description>`` line names."""
+    stage = None
+    for line in log.read_text(errors="replace").splitlines():
+        if re.match(r"\[Stage \w+\] (?!cmd:)", line):
+            stage = line.strip()
+    return None if stage is None else f"SimFoundry {stage[1:].replace(']', ':', 1)}"
+
+
 def _first_sentence(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", " ".join(text.split()))
     sentence = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
@@ -148,18 +160,29 @@ def _frames(d: Path) -> list[dict[str, Any]]:
     if not isinstance(out, dict):
         return []
     notes = out.get("frame_notes") or {}
-    return [{"id": fid, "note": notes.get(fid, "")} for fid in out.get("frames", [])]
+    return [
+        {
+            "id": fid,
+            "note": notes.get(fid, ""),
+            "selected": fid == out.get("selected"),
+        }
+        for fid in out.get("frames", [])
+    ]
 
 
-def _support(ws: Workspace, d: Path) -> dict[str, Any] | None:
+def _support(ws: Workspace, d: Path, objects_dir: Path) -> dict[str, Any] | None:
+    """Stage 2's support; its extent, when stage 2 left it out, the objects file's."""
     out = _json(d / "output.json")
     name = (out.get("support") or {}).get("file") if isinstance(out, dict) else None
     candidates = [d / name] if name else sorted(d.glob("support*.json"))
+    objects = _json(objects_dir / "objects.json")
+    inline = objects.get("support") if isinstance(objects, dict) else None
     for path in candidates:
         support = _json(path)
         if isinstance(support, dict) and "T_base_support" in support:
             return {
-                "extent": support.get("extent"),
+                "extent": support.get("extent")
+                or (inline.get("extent") if isinstance(inline, dict) else None),
                 "tilt_deg": support.get("tilt_deg"),
                 "rms_m": support.get("inlier_rms_m"),
                 "description": (
@@ -276,7 +299,7 @@ def _scenes(ws: Workspace, dirs: dict[str, Path]) -> list[dict[str, Any]]:
     for key, d in dirs.items():
         if not d.exists():
             continue
-        for name in ("scene/scene.json", "objects.json"):
+        for name in ("scene/scene.json", "parsed/scene.json", "objects.json"):
             if (d / name).exists():
                 found.append((key, d / name))
     output = _json(dirs["2"] / "output.json")

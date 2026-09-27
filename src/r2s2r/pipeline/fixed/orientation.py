@@ -12,7 +12,7 @@ a generated texture may have lost what told them apart. For each object this mod
    end here, since their shape alone rules out every other turn;
 3. asks a VLM to pick among the rest. It sees the photo and a render of each
    remaining candidate from the same camera, and looks for features that fix the
-   orientation, such as handles, openings, printed text or labels. The backend's
+   orientation, such as handles, openings, printed text or labels. SimFoundry's
    pose is kept unless the VLM is confident.
 
 Nothing here depends on the kind of object.
@@ -173,7 +173,7 @@ def _ask_vlm(
     """Show the VLM the photo and each kept candidate, from the view that sees the
     object best.
 
-    Returns the chosen turn (the backend's when unsure) and the answer.
+    Returns the chosen turn (SimFoundry's when unsure) and the answer.
     """
     fallback = 0.0 if 0.0 in kept else kept[0]
     with_image = [v for v in views if v.image is not None]

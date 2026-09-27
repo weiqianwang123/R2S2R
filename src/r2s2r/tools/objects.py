@@ -11,12 +11,15 @@ An objects file (JSON) describes a scene the way the agent builds it::
          "scale": 0.052 | [sx, sy, sz],        # applied to the mesh file's coordinates
          "T_base_obj": 4x4,                    # then this rigid pose (base frame)
          "up": "y",                            # the mesh file's up axis (default z)
-         "mass": 0.3, "friction": 0.6}         # kg; optional until assembly
+         "mass": 0.3, "friction": 0.6,         # kg; optional until assembly
+         "collision": ["hull_0.obj", ...]}     # optional: convex parts, as the mesh
       ]
     }
 
 Relative paths are relative to the objects file. ``up`` only says how to show the mesh
-file on its own (upright); ``T_base_obj`` places it.
+file on its own (upright); ``T_base_obj`` places it. Collision parts are in the mesh
+file's coordinates (``scale`` applies to them too); an object without them gets its own
+at assembly.
 """
 
 from __future__ import annotations
@@ -172,10 +175,11 @@ def assemble(
     """An objects file -> a scene (``scene.json``) of simulation-ready objects.
 
     Per object, in ``out_dir/objects/<name>/``: the mesh scaled into ``visual.obj``;
-    collision parts (``coacd``: CoACD's convex decomposition, ``hull``: one convex hull,
-    ``none``: none, for looking only); inertia of the convex hull at the given mass
-    (else ``DEFAULT_DENSITY``); a URDF, made simulation-ready (a flat base for an object
-    resting on the support).
+    collision parts: the object's own when it has them, else ``collision``'s (``coacd``:
+    CoACD's convex decomposition, ``hull``: one convex hull, ``none``: none, for looking
+    only); inertia of the convex hull at the given mass (else ``DEFAULT_DENSITY``); a
+    URDF, made simulation-ready (a flat base for an object resting on the support). The
+    scene's provenance names the run's method.
     """
     if collision not in ("coacd", "hull", "none"):
         raise ValueError(f"unknown collision {collision!r} (coacd, hull, none)")
@@ -204,10 +208,15 @@ def assemble(
             shutil.rmtree(obj_dir)
         obj_dir.mkdir(parents=True)
         mesh = load_mesh(_resolve(base, obj["mesh"]))
-        scale = np.broadcast_to(np.asarray(obj.get("scale", 1.0), float), (3,))
-        mesh.apply_transform(np.diag([*scale, 1.0]))
+        scaling = np.diag([*np.broadcast_to(obj.get("scale", 1.0), (3,)), 1.0])
+        mesh.apply_transform(scaling)
         mesh.export(obj_dir / "visual.obj")
-        hulls = _collision(ws, mesh, obj_dir, collision, max_hulls)
+        if obj.get("collision"):
+            hulls = _given_hulls(
+                [_resolve(base, h) for h in obj["collision"]], scaling, obj_dir
+            )
+        else:
+            hulls = _collision(ws, mesh, obj_dir, collision, max_hulls)
         hull = mesh.convex_hull
         mass = obj.get("mass")
         mass = float(mass) if mass else DEFAULT_DENSITY * float(hull.volume)
@@ -254,7 +263,7 @@ def assemble(
         reference_step=frame.step,
         joint_positions=frame.joint_positions,
         provenance={
-            "backend": "agentic",
+            "method": ws.read_run()["method"],
             "objects_file": str(objects_path),
             "collision": collision,
         },
@@ -273,6 +282,19 @@ def _default_reference(ws: Workspace) -> FrameRecord:
     frames = ws.reconstructable()
     static = [f for f in frames if ws.capture.cameras[f.camera].is_static]
     return (static or frames)[0]
+
+
+def _given_hulls(sources: list[Path], scaling: np.ndarray, obj_dir: Path) -> list[Path]:
+    """An object's own collision parts, scaled like its mesh, in ``collision/``."""
+    out = obj_dir / "collision"
+    out.mkdir()
+    hulls = []
+    for k, source in enumerate(sources):
+        hull = load_mesh(source)
+        hull.apply_transform(scaling)
+        hulls.append(out / f"hull_{k}.obj")
+        hull.export(hulls[-1])
+    return hulls
 
 
 def _collision(

@@ -1,6 +1,6 @@
 """Drop objects the measured depth says are not there.
 
-A backend can reconstruct objects that do not exist. SimFoundry finds objects one at a
+A reconstruction can hold objects that do not exist. SimFoundry finds objects one at a
 time in an image it edits: each one found is erased and the gap inpainted, and a smudge
 left where an object was erased can be found as another object. Such a ghost has no
 points of its own in the measured depth, and the cameras see through it: where its

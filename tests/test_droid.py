@@ -1,10 +1,14 @@
-"""Tests for capture/droid.py."""
+"""Tests for capture/droid.py, and capture/stereo.py's depth for a run's stereo
+frames (the FoundationStereo job faked)."""
+
+import json
 
 import cv2
 import numpy as np
 from conftest import CLOSE_STEP, NUM_STEPS, SERIALS, SIZE
 from scipy.spatial.transform import Rotation
 
+from r2s2r.capture import stereo
 from r2s2r.capture.droid import (
     ROLES,
     align_steps_to_video,
@@ -12,7 +16,8 @@ from r2s2r.capture.droid import (
     pose6d_to_matrix,
     static_step_range,
 )
-from r2s2r.structs import Capture
+from r2s2r.pipeline.workspace import Workspace
+from r2s2r.structs import Capture, read_depth
 
 
 def test_pose6d_matches_droid_convention():
@@ -84,3 +89,49 @@ def test_load_droid_episode(droid_episode, tmp_path):
     assert reloaded.trajectory is not None
     assert np.allclose(reloaded.trajectory.times, traj.times)
     assert np.allclose(reloaded.cameras[ext1.serial].K, ext1.K)
+
+
+def test_a_run_gets_stereo_depth_for_its_static_frames(
+    droid_episode, tmp_path, monkeypatch
+):
+    """A new run computes FoundationStereo depth (at half resolution, scaled back) for
+    the static frames of its stereo cameras, in its copy of the capture only."""
+    episode, calib = droid_episode
+    capture = load_droid_episode(episode, tmp_path / "capture", calib, stride=2)
+    jobs = []
+
+    def job(script, spec, workdir, env):
+        jobs.append((script, spec, workdir, env))
+        (tmp_path / "run/cache/jobs/stereo_depth").mkdir(parents=True)
+        depth = []
+        for k, pair in enumerate(spec["pairs"]):
+            h, w = cv2.imread(pair["left"]).shape[:2]
+            depth.append(str(tmp_path / f"{k}.npy"))
+            np.save(depth[-1], np.full((h // 2, w // 2), 1.25, np.float32))
+        return {"depth": depth}
+
+    monkeypatch.setattr(stereo, "run_env_job", job)
+    ws = Workspace.create(capture, tmp_path / "run", "fixed")
+    assert len(jobs) == 1
+    script, spec, workdir, env = jobs[0]
+    assert script == "stereo_job.py" and env == "simfoundry"
+    assert workdir == (tmp_path / "run/cache/jobs").resolve()
+    static = [f for f in capture.frames if f.step < CLOSE_STEP]
+    assert len(spec["pairs"]) == len(static) == 8
+    assert (
+        spec["pairs"][0]["baseline"]
+        == capture.cameras[static[0].camera].stereo_baseline
+    )
+    for frame in ws.capture.frames:
+        if frame.step >= CLOSE_STEP:
+            assert frame.depth_image is None
+            continue
+        depth = read_depth(ws.capture.root / frame.depth_image)
+        cam = ws.capture.cameras[frame.camera]
+        assert depth.shape == (cam.height, cam.width) and np.allclose(depth, 1.25)
+    assert "FoundationStereo" in ws.capture.metadata["depth"]
+    assert len(ws.reconstructable()) == 8
+    rows = json.loads((tmp_path / "run/inputs/frames.json").read_text())
+    assert sum(r["depth"] for r in rows) == 8
+    assert all(f.depth_image is None for f in Capture.load(capture.root).frames)
+    assert stereo.stereo_frames(ws.capture) == []  # nothing left to do

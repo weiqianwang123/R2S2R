@@ -1,9 +1,9 @@
 """Jobs that run in another conda environment.
 
-SAM3 and CoACD run in SimFoundry's environment, Hunyuan3D in its own
+SAM3, CoACD and FoundationStereo run in SimFoundry's environment, Hunyuan3D in its own
 (:mod:`r2s2r.paths`); each job is a script under ``scripts/tools/`` that reads a job
-JSON and writes a result JSON. The SimFoundry submodule is on their path, and its models
-are used from there.
+JSON and writes a result JSON. The SimFoundry submodule is on their path (as on
+SimFoundry's own stages', :func:`simfoundry_env`), and its models are used from there.
 """
 
 from __future__ import annotations
@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 JOBS_DIR = REPO_ROOT / "scripts" / "tools"
 
 
+def simfoundry_env() -> dict[str, str]:
+    """This process's environment for a program in a conda environment: the SimFoundry
+    submodule first on its path (not another SimFoundry install), r2s2r's virtualenv
+    out of the way."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(SIMFOUNDRY_DIR), env.get("PYTHONPATH", "")) if p
+    )
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
 def run_env_job(
     script: str, job: dict[str, Any], workdir: Path, env_name: str
 ) -> dict[str, Any]:
@@ -38,11 +50,6 @@ def run_env_job(
     job_path, result_path = logs / f"{stem}.json", logs / f"{stem}_result.json"
     log_path = logs / f"{stem}.log"
     job_path.write_text(json.dumps(job, indent=1), encoding="utf-8")
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(
-        p for p in (str(SIMFOUNDRY_DIR), env.get("PYTHONPATH", "")) if p
-    )
-    env.pop("VIRTUAL_ENV", None)  # r2s2r's venv must not shadow the conda env
     cmd = [
         mamba_exe(),
         "run",
@@ -58,7 +65,7 @@ def run_env_job(
         proc = subprocess.run(
             cmd,
             cwd=workdir,
-            env=env,
+            env=simfoundry_env(),
             stdout=log,
             stderr=subprocess.STDOUT,
             check=False,

@@ -57,7 +57,7 @@ class RefineConfig:
     max_match_cost: float = 0.05
     match_points: int = 2000  # of the model and of each cluster, for matching
     model_points: int = 4000
-    min_iou_gain: float = 0.02  # keep the backend's pose unless the fit improves
+    min_iou_gain: float = 0.02  # keep SimFoundry's pose unless the fit improves
     contact_tolerance: float = 0.03  # objects this close to the support rest on it
 
 
@@ -68,7 +68,7 @@ class Observation:
 
     T_base_support: NDArray[np.float64]  # at the outline's centre, turned with it
     size: tuple[float, float]  # the outline's rectangle
-    yaw: float  # its turn from the backend's support frame
+    yaw: float  # its turn from SimFoundry's support frame
     above: NDArray[np.float64]  # points above the support, in the frame above
     groups: list  # clusters: index arrays into ``above``
     matches: dict[int, int]  # object index -> cluster index
