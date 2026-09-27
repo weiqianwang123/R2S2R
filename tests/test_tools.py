@@ -125,6 +125,7 @@ def test_assemble_writes_a_simulation_ready_scene(tmp_path):
     assert "hull_0" in names and "r2s2r_resting_base" in names
 
     assert scene.provenance["method"] == "agentic"
+    assert scene.provenance["collision"] == "hull"
 
     # Collision parts of its own: kept (scaled like the mesh), none made.
     trimesh.creation.box(extents=(0.1, 0.1, 0.1)).export(tmp_path / "part.obj")
@@ -132,6 +133,7 @@ def test_assemble_writes_a_simulation_ready_scene(tmp_path):
     (tmp_path / "objects.json").write_text(json.dumps(objects))
     report = assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "coacd")
     assert report["objects"]["box_1"]["hulls"] == 2
+    assert SceneSpec.load(tmp_path / "scene").provenance["collision"] == "given"
     hull = trimesh.load(tmp_path / "scene/objects/box_1/collision/hull_1.obj")
     assert np.allclose(hull.extents, 0.05)
     del objects["objects"][0]["collision"]

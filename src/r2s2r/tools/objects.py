@@ -1,7 +1,7 @@
 """Tools on objects: generating a mesh from one image (Hunyuan3D-2.1), and assembling
 placed meshes into a simulation-ready scene.
 
-An objects file (JSON) describes a scene the way the agent builds it::
+An objects file (JSON) describes a scene the way a method's stage 3 leaves it::
 
     {
       "support": "path/to/support.json" | {"T_base_support": 4x4, "extent": [x, y]},
@@ -179,7 +179,8 @@ def assemble(
     CoACD's convex decomposition, ``hull``: one convex hull, ``none``: none, for looking
     only); inertia of the convex hull at the given mass (else ``DEFAULT_DENSITY``); a
     URDF, made simulation-ready (a flat base for an object resting on the support). The
-    scene's provenance names the run's method.
+    scene's provenance names the run's method and where the collision parts came from:
+    ``"given"`` or ``collision``, per object when they differ.
     """
     if collision not in ("coacd", "hull", "none"):
         raise ValueError(f"unknown collision {collision!r} (coacd, hull, none)")
@@ -195,7 +196,7 @@ def assemble(
     if len(set(names)) != len(names):
         raise ValueError(f"object names must be unique: {names}")
 
-    objects, report = [], {}
+    objects, report, sources = [], {}, {}
     for obj in spec["objects"]:
         name = slug(obj["name"])
         T_base_obj = np.asarray(obj["T_base_obj"], float)
@@ -215,8 +216,10 @@ def assemble(
             hulls = _given_hulls(
                 [_resolve(base, h) for h in obj["collision"]], scaling, obj_dir
             )
+            sources[name] = "given"
         else:
             hulls = _collision(ws, mesh, obj_dir, collision, max_hulls)
+            sources[name] = collision
         hull = mesh.convex_hull
         mass = obj.get("mass")
         mass = float(mass) if mass else DEFAULT_DENSITY * float(hull.volume)
@@ -253,6 +256,7 @@ def assemble(
 
     ref = spec.get("reference_frame")
     frame = ws.frame(ref) if ref else _default_reference(ws)
+    kinds = set(sources.values())
     scene = SceneSpec(
         name=ws.capture.name,
         embodiment=ws.capture.embodiment,
@@ -265,7 +269,7 @@ def assemble(
         provenance={
             "method": ws.read_run()["method"],
             "objects_file": str(objects_path),
-            "collision": collision,
+            "collision": sources if len(kinds) > 1 else next(iter(kinds), collision),
         },
         support_extent=extent,
     )

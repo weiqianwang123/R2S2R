@@ -2,8 +2,8 @@
 
 A single-frame reconstruction places objects from one view, so small or thin objects
 can end up centimetres off, and it reconstructs only the support plane, not its
-outline. This module fuses metric depth from several calibrated views (e.g. both
-DROID exterior cameras at the reference step) in the robot base frame and
+outline. This module fuses metric depth from several calibrated views (the candidate
+frames' depth, from every camera of the run) in the robot base frame and
 
 1. fits the support surface's outline: the connected region of on-plane points
    around the objects, summarised as a rectangle (centre, size, yaw);

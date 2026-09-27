@@ -38,7 +38,6 @@ import trimesh
 
 from r2s2r.paths import (
     ENV_MESH,
-    ENV_NERFSTUDIO,
     ENV_SIMFOUNDRY,
     SIMFOUNDRY_DIR,
     codex_bin,
@@ -170,13 +169,15 @@ class SimFoundry:
         last."""
         cfg = self.config
         task = self.capture.instruction
+        # Not ASCII-escaped: Hydra would pass \u escapes on literally.
+        quoted = json.dumps(task, ensure_ascii=False)
         overrides = [
             f"root_dir={self.root}",
             f"scene_name={self.capture.name}",
             *SETTINGS,
             f"s3_ground.frame_selection.mode={cfg.frame_selection}",
             *(
-                [f"s3_ground.frame_selection.task={json.dumps(task)}"]
+                [f"s3_ground.frame_selection.task={quoted}"]
                 if cfg.frame_selection == "codex" and task
                 else []
             ),
@@ -200,10 +201,6 @@ class SimFoundry:
             ENV_SIMFOUNDRY,
             "--env-mesh",
             ENV_MESH,
-            "--env-nerfstudio",
-            ENV_NERFSTUDIO,
-            "--env-b1k",
-            ENV_SIMFOUNDRY,
             *overrides,
         ]
         env = simfoundry_env()

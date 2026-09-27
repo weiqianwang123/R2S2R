@@ -23,6 +23,7 @@ from r2s2r.pipeline.run import run
 from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import SceneSpec
 from r2s2r.transforms import (
+    invert,
     look_at,
     make_transform,
     matrix_to_pos_quat,
@@ -34,7 +35,14 @@ CAMERAS = {
     "c1": ("ext1", look_at((0.95, 0.35, 0.45), TARGET)),
     "c2": ("wrist", look_at((0.45, -0.4, 0.4), TARGET)),
 }
-# What the fake SimFoundry finds, in its world frame (= the base frame here).
+# SimFoundry's world in the robot base frame (its support plane's frame): not the
+# identity, so the tests see which way the poses are carried into the base frame.
+_YAW = np.radians(30)
+T_BASE_WORLD = make_transform(
+    [[np.cos(_YAW), -np.sin(_YAW), 0], [np.sin(_YAW), np.cos(_YAW), 0], [0, 0, 1]],
+    [0.2, -0.1, 0.0],
+)
+# What the fake SimFoundry finds, in the robot base frame.
 OBJECTS = [
     ("red mug", "m0", make_transform(np.eye(3), [0.5, 0.0, 0.04])),
     ("red mug", "m1", make_transform(np.eye(3), [0.6, 0.1, 0.04])),
@@ -110,7 +118,11 @@ def _simfoundry_outputs(run_, idx, pinned, objects):
         )
     frame = run_.frame_of(idx)
     (scene_dir / "s4_frame").mkdir()
-    np.save(scene_dir / "s4_frame" / f"image_{idx}_cam2world.npy", frame.T_base_cam)
+    T_world_base = invert(T_BASE_WORLD)
+    np.save(
+        scene_dir / "s4_frame" / f"image_{idx}_cam2world.npy",
+        T_world_base @ frame.T_base_cam,
+    )
     info, poses = {}, {}
     for k, (category, model, T) in enumerate(objects):
         urdf_dir = scene_dir / "s11_sim" / "objects" / category / model / "urdf"
@@ -121,7 +133,7 @@ def _simfoundry_outputs(run_, idx, pinned, objects):
             "model": model,
             "friction": 0.4,
         }
-        pos, quat = matrix_to_pos_quat(T)
+        pos, quat = matrix_to_pos_quat(T_world_base @ T)
         poses[f"iter_{k}"] = [pos.tolist(), quat_wxyz_to_xyzw(quat).tolist()]
     (scene_dir / "s11_sim").mkdir(exist_ok=True)
     (scene_dir / "s11_sim" / "scene_objects_info.json").write_text(json.dumps(info))
@@ -202,12 +214,14 @@ def test_command_runs_the_submodule_with_codex(capture, tmp_path):
     """Stages 3-12 but 9, in the submodule; frame selection by Codex with the task;
     every VLM call through Codex."""
     cfg = SimFoundryConfig(codex_reasoning="high", overrides=["a=b"])
+    capture = replace(capture, instruction='put the "café" mug away')
     run_ = sf.SimFoundry(capture, tmp_path / "sf", cfg, tmp_path / "log")
     cmd, env = run_.command(sf.STAGES, ("s3_ground.img_idx=2",))
     assert cmd[cmd.index("--include") + 1] == "3,4,5,6,7,8,10,11,12"
     assert f"root_dir={(tmp_path / 'sf').resolve()}" in cmd
     assert "s3_ground.frame_selection.mode=codex" in cmd
-    assert f"s3_ground.frame_selection.task={json.dumps(capture.instruction)}" in cmd
+    # As Hydra reads it back: quotes escaped, the rest as written.
+    assert 's3_ground.frame_selection.task="put the \\"café\\" mug away"' in cmd
     assert cmd[-2:] == ["a=b", "s3_ground.img_idx=2"]
     assert env["SIMFOUNDRY_VLM_BACKEND"] == "codex"
     assert (
@@ -253,7 +267,7 @@ def test_stages_2_3_4_from_simfoundry_outputs(
     assert out["support"] == {"file": "support.json", "description": "a wooden table"}
     assert "retried" not in out and log["stages"]["2"]["selected"] == "ext1@2"
     support = json.loads((s2 / "support.json").read_text())
-    assert np.allclose(support["T_base_support"], np.eye(4))
+    assert np.allclose(support["T_base_support"], T_BASE_WORLD)
     assert "[Stage 3] Segment ground plane" in (s2 / "simfoundry.log").read_text()
     parsed = SceneSpec.load(s2 / "parsed")
     assert [o.name for o in parsed.objects] == ["red_mug", "red_mug_2", "box"]
@@ -270,6 +284,8 @@ def test_stages_2_3_4_from_simfoundry_outputs(
     mug = spec["objects"][0]
     assert mug["mesh"] == "red_mug/m0.obj" and mug["up"] == "z" and mug["scale"] == 1.0
     assert (mug["mass"], mug["friction"]) == (0.3, 0.4)
+    assert np.allclose(spec["support"]["T_base_support"], T_BASE_WORLD)
+    assert np.allclose(spec["objects"][2]["T_base_obj"], OBJECTS[2][2])
     assert "map_Kd m0_Kd.png" in (s3 / "red_mug" / "m0.mtl").read_text()
     assert (s3 / "red_mug" / "m0_Kd.png").exists() and (
         s3 / "red_mug" / "preview.png"
@@ -282,6 +298,8 @@ def test_stages_2_3_4_from_simfoundry_outputs(
     s4 = root / "s4_scene"
     scene = SceneSpec.load(s4 / "scene")
     assert scene.provenance["method"] == "fixed"
+    assert scene.provenance["collision"] == "given"  # every object brought its hulls
+    assert np.allclose(scene.T_base_support, T_BASE_WORLD)
     assert scene.reference_camera == "c1" and scene.reference_step == 2
     obj = scene.objects[0]
     assert (obj.mass, obj.friction) == (0.3, 0.4)
