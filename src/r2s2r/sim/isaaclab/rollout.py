@@ -14,8 +14,15 @@ from isaaclab.sim import SimulationCfg, SimulationContext
 
 from r2s2r.policy.pick import find_object, pick_up
 from r2s2r.policy.scoring import save_rollout, score_lift
+from r2s2r.robots import get_robot
 from r2s2r.sim.isaaclab.robot import IsaacLabRobot
-from r2s2r.sim.isaaclab.scene import build_scene_cfg, centered_render_size, make_scene
+from r2s2r.sim.isaaclab.scene import (
+    build_scene_cfg,
+    camera_key,
+    centered_render_size,
+    make_scene,
+    with_object_usds,
+)
 from r2s2r.structs import SceneSpec
 from r2s2r.video import VideoRecorder
 
@@ -33,11 +40,16 @@ def run_pick(
     """Let the scene settle, run :func:`pick_up`, score by how far ``target`` rose."""
     out_dir = Path(out_dir)
     target = find_object(spec, target).name
-    roles = [video_camera] if video_camera else []
+    video_cams = [
+        (c, c.T_base_cam)
+        for c in spec.cameras.values()
+        if c.role == video_camera and c.T_base_cam is not None
+    ]
+    cams = [c for c, _ in video_cams]
     sim = SimulationContext(SimulationCfg(dt=physics_dt, device=device))
     scene = make_scene(
-        build_scene_cfg(spec, with_cameras=bool(roles), camera_roles=roles),
-        spec.embodiment,
+        build_scene_cfg(with_object_usds(spec, out_dir), False, video_cams),
+        get_robot(spec.embodiment),
     )
     sim.reset()
     names = {f"object_{i}": obj.name for i, obj in enumerate(spec.objects)}
@@ -60,16 +72,15 @@ def run_pick(
 
     video = None
     window: tuple[slice, slice] | None = None
-    if roles:
-        cam = next(c for c in spec.cameras.values() if c.role == roles[0])
-        _, _, x0, y0 = centered_render_size(cam)
-        window = (slice(y0, y0 + cam.height), slice(x0, x0 + cam.width))
+    if cams:
+        _, _, x0, y0 = centered_render_size(cams[0])
+        window = (slice(y0, y0 + cams[0].height), slice(x0, x0 + cams[0].width))
         fps = 1 / (IsaacLabRobot.control_dt * video_every)
-        video = VideoRecorder(out_dir / f"isaac_{roles[0]}.mp4", fps)
+        video = VideoRecorder(out_dir / f"isaac_{cams[0].role}.mp4", fps)
 
     def record(robot: IsaacLabRobot) -> None:
         if video is not None and robot.steps % video_every == 0:
-            rgb = scene[f"camera_{roles[0]}"].data.output["rgb"][0, ..., :3]
+            rgb = scene[camera_key(cams[0])].data.output["rgb"][0, ..., :3]
             video.add(rgb.cpu().numpy().astype(np.uint8)[window])
 
     before = positions()

@@ -85,10 +85,11 @@ def test_scene_asset_paths_are_relative_on_disk(tmp_path):
     urdf = tmp_path / "run/s4_scene/scene/objects/box/box.urdf"
     urdf.parent.mkdir(parents=True)
     urdf.write_text("<robot/>")
+    usd = tmp_path / "run/s5_settle/scene/objects/box/box.usd"
     scene = SceneSpec(
         "t",
         "franka_panda",
-        [ObjectSpec("box", "box", str(urdf), np.eye(4))],
+        [ObjectSpec("box", "box", str(urdf), np.eye(4), usd=str(usd))],
         np.eye(4),
         {},
         "c",
@@ -102,10 +103,14 @@ def test_scene_asset_paths_are_relative_on_disk(tmp_path):
     assert saved["objects"][0]["asset_path"] == (
         "../../s4_scene/scene/objects/box/box.urdf"
     )
+    assert saved["objects"][0]["usd"] == "objects/box/box.usd"
     shutil.move(tmp_path / "run", tmp_path / "moved")
     loaded = SceneSpec.load(tmp_path / "moved/s5_settle/scene")
     moved = tmp_path / "moved/s4_scene/scene/objects/box/box.urdf"
     assert loaded.objects[0].asset_path == str(moved.resolve())
+    assert loaded.objects[0].usd == str(
+        (tmp_path / "moved/s5_settle/scene/objects/box/box.usd").resolve()
+    )
     saved["objects"][0]["asset_path"] = str(moved)  # as older scenes have it
     (tmp_path / "moved/s5_settle/scene/scene.json").write_text(json.dumps(saved))
     old = SceneSpec.load(tmp_path / "moved/s5_settle/scene")

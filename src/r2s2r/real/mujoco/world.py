@@ -21,7 +21,8 @@ from r2s2r.mjrender import CV_TO_MJ, mujoco, set_clip_planes
 from r2s2r.paths import CACHE_DIR
 from r2s2r.policy.robot import RobotInterface
 from r2s2r.robots.franka import FRANKA_HAND_TCP, Q_READY, PandaKinematics
-from r2s2r.robots.mujoco_models import MENAGERIE_DIR, robot_spec
+from r2s2r.robots.franka_panda import FRANKA_PANDA
+from r2s2r.robots.spec import MENAGERIE_DIR
 from r2s2r.structs import CameraSpec, Capture
 from r2s2r.transforms import (
     intrinsics_matrix,
@@ -97,7 +98,7 @@ class MujocoWorldConfig:
     q_start: tuple[float, ...] = tuple(float(v) for v in Q_READY)
     timestep: float = 0.002
     gripper_kp: float = 1000.0  # ~7 N per finger on a 3 cm object
-    menagerie_dir: str = str(MENAGERIE_DIR)
+    menagerie_dir: str = str(MENAGERIE_DIR)  # recorded; the robot comes from its spec
     gso_dir: str = str(CACHE_DIR / "gso" / "models")
 
     def as_dict(self) -> dict[str, Any]:
@@ -197,7 +198,7 @@ def _add_camera(spec: Any, cam: CameraConfig) -> None:
 
 def build_spec(cfg: MujocoWorldConfig) -> Any:
     """The world as an ``mujoco.MjSpec`` (compile it with ``spec.compile()``)."""
-    spec = robot_spec("franka_panda", cfg.menagerie_dir)
+    spec = FRANKA_PANDA.mjcf()
     spec.modelname = "r2s2r_world"
     spec.option.timestep = cfg.timestep
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC

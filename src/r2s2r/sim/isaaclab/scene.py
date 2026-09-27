@@ -4,65 +4,58 @@ Isaac Lab modules can only be imported once the Omniverse app is running, so imp
 module after ``isaaclab.app.AppLauncher`` has started.
 
 The environment origin is the robot base frame, so every SceneSpec pose is used as-is:
-the robot sits at the origin, objects and the support surface at their ``T_base_*``, and
-each static camera at its calibrated ``T_base_cam`` with the real intrinsics (OpenCV
-convention == Isaac Lab's "ros" camera convention).
+the robot (its :class:`~r2s2r.robots.spec.RobotSpec`'s Isaac config) sits at the origin,
+objects and the support surface at their ``T_base_*``, and each camera at its calibrated
+pose with the real intrinsics (OpenCV convention == Isaac Lab's "ros" camera
+convention). There is one environment, at the world origin: some robots' USDs pin their
+root there.
 
-Build the scene with :func:`make_scene`: Isaac Sim's Franka + Robotiq asset mounts the
-gripper like the Franka Hand (10.7 cm out, turned -45 deg about the flange), and DROID's
-sits 1.1 cm further out, turned +45 deg from that, as the MuJoCo model fitted to its
-wrist-camera images has it (``r2s2r.robots.mujoco_models``). Left as it is, the fingers
-show up 45 degrees off in every wrist-camera render.
+Objects are spawned from single-file USDs (:func:`object_usd`): the backend's URDF
+converted, its rigid body on the default prim, and a physics material with the object's
+friction bound to its colliders. physcoder loads the same files, with the
+``metadata.yaml`` :func:`write_metadata` puts beside them.
 """
 
 from __future__ import annotations
 
+import os
+from dataclasses import replace
+from pathlib import Path
+from typing import Iterable
+
 import isaaclab.sim as sim_utils
 import numpy as np
+import yaml
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
-from isaaclab_assets.robots.franka import (
-    FRANKA_PANDA_HIGH_PD_CFG,
-    FRANKA_ROBOTIQ_GRIPPER_CFG,
-)
-from pxr import Gf, UsdPhysics
-from scipy.spatial.transform import Rotation
+from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
+from numpy.typing import NDArray
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
-from r2s2r.mjrender import mujoco
-from r2s2r.robots.mujoco_models import ROBOTIQ_PREFIX, robot_spec
+from r2s2r.assets import bottom_offset
+from r2s2r.robots import get_robot
+from r2s2r.robots.spec import RobotSpec
 from r2s2r.structs import CameraSpec, ObjectSpec, SceneSpec
-from r2s2r.transforms import invert, make_transform, matrix_to_pos_quat
+from r2s2r.transforms import make_transform, matrix_to_pos_quat
 
-PANDA_JOINTS = [f"panda_joint{i}" for i in range(1, 8)]
 SUPPORT_THICKNESS = 0.02
-# Joints of Isaac Sim's franka.usd (Robotiq variant), under the robot prim: link7 to the
-# hand frame, and the hand frame to the Robotiq base.
-HAND_JOINT = "panda_link7/panda_hand_joint"
-ROBOTIQ_MOUNT_JOINT = "Robotiq_2F_85_edit/Robotiq_2F_85/base_link/AssemblerFixedJoint"
+SUPPORT_EXTENT = (0.6, 0.6)  # for scenes whose support outline is unknown
+METADATA_FILENAME = "metadata.yaml"
 
 
-def _pose(T: np.ndarray) -> tuple[tuple[float, ...], tuple[float, ...]]:
+def _pose(T: NDArray) -> tuple[tuple[float, ...], tuple[float, ...]]:
     pos, quat = matrix_to_pos_quat(T)
     return tuple(float(v) for v in pos), tuple(float(v) for v in quat)
 
 
-# Embodiment -> Isaac Lab robot. Both hold joint position targets stiffly with
-# gravity compensated, like Franka's own controller.
-ROBOT_CFGS = {
-    "droid_franka": FRANKA_ROBOTIQ_GRIPPER_CFG,  # Panda + Robotiq 2F-85
-    "franka_panda": FRANKA_PANDA_HIGH_PD_CFG,  # Panda + Franka Hand
-}
-
-
-def robot_cfg(scene: SceneSpec) -> ArticulationCfg:
-    """The scene's robot at the origin, in the recorded pose."""
-    if scene.embodiment not in ROBOT_CFGS:
-        raise NotImplementedError(f"no Isaac Lab config for {scene.embodiment!r}")
-    cfg = ROBOT_CFGS[scene.embodiment].replace(prim_path="{ENV_REGEX_NS}/Robot")
+# ------------------------------------------------------------------------- robot
+def robot_cfg(robot: RobotSpec, joint_positions: NDArray) -> ArticulationCfg:
+    """The robot at the origin, its arm at ``joint_positions``."""
+    cfg = robot.isaac_cfg().replace(prim_path="{ENV_REGEX_NS}/Robot")
     joint_pos = dict(cfg.init_state.joint_pos)
     joint_pos.update(
-        {name: float(q) for name, q in zip(PANDA_JOINTS, scene.joint_positions)}
+        {n: float(q) for n, q in zip(robot.isaac_arm_joints, joint_positions)}
     )
     cfg.init_state = cfg.init_state.replace(
         pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0), joint_pos=joint_pos
@@ -70,8 +63,183 @@ def robot_cfg(scene: SceneSpec) -> ArticulationCfg:
     return cfg
 
 
-def support_cfg(scene: SceneSpec, extent: tuple[float, float]) -> AssetBaseCfg:
+def make_scene(cfg: InteractiveSceneCfg, robot: RobotSpec) -> InteractiveScene:
+    """The interactive scene, the robot fixed up by its spec (call before
+    ``sim.reset()``)."""
+    scene = InteractiveScene(cfg)
+    if scene.num_envs != 1 or bool(scene.env_origins.abs().max() > 0):
+        raise ValueError("the scene must have one environment, at the origin")
+    if robot.isaac_post_spawn is not None:
+        robot.isaac_post_spawn(f"{scene.env_prim_paths[0]}/Robot")
+    return scene
+
+
+# ----------------------------------------------------------------------- objects
+def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
+    """Write ``obj`` as one USD file, ``out_dir/<name>.usd``, and return its path.
+
+    Isaac's URDF importer writes its layered output under ``out_dir/usd/``; this
+    flattens it into a single file with the rigid body (and its mass) on the default
+    prim, the visuals and colliders underneath, and a ``PhysicsMaterial`` with the
+    object's friction bound to every collider. Texture paths stay relative, so the
+    directory can move.
+    """
+    out_dir = Path(out_dir).resolve()
+    converter = UrdfConverter(
+        UrdfConverterCfg(
+            asset_path=obj.asset_path,
+            usd_dir=str(out_dir / "usd"),
+            usd_file_name=f"{obj.name}.usd",
+            # The converter's cache looks at the URDF's text, not at the meshes it
+            # names, which a redone stage 4 may have changed.
+            force_usd_conversion=True,
+            fix_base=False,
+            merge_fixed_joints=True,
+            joint_drive=None,
+            # The collision meshes are convex parts already (CoACD, SimFoundry).
+            collider_type="convex_hull",
+        )
+    )
+    stage = Usd.Stage.Open(converter.usd_path)
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        # The importer instances visuals and colliders; flatten them in place.
+        while instances := [p for p in stage.Traverse() if p.IsInstance()]:
+            for prim in instances:
+                prim.SetInstanceable(False)
+    flat = Usd.Stage.Open(stage.Flatten())
+    root = flat.GetDefaultPrim()
+    links = [p for p in root.GetChildren() if p.HasAPI(UsdPhysics.RigidBodyAPI)]
+    if len(links) != 1:
+        raise ValueError(f"{obj.asset_path} is not a single rigid link")
+    _move_rigid_body(links[0], root)
+    for prim in flat.Traverse():
+        for attr in prim.GetAttributes():
+            value = attr.Get()
+            if isinstance(value, Sdf.AssetPath) and os.path.isabs(value.path):
+                attr.Set(Sdf.AssetPath(f"./{os.path.relpath(value.path, out_dir)}"))
+    if obj.friction is not None:
+        material = UsdShade.Material.Define(
+            flat, root.GetPath().AppendChild("PhysicsMaterial")
+        )
+        physics = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+        physics.CreateStaticFrictionAttr(float(obj.friction))
+        physics.CreateDynamicFrictionAttr(float(obj.friction))
+        physics.CreateRestitutionAttr(0.0)
+        for prim in _colliders(root):
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                material, UsdShade.Tokens.strongerThanDescendants, "physics"
+            )
+    path = out_dir / f"{obj.name}.usd"
+    flat.GetRootLayer().Export(str(path))
+    return path
+
+
+def _move_rigid_body(link: Usd.Prim, root: Usd.Prim) -> None:
+    """Move the link's physics schemas and properties to ``root`` (the link sits at
+    root's origin), and drop Isaac's robot bookkeeping."""
+    xform = UsdGeom.Xformable(link).GetLocalTransformation()
+    if not np.allclose(np.array(xform), np.eye(4), atol=1e-6):
+        raise ValueError(f"{link.GetPath()} is not at its object's origin")
+    for prim in (root, link):
+        for schema in prim.GetAppliedSchemas():
+            if schema.startswith("Isaac"):
+                prim.RemoveAppliedSchema(schema)
+        for prop in prim.GetProperties():
+            if prop.GetName().startswith("isaac:"):
+                prim.RemoveProperty(prop.GetName())
+    for schema in link.GetAppliedSchemas():
+        if schema.startswith(("Physics", "Physx")):
+            root.AddAppliedSchema(schema)
+            link.RemoveAppliedSchema(schema)
+    for attr in link.GetAttributes():
+        name = attr.GetName()
+        if name.startswith(("physics:", "physx")) and attr.HasAuthoredValue():
+            root.CreateAttribute(name, attr.GetTypeName()).Set(attr.Get())
+            link.RemoveProperty(name)
+
+
+def _colliders(root: Usd.Prim) -> Iterable[Usd.Prim]:
+    return (p for p in Usd.PrimRange(root) if p.HasAPI(UsdPhysics.CollisionAPI))
+
+
+def write_metadata(
+    usd_path: str | Path, T_base_obj: NDArray, T_base_support: NDArray
+) -> Path:
+    """``metadata.yaml`` beside an object's USD, in physcoder's convention.
+
+    ``bottom_offset`` (and ``assembled_offset``, the same here) is the bottom centre of
+    the colliders as the object rests at ``T_base_obj`` (:func:`~r2s2r.assets.
+    bottom_offset`, up being the support's normal).
+    """
+    stage = Usd.Stage.Open(str(usd_path))
+    root = stage.GetDefaultPrim()
+    cache = UsdGeom.XformCache()
+    points = []
+    for collider in _colliders(root):
+        for prim in Usd.PrimRange(collider):
+            if prim.IsA(UsdGeom.Mesh):
+                pts = np.asarray(UsdGeom.Mesh(prim).GetPointsAttr().Get(), float)
+                M = np.array(cache.ComputeRelativeTransform(prim, root)[0]).T
+                points.append(pts @ M[:3, :3].T + M[:3, 3])
+    if not points:
+        raise ValueError(f"{usd_path} has no collision meshes")
+    pos, quat = bottom_offset(
+        np.concatenate(points), T_base_obj[:3, :3].T @ T_base_support[:3, 2]
+    )
+
+    def offset() -> dict[str, list[float]]:
+        return {
+            "pos": [round(float(v), 6) + 0.0 for v in pos],
+            "quat": [round(float(v), 6) + 0.0 for v in quat],
+        }
+
+    path = Path(usd_path).with_name(METADATA_FILENAME)
+    path.write_text(
+        yaml.safe_dump(
+            {"assembled_offset": offset(), "bottom_offset": offset()},
+            default_flow_style=None,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def with_object_usds(scene: SceneSpec, out_dir: str | Path) -> SceneSpec:
+    """``scene`` with every object that has no USD yet converted into
+    ``out_dir/objects/<name>/``."""
+    objects = [
+        (
+            obj
+            if obj.usd is not None
+            else replace(
+                obj, usd=str(object_usd(obj, Path(out_dir) / "objects" / obj.name))
+            )
+        )
+        for obj in scene.objects
+    ]
+    return replace(scene, objects=objects)
+
+
+def object_cfg(obj: ObjectSpec, index: int, kinematic: bool) -> RigidObjectCfg:
+    """An object from its USD (:func:`object_usd`); ``kinematic`` holds it where it
+    is placed (for comparing geometry, not physics)."""
+    if obj.usd is None:
+        raise ValueError(f"{obj.name} has no USD yet (with_object_usds)")
+    pos, rot = _pose(obj.T_base_obj)
+    return RigidObjectCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/Object_{index}",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=obj.usd,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=pos, rot=rot),
+    )
+
+
+# ----------------------------------------------------------------- support, cameras
+def support_cfg(scene: SceneSpec) -> AssetBaseCfg:
     """A static slab whose top face is the reconstructed support plane."""
+    extent = scene.support_extent or SUPPORT_EXTENT
     below = make_transform(np.eye(3), [0.0, 0.0, -SUPPORT_THICKNESS / 2])
     pos, rot = _pose(scene.T_base_support @ below)
     return AssetBaseCfg(
@@ -82,32 +250,6 @@ def support_cfg(scene: SceneSpec, extent: tuple[float, float]) -> AssetBaseCfg:
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.45, 0.9)),
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=pos, rot=rot),
-    )
-
-
-def object_cfg(obj: ObjectSpec, index: int, kinematic: bool = False) -> RigidObjectCfg:
-    """A reconstructed object, spawned from the backend's URDF; ``kinematic`` holds it
-    where it is placed (for comparing geometry, not physics)."""
-    pos, rot = _pose(obj.T_base_obj)
-    return RigidObjectCfg(
-        prim_path=f"{{ENV_REGEX_NS}}/Object_{index}",
-        spawn=sim_utils.UrdfFileCfg(
-            asset_path=obj.asset_path,
-            fix_base=False,
-            merge_fixed_joints=True,
-            joint_drive=None,
-            # SimFoundry's collision meshes are already convex (CoACD) parts.
-            collider_type="convex_hull",
-            # The importer adds an articulation root, which RigidObject rejects.
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                articulation_enabled=False
-            ),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic),
-            mass_props=(
-                sim_utils.MassPropertiesCfg(mass=obj.mass) if obj.mass else None
-            ),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=pos, rot=rot),
     )
 
 
@@ -124,8 +266,14 @@ def centered_render_size(cam: CameraSpec) -> tuple[int, int, int, int]:
     return 2 * half_w, 2 * half_h, int(round(half_w - cx)), int(round(half_h - cy))
 
 
-def camera_cfg(cam: CameraSpec, T_base_cam: np.ndarray) -> CameraCfg:
-    """A camera with the real intrinsics at the calibrated pose.
+def camera_key(cam: CameraSpec) -> str:
+    """The scene entity of a camera."""
+    return f"camera_{cam.role}"
+
+
+def camera_cfg(cam: CameraSpec, T_base_cam: NDArray, near: float) -> CameraCfg:
+    """A camera with the real intrinsics at ``T_base_cam``, seeing nothing nearer than
+    ``near`` (m).
 
     The render is larger than the real image (see :func:`centered_render_size`); crop it
     with the offsets that function returns.
@@ -145,7 +293,7 @@ def camera_cfg(cam: CameraSpec, T_base_cam: np.ndarray) -> CameraCfg:
             intrinsic_matrix=K.reshape(-1).tolist(),
             width=width,
             height=height,
-            clipping_range=(0.02, 20.0),
+            clipping_range=(near, 20.0),
             # Without a focal length Isaac Lab picks a 1 mm aperture and a
             # sub-millimetre focal length, which renders with the wrong field of
             # view; 24 mm gives physically sized camera parameters.
@@ -155,74 +303,18 @@ def camera_cfg(cam: CameraSpec, T_base_cam: np.ndarray) -> CameraCfg:
     )
 
 
-def make_scene(cfg: InteractiveSceneCfg, embodiment: str) -> InteractiveScene:
-    """The interactive scene, with the gripper mounted as on the real robot (call before
-    ``sim.reset()``)."""
-    scene = InteractiveScene(cfg)
-    if embodiment == "droid_franka":
-        for env in scene.env_prim_paths:
-            mount_robotiq(f"{env}/Robot")
-    return scene
-
-
-def mount_robotiq(robot_prim: str) -> None:
-    """Re-mount the Robotiq base where the fitted MuJoCo model has it on link7."""
-    stage = sim_utils.get_current_stage()
-    hand = UsdPhysics.Joint(stage.GetPrimAtPath(f"{robot_prim}/{HAND_JOINT}"))
-    mount = UsdPhysics.Joint(stage.GetPrimAtPath(f"{robot_prim}/{ROBOTIQ_MOUNT_JOINT}"))
-    if not (hand and mount):
-        raise ValueError(f"{robot_prim} is not Isaac's Franka + Robotiq asset")
-    T_hand_base = invert(_joint_transform(hand)) @ droid_robotiq_mount()
-    x, y, z, w = Rotation.from_matrix(T_hand_base[:3, :3]).as_quat()
-    mount.GetLocalPos0Attr().Set(Gf.Vec3f(*(float(v) for v in T_hand_base[:3, 3])))
-    mount.GetLocalRot0Attr().Set(Gf.Quatf(float(w), float(x), float(y), float(z)))
-    mount.GetLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-    mount.GetLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-
-
-def droid_robotiq_mount() -> np.ndarray:
-    """``T_link7_base`` of the Robotiq base on DROID (the MuJoCo model's)."""
-    model = robot_spec("droid_franka").compile()
-    data = mujoco.MjData(model)
-    mujoco.mj_kinematics(model, data)
-
-    def pose(name: str) -> np.ndarray:
-        b = model.body(name).id
-        w, x, y, z = data.xquat[b]
-        return make_transform(
-            Rotation.from_quat([x, y, z, w]).as_matrix(), data.xpos[b]
-        )
-
-    return invert(pose("link7")) @ pose(f"{ROBOTIQ_PREFIX}base")
-
-
-def _joint_transform(joint: UsdPhysics.Joint) -> np.ndarray:
-    """Body0 -> body1 of a fixed joint, from its two local frames."""
-
-    def frame(pos: Gf.Vec3f, rot: Gf.Quatf) -> np.ndarray:
-        x, y, z = rot.GetImaginary()
-        R = Rotation.from_quat([x, y, z, rot.GetReal()]).as_matrix()
-        return make_transform(R, np.array(pos, float))
-
-    return frame(
-        joint.GetLocalPos0Attr().Get(), joint.GetLocalRot0Attr().Get()
-    ) @ invert(frame(joint.GetLocalPos1Attr().Get(), joint.GetLocalRot1Attr().Get()))
-
-
 def build_scene_cfg(
     scene: SceneSpec,
-    num_envs: int = 1,
-    env_spacing: float = 5.0,
-    support_extent: tuple[float, float] = (0.6, 0.6),  # when the scene has none
-    with_cameras: bool = True,
-    camera_roles: list[str] | None = None,  # None: every static camera
-    kinematic_objects: bool = False,  # objects held where placed
+    kinematic_objects: bool,
+    cameras: Iterable[tuple[CameraSpec, NDArray]] = (),
 ) -> InteractiveSceneCfg:
-    """The full interactive scene: robot, support, objects, lights, cameras."""
-    cfg = InteractiveSceneCfg(num_envs=num_envs, env_spacing=env_spacing)
+    """The full interactive scene: robot, support, objects (with their USDs), lights,
+    and ``cameras`` (each at its pose)."""
+    cfg = InteractiveSceneCfg(num_envs=1, env_spacing=0.0)
+    robot = get_robot(scene.embodiment)
     # InteractiveScene reads entities from the cfg instance's attributes.
-    setattr(cfg, "robot", robot_cfg(scene))
-    setattr(cfg, "support", support_cfg(scene, scene.support_extent or support_extent))
+    setattr(cfg, "robot", robot_cfg(robot, scene.joint_positions))
+    setattr(cfg, "support", support_cfg(scene))
     for i, obj in enumerate(scene.objects):
         setattr(cfg, f"object_{i}", object_cfg(obj, i, kinematic_objects))
     # A dim dome keeps the background dark so renders overlay cleanly on real frames;
@@ -244,10 +336,10 @@ def build_scene_cfg(
             init_state=AssetBaseCfg.InitialStateCfg(rot=(0.9239, 0.0, 0.3827, 0.0)),
         ),
     )
-    if with_cameras:
-        for cam in scene.cameras.values():
-            if camera_roles is not None and cam.role not in camera_roles:
-                continue
-            if cam.is_static and cam.T_base_cam is not None:
-                setattr(cfg, f"camera_{cam.role}", camera_cfg(cam, cam.T_base_cam))
+    for cam, T_base_cam in cameras:
+        setattr(
+            cfg,
+            camera_key(cam),
+            camera_cfg(cam, T_base_cam, robot.isaac_camera_near),
+        )
     return cfg

@@ -3,7 +3,7 @@
 A robot standing on the table is geometry above the support plane, so reconstruction
 treats it as an object: SimFoundry's frame selection counts an arm that leaves the image
 as a clipped object, and refinement clusters it. The masker renders the robot's own
-model (:mod:`r2s2r.robots.mujoco_models`) at the recorded joint state from the
+model (:class:`~r2s2r.robots.model.RobotModel`) at the recorded joint state from the
 calibrated camera, with the exact pinhole intrinsics, and invalidates the depth wherever
 the robot is the visible surface. Objects in front of the robot keep their depth.
 """
@@ -11,20 +11,15 @@ the robot is the visible surface. Objects in front of the robot keep their depth
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from r2s2r.mjrender import CameraRenderer, add_camera, mujoco
-from r2s2r.robots.mujoco_models import (
-    ARM_JOINTS,
-    EMBODIMENTS,
-    MENAGERIE_DIR,
-    GripperPoser,
-    robot_spec,
-)
+from r2s2r.mjrender import CameraRenderer, add_camera
+from r2s2r.robots import get_robot
+from r2s2r.robots.model import RobotModel
+from r2s2r.robots.spec import RobotSpec
 
 NO_ROBOT = 1e6  # robot depth where the robot is not in view
 
@@ -41,23 +36,19 @@ class MaskConfig:
 
 
 class RobotMasker:
-    """Renders one embodiment from arbitrary calibrated cameras."""
+    """Renders one robot from arbitrary calibrated cameras."""
 
     def __init__(
         self,
-        embodiment: str,
-        menagerie_dir: str | Path = MENAGERIE_DIR,
+        robot: RobotSpec,
         config: MaskConfig | None = None,
         max_size: tuple[int, int] = (2560, 1600),
     ) -> None:
         self.config = config or MaskConfig()
-        spec = robot_spec(embodiment, menagerie_dir)
-        add_camera(spec, max_size)
-        self.model = spec.compile()
-        self.data = mujoco.MjData(self.model)
-        self.gripper = GripperPoser(self.model, embodiment)
-        self.arm_qadr = [self.model.joint(j).qposadr[0] for j in ARM_JOINTS]
-        self.renderer = CameraRenderer(self.model, self.data, max_size)
+        mjspec = robot.mjcf()
+        add_camera(mjspec, max_size)
+        self.robot = RobotModel(robot, mjspec)
+        self.renderer = CameraRenderer(self.robot.model, self.robot.data, max_size)
 
     def robot_depth(
         self,
@@ -69,8 +60,7 @@ class RobotMasker:
         gripper_position: float,
     ) -> NDArray[np.float32]:
         """Planar depth of the robot surface, :data:`NO_ROBOT` elsewhere."""
-        self.data.qpos[self.arm_qadr] = joint_positions
-        self.gripper.set(self.data, gripper_position)
+        self.robot.set(joint_positions, gripper_position)
         out = self.renderer.render(K, width, height, T_base_cam)
         return np.where(out["geom"] >= 0, out["depth"], NO_ROBOT).astype(np.float32)
 
@@ -103,10 +93,5 @@ class RobotMasker:
 
 
 def robot_masker(embodiment: str) -> RobotMasker:
-    """A masker for ``embodiment``, whose model must be known."""
-    if embodiment not in EMBODIMENTS:
-        raise ValueError(
-            f"no robot model for {embodiment!r} (known: {sorted(EMBODIMENTS)}); add it "
-            "to r2s2r.robots.mujoco_models, or turn robot masking off"
-        )
-    return RobotMasker(embodiment)
+    """A masker for ``embodiment`` (a registered robot)."""
+    return RobotMasker(get_robot(embodiment))

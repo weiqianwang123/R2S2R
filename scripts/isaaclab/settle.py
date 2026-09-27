@@ -5,7 +5,9 @@ at the start of the static period, and save the settled scene.
         --out OUT_DIR --headless [--seconds 2]
 
 Writes ``OUT_DIR/scene.json`` (object poses where they came to rest; the report under
-``provenance.settle``) and ``OUT_DIR/settle.json`` (how far each object moved).
+``provenance.settle``), ``OUT_DIR/settle.json`` (how far each object moved) and
+``OUT_DIR/objects/<name>/`` (each object as one USD file with physcoder's
+``metadata.yaml``, which the scene refers to).
 """
 
 from __future__ import annotations
@@ -39,14 +41,15 @@ def main() -> None:
     """Settle, then save."""
     spec = SceneSpec.load(args.scene_dir)
     capture = Capture.load(args.capture_dir)
+    args.out.mkdir(parents=True, exist_ok=True)
     settled, report = settle(
         spec,
         capture,
+        args.out,
         SettleConfig(
             seconds=args.seconds, physics_dt=args.physics_dt, device=args.device
         ),
     )
-    args.out.mkdir(parents=True, exist_ok=True)
     settled.save(args.out)
     (args.out / "settle.json").write_text(
         json.dumps(report, indent=1), encoding="utf-8"

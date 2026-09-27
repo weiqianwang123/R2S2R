@@ -14,10 +14,9 @@ from numpy.typing import NDArray
 
 from r2s2r.policy.robot import RobotInterface
 from r2s2r.robots.franka import PandaKinematics
-from r2s2r.sim.isaaclab.scene import PANDA_JOINTS
+from r2s2r.robots.franka_panda import FINGER_OPEN, FRANKA_PANDA
 
 FINGER_JOINTS = ["panda_finger_joint1", "panda_finger_joint2"]
-FINGER_OPEN = 0.04
 
 
 class IsaacLabRobot(RobotInterface):
@@ -38,7 +37,9 @@ class IsaacLabRobot(RobotInterface):
         self.robot = scene["robot"]
         self.on_step = on_step
         self.render_every = render_every
-        self.arm_ids, _ = self.robot.find_joints(PANDA_JOINTS, preserve_order=True)
+        self.arm_ids, _ = self.robot.find_joints(
+            list(FRANKA_PANDA.isaac_arm_joints), preserve_order=True
+        )
         self.finger_ids, _ = self.robot.find_joints(FINGER_JOINTS, preserve_order=True)
         self.decimation = max(1, int(round(self.control_dt / sim.get_physics_dt())))
         self.steps = 0

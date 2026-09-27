@@ -71,7 +71,7 @@ class Viewer:
         emb = self.ws.capture.embodiment
         glb_path = self.cache / f"robot_{emb}.glb"
         names_path = self.cache / f"robot_{emb}.json"
-        poses_path = self.cache / "robot_poses.json"
+        poses_path = self.cache / f"robot_{emb}_poses.json"
         with self.lock:
             if not glb_path.exists():
                 glb, names = robot_glb(emb)

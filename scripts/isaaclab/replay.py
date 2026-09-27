@@ -1,13 +1,14 @@
 """Replay a capture's robot in a reconstructed scene, in Isaac Lab, and compare every
-recorded frame with its render.
+recorded frame of the static period with its render.
 
     OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/replay.py SCENE_DIR CAPTURE_DIR \
-        --out OUT_DIR --headless [--mode geometry|physics] [--cameras ext2 wrist]
+        --out OUT_DIR --headless [--cameras ext2 wrist] [--every N]
 
 Writes ``OUT_DIR/frames/`` (the renders), ``OUT_DIR/replay.json`` (where they are, the
-objects' poses at every rendered step, how closely the arm tracked) and
+objects' poses at every rendered step, how closely the arm was set),
 ``OUT_DIR/compare/`` (real | sim | blend panels with the objects' outlines, depth
-residuals where the capture has depth, a contact sheet per camera, ``compare.json``).
+residuals where the capture has depth, a contact sheet per camera, ``compare.json``) and,
+for objects the scene has no USD for, ``OUT_DIR/objects/``.
 """
 
 from __future__ import annotations
@@ -26,13 +27,6 @@ parser.add_argument("capture_dir", type=Path)
 parser.add_argument("--out", type=Path, required=True)
 parser.add_argument("--cameras", nargs="+", help="roles or serials (default: all)")
 parser.add_argument("--every", type=int, default=1, help="render every n-th frame step")
-parser.add_argument(
-    "--mode",
-    choices=["geometry", "physics"],
-    default="geometry",
-    help="geometry: static period, robot set to the recorded state, objects held; "
-    "physics: the whole recording, arm tracking it, objects simulated",
-)
 parser.add_argument("--physics-dt", type=float, default=0.005)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -50,10 +44,9 @@ def main() -> None:
     spec = SceneSpec.load(args.scene_dir)
     capture = Capture.load(args.capture_dir)
     config = ReplayConfig(
-        mode=args.mode,
-        physics_dt=args.physics_dt,
         cameras=tuple(args.cameras) if args.cameras else None,
         every=args.every,
+        physics_dt=args.physics_dt,
         device=args.device,
     )
     log = replay(spec, capture, args.out, config)
@@ -63,7 +56,7 @@ def main() -> None:
         name: max(d for _, d in rows) for name, rows in summary["motion_m"].items()
     }
     print(
-        f"replayed {len(log['frames'])} frames; arm tracking within "
+        f"replayed {len(log['frames'])} frames; arm set within "
         f"{summary['arm_error_rad_max']:.3f} rad; objects moved (m): "
         + ", ".join(f"{n} {d:.3f}" for n, d in moved.items())
         + f" -> {args.out}",

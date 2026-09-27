@@ -10,6 +10,7 @@ pytest.importorskip("mujoco")
 # pylint: disable=wrong-import-position
 from r2s2r.real.mujoco import world as mw  # noqa: E402
 from r2s2r.real.mujoco.capture import record_capture  # noqa: E402
+from r2s2r.robots import get_robot  # noqa: E402
 from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH, PandaKinematics  # noqa: E402
 from r2s2r.robots.mask import NO_ROBOT, RobotMasker  # noqa: E402
 from r2s2r.structs import DepthView  # noqa: E402
@@ -75,7 +76,7 @@ def _robot_pixels(world, name):
 
 def test_robot_masker_matches_the_simulator(world):
     """Rendering the robot from calibration + joints reproduces what cameras see."""
-    masker = RobotMasker("franka_panda", world.cfg.menagerie_dir)
+    masker = RobotMasker(get_robot("franka_panda"))
     for name in world.camera_names():
         spec = world.camera_spec(name)
         truth = _robot_pixels(world, name)

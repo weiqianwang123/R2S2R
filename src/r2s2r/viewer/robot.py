@@ -1,8 +1,8 @@
 """The capture's robot for the viewer: its visual meshes as one GLB (a node per body, in
 the body's frame) and every body's pose at every recorded step.
 
-It is the MuJoCo model the pipeline uses to cut the robot out of depth (for DROID, the
-Panda with the Robotiq 2F-85 on the flange), posed with the recorded joints and gripper.
+It is the robot's MuJoCo model (:mod:`r2s2r.robots`), the one the pipeline cuts the
+robot out of depth with, posed with the recorded joints and gripper opening.
 """
 
 from __future__ import annotations
@@ -11,25 +11,25 @@ from typing import Any
 
 import numpy as np
 import trimesh
-from numpy.typing import NDArray
-from scipy.spatial.transform import Rotation
 
-from r2s2r.mjrender import mujoco
-from r2s2r.robots.mujoco_models import ARM_JOINTS, GripperPoser, robot_spec
+from r2s2r.mjrender import geom_mesh
+from r2s2r.robots import get_robot
+from r2s2r.robots.model import RobotModel
 from r2s2r.structs import Capture
+from r2s2r.transforms import quat_wxyz_to_xyzw
 
-VISUAL_GROUP = 2  # menagerie's visual geoms
+VISUAL_GROUP = 2  # every robot spec's visual geoms
 
 
 def robot_glb(embodiment: str) -> tuple[bytes, list[str]]:
     """The robot's visual meshes as a GLB, one node per body (``b<k>`` for the k-th of
     the bodies' names returned)."""
-    model = robot_spec(embodiment).compile()
+    model = get_robot(embodiment).mjcf().compile()
     parts: dict[int, list[trimesh.Trimesh]] = {}
     for g in range(model.ngeom):
         if model.geom_group[g] != VISUAL_GROUP:
             continue
-        mesh = _geom_mesh(model, g)
+        mesh = geom_mesh(model, g)
         if mesh is not None:
             parts.setdefault(int(model.geom_bodyid[g]), []).append(mesh)
     scene: Any = trimesh.Scene()
@@ -46,11 +46,8 @@ def robot_glb(embodiment: str) -> tuple[bytes, list[str]]:
 def robot_poses(capture: Capture, bodies: list[str]) -> dict[str, Any]:
     """Every body's pose (x, y, z, qx, qy, qz, qw; base frame) at every step of the
     capture's trajectory (or of its frames, without one)."""
-    model = robot_spec(capture.embodiment).compile()
-    data = mujoco.MjData(model)
-    gripper = GripperPoser(model, capture.embodiment)
-    arm = [model.joint(j).qposadr[0] for j in ARM_JOINTS]
-    ids = [model.body(name).id for name in bodies]
+    robot = RobotModel(get_robot(capture.embodiment))
+    ids = [robot.model.body(name).id for name in bodies]
     traj = capture.trajectory
     if traj is not None:
         steps = traj.steps.tolist()
@@ -66,20 +63,17 @@ def robot_poses(capture: Capture, bodies: list[str]) -> dict[str, Any]:
         grips = np.array([f.gripper_position for f in frames])
     poses = []
     for q, g in zip(joints, grips):
-        data.qpos[:] = 0.0
-        data.qpos[arm] = q
-        gripper.set(data, float(g))
-        mujoco.mj_kinematics(model, data)
-        row = []
-        for b in ids:
-            w, x, y, z = data.xquat[b]
-            row.append(
+        robot.set(q, float(g))
+        xpos, xquat = robot.data.xpos, robot.data.xquat
+        poses.append(
+            [
                 [
-                    *np.round(data.xpos[b], 5).tolist(),
-                    *np.round([x, y, z, w], 5).tolist(),
+                    *np.round(xpos[b], 5).tolist(),
+                    *np.round(quat_wxyz_to_xyzw(xquat[b]), 5).tolist(),
                 ]
-            )
-        poses.append(row)
+                for b in ids
+            ]
+        )
     return {
         "bodies": bodies,
         "steps": steps,
@@ -87,32 +81,3 @@ def robot_poses(capture: Capture, bodies: list[str]) -> dict[str, Any]:
         "gripper": np.round(np.asarray(grips, float), 3).tolist(),
         "poses": poses,
     }
-
-
-def _geom_mesh(model: Any, g: int) -> trimesh.Trimesh | None:
-    """A mesh geom in its body's frame, coloured by its material."""
-    if model.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
-        return None
-    i = model.geom_dataid[g]
-    v0, nv = model.mesh_vertadr[i], model.mesh_vertnum[i]
-    f0, nf = model.mesh_faceadr[i], model.mesh_facenum[i]
-    vertices = np.asarray(model.mesh_vert[v0 : v0 + nv], float)
-    faces = np.asarray(model.mesh_face[f0 : f0 + nf], int)
-    T = _geom_transform(model, g)
-    vertices = vertices @ T[:3, :3].T + T[:3, 3]
-    mat = model.geom_matid[g]
-    rgba = model.mat_rgba[mat] if mat >= 0 else model.geom_rgba[g]
-    color = (np.clip(rgba, 0, 1) * 255).astype(np.uint8)
-    mesh = trimesh.Trimesh(vertices, faces, process=False)
-    mesh.visual = trimesh.visual.ColorVisuals(  # type: ignore[no-untyped-call]
-        mesh, vertex_colors=np.tile(color, (nv, 1))
-    )
-    return mesh
-
-
-def _geom_transform(model: Any, g: int) -> NDArray[np.float64]:
-    T = np.eye(4)
-    w, x, y, z = model.geom_quat[g]
-    T[:3, :3] = Rotation.from_quat([x, y, z, w]).as_matrix()
-    T[:3, 3] = model.geom_pos[g]
-    return T

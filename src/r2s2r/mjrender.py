@@ -1,10 +1,11 @@
-"""MuJoCo rendering from calibrated pinhole cameras.
+"""MuJoCo rendering from calibrated pinhole cameras, and MuJoCo geoms as meshes.
 
 The robot masker, the tools' checks and fits, and the fixed method's refinement render
 MuJoCo models exactly as a calibrated camera saw the scene: OpenCV extrinsics and the
 full pinhole intrinsics, principal point included. :class:`SceneRenderer` renders a
 reconstructed scene; every object is a mocap body, so objects can be moved between
-renders, and the support is a large plane.
+renders, and the support is a large plane. :func:`geom_mesh` turns any geom (meshes and
+primitives alike) into a coloured triangle mesh, for whatever draws a model elsewhere.
 """
 
 from __future__ import annotations
@@ -14,11 +15,12 @@ import os
 from typing import Any
 
 import numpy as np
+import trimesh
 from numpy.typing import NDArray
 
 from r2s2r.assets import VisualMesh, urdf_visual_meshes
 from r2s2r.structs import DepthView, SceneSpec
-from r2s2r.transforms import rotation_to_quat
+from r2s2r.transforms import pos_quat_to_matrix, rotation_to_quat
 
 # Headless rendering through EGL, where there is an EGL library. Without one (e.g. CI),
 # MuJoCo imports with its default backend, and only rendering fails.
@@ -185,3 +187,39 @@ class SceneRenderer:
     def close(self) -> None:
         """Free the GL contexts."""
         self.camera.close()
+
+
+def geom_mesh(model: Any, g: int) -> trimesh.Trimesh | None:
+    """Geom ``g`` of a compiled model as a triangle mesh in its body's frame, coloured
+    by its material (else its rgba); None for planes, height fields and the like."""
+    kind, size = model.geom_type[g], model.geom_size[g]
+    geom = mujoco.mjtGeom
+    if kind == geom.mjGEOM_MESH:
+        i = model.geom_dataid[g]
+        v0, nv = model.mesh_vertadr[i], model.mesh_vertnum[i]
+        f0, nf = model.mesh_faceadr[i], model.mesh_facenum[i]
+        mesh = trimesh.Trimesh(
+            np.asarray(model.mesh_vert[v0 : v0 + nv], float),
+            np.asarray(model.mesh_face[f0 : f0 + nf], int),
+            process=False,
+        )
+    elif kind == geom.mjGEOM_BOX:
+        mesh = trimesh.creation.box(extents=2 * size)
+    elif kind in (geom.mjGEOM_SPHERE, geom.mjGEOM_ELLIPSOID):
+        mesh = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+        radii = size if kind == geom.mjGEOM_ELLIPSOID else np.full(3, size[0])
+        mesh.apply_scale(radii)
+    elif kind == geom.mjGEOM_CAPSULE:
+        mesh = trimesh.creation.capsule(height=2 * size[1], radius=size[0])
+    elif kind == geom.mjGEOM_CYLINDER:
+        mesh = trimesh.creation.cylinder(radius=size[0], height=2 * size[1])
+    else:
+        return None
+    mesh.apply_transform(pos_quat_to_matrix(model.geom_pos[g], model.geom_quat[g]))
+    mat = model.geom_matid[g]
+    rgba = model.mat_rgba[mat] if mat >= 0 else model.geom_rgba[g]
+    color = (np.clip(rgba, 0, 1) * 255).astype(np.uint8)
+    mesh.visual = trimesh.visual.ColorVisuals(  # type: ignore[no-untyped-call]
+        mesh, vertex_colors=np.tile(color, (len(mesh.vertices), 1))
+    )
+    return mesh

@@ -1,12 +1,14 @@
-"""Tests for assets.py: sim-ready URDFs and the URDF readers."""
+"""Tests for assets.py: sim-ready URDFs, the URDF readers and bottom offsets."""
 
 import xml.etree.ElementTree as ET
 
 import numpy as np
 import trimesh
+from scipy.spatial.transform import Rotation
 
 from r2s2r.assets import (
     RESTING_BASE,
+    bottom_offset,
     make_sim_ready,
     urdf_visual_meshes,
     urdf_visual_points,
@@ -94,3 +96,18 @@ def test_links_are_placed_by_their_joints(tmp_path):
     assert len(meshes) == 2
     assert np.allclose(meshes[0].mesh.centroid, 0.0, atol=1e-6)
     assert np.allclose(meshes[1].mesh.centroid, [0.0, 0.0, 0.1], atol=1e-6)
+
+
+def test_bottom_offset_is_physcoders_convention():
+    """An upright block's bottom centre, below its origin, identity rotation (like
+    physcoder's block: z -0.021639); an object lying on its side turns z up."""
+    block = trimesh.creation.box(extents=[0.0412, 0.041, 0.043278]).vertices
+    pos, quat = bottom_offset(block, np.array([0.0, 0.0, 1.0]))
+    assert np.allclose(pos, [0.0, 0.0, -0.021639], atol=1e-6)
+    assert np.allclose(quat, [1.0, 0.0, 0.0, 0.0])
+    # A y-up mesh (up is the object's +y), off-centre in x.
+    mesh = trimesh.creation.box(extents=[0.1, 0.2, 0.3]).vertices + [0.05, 0.0, 0.0]
+    pos, quat = bottom_offset(mesh, np.array([0.0, 1.0, 0.0]))
+    assert np.allclose(pos, [0.05, -0.1, 0.0], atol=1e-9)
+    R = Rotation.from_quat([*quat[1:], quat[0]]).as_matrix()
+    assert np.allclose(R[:, 2], [0.0, 1.0, 0.0]) and quat[0] > 0

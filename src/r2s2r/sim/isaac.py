@@ -44,8 +44,8 @@ def settle(
     seconds: float = SETTLE_SECONDS,
 ) -> dict[str, Any]:
     """The scene with its objects where they come to rest (``out_dir/scene.json``; the
-    robot held as the capture has it at the start of the static period), and how far
-    each moved."""
+    robot held as the capture has it at the start of the static period; each object's
+    USD under ``out_dir/objects/``), and how far each moved."""
     out_dir = Path(out_dir).resolve()
     _run_isaac(
         "settle.py",
@@ -83,8 +83,6 @@ def replay(
         str(Path(capture_dir).resolve()),
         "--out",
         str(out_dir),
-        "--mode",
-        "geometry",
         "--every",
         str(every),
     ]

@@ -313,6 +313,10 @@ class ObjectSpec:
     T_base_obj: NDArray[np.float64]
     mass: float | None = None
     friction: float | None = None
+    # The object as one USD file for Isaac Lab (its rigid body, colliders and friction
+    # material; written by settling), with ``metadata.yaml`` beside it. Paths as for
+    # ``asset_path``.
+    usd: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ObjectSpec:
@@ -347,7 +351,9 @@ class SceneSpec:
         payload = asdict(self)
         payload["cameras"] = {k: asdict(v) for k, v in self.cameras.items()}
         for obj in payload["objects"]:
-            obj["asset_path"] = os.path.relpath(Path(obj["asset_path"]).resolve(), root)
+            for key in ("asset_path", "usd"):
+                if obj[key] is not None:
+                    obj[key] = os.path.relpath(Path(obj[key]).resolve(), root)
         path = root / SCENE_FILENAME
         path.write_text(json.dumps(_to_jsonable(payload), indent=2), encoding="utf-8")
         return path
@@ -362,6 +368,8 @@ class SceneSpec:
         for o in d["objects"]:
             obj = ObjectSpec.from_dict(o)
             obj.asset_path = str((root / obj.asset_path).resolve())
+            if obj.usd is not None:
+                obj.usd = str((root / obj.usd).resolve())
             objects.append(obj)
         return cls(
             name=d["name"],

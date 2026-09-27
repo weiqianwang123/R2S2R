@@ -1,4 +1,5 @@
-"""URDF assets: making a backend's URDF simulation-ready, and reading its geometry.
+"""URDF assets: making a backend's URDF simulation-ready, reading its geometry, and
+where an object rests.
 
 :func:`make_sim_ready` writes one ``<name>_r2s2r.urdf`` per object:
 
@@ -24,7 +25,7 @@ import trimesh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-from r2s2r.transforms import make_transform
+from r2s2r.transforms import make_transform, rotation_to_quat
 
 SIM_READY_SUFFIX = "_r2s2r"
 RESTING_BASE = "r2s2r_resting_base"
@@ -164,6 +165,22 @@ def _add_resting_base(
     base.export(urdf_path.parent / base_file)
     collision = ET.SubElement(link, "collision", {"name": RESTING_BASE})
     ET.SubElement(ET.SubElement(collision, "geometry"), "mesh", {"filename": base_file})
+
+
+def bottom_offset(
+    points: NDArray, up: NDArray
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The bottom centre of ``points`` (object frame) along the object-frame direction
+    ``up``, as a pose in the object frame: position, and the (w, x, y, z) quaternion of
+    the frame turned by the least rotation that takes z onto ``up`` (the identity for
+    an upright object). physcoder's ``bottom_offset``."""
+    rotation, _ = Rotation.align_vectors([np.asarray(up, float)], [[0.0, 0.0, 1.0]])
+    R = rotation.as_matrix()
+    local = np.asarray(points, float) @ R  # in the bottom frame's axes
+    lo, hi = local.min(axis=0), local.max(axis=0)
+    pos = R @ np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]])
+    quat = rotation_to_quat(R)
+    return pos, quat if quat[0] >= 0 else -quat
 
 
 # ---------------------------------------------------------------------- helpers
