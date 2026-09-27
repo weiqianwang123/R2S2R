@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools", "setuptools-scm"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "r2s2r"
 version = "0.1.0"
-description = "Real-to-sim-to-real: reconstruct robot scenes into Isaac Lab and deploy back."
+description = "Real-to-sim: a robot's scene from its own cameras, as an Isaac Lab scene."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [

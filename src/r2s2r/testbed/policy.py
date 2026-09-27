@@ -1,8 +1,8 @@
 """The robot interface program policies are written against, motion primitives, a
 top-down pick program, and how a pick is scored and saved.
 
-A deployment target (MuJoCo standing in for the real world, Isaac Lab, a real arm)
-implements :class:`RobotInterface` for one :class:`~r2s2r.robots.spec.RobotSpec`: hold
+A simulator (MuJoCo standing in for the real world, Isaac Lab) implements
+:class:`RobotInterface` for one :class:`~r2s2r.robots.spec.RobotSpec`: hold
 arm joint targets and a gripper opening (0 open, 1 closed) for one control period, and
 report the measured ones. Everything above that (inverse kinematics on the robot's own
 model, Cartesian interpolation, gripper timing) is here, so a policy sends the same
@@ -37,6 +37,9 @@ from r2s2r.transforms import invert, make_transform, transform_points
 LIFT_SUCCESS_M = 0.05  # the target must rise this much to count as picked
 # A gripper holds something when it stopped this much short of where its fingers meet.
 HOLDING_MARGIN = 0.05
+CONTROL_DT = 0.02  # seconds per command (and per step of a MuJoCo recording)
+VIDEO_EVERY = 2  # control steps per video frame
+SHEET_FRAMES, SHEET_WIDTH = 6, 1920  # a video's contact sheet
 
 
 @dataclass
@@ -55,7 +58,7 @@ class CommandLog:
 class RobotInterface(ABC):
     """A robot arm with a gripper, driven by joint position targets."""
 
-    control_dt: float = 0.02
+    control_dt: float = CONTROL_DT
 
     def __init__(self, robot: RobotSpec) -> None:
         self.robot = robot
@@ -86,11 +89,10 @@ class RobotInterface(ABC):
             self._q_cmd = self.joint_positions().copy()
         return self._q_cmd
 
-    def step(self, q: NDArray, level: float | None = None) -> None:
-        """Send one command and advance one control period."""
+    def step(self, q: NDArray) -> None:
+        """Send one command (the arm at ``q``, the gripper as set) and advance one
+        control period."""
         self._q_cmd = np.asarray(q, dtype=float).copy()
-        if level is not None:
-            self._level = float(level)
         self._hold(self._q_cmd, self._level)
         self._t += self.control_dt
         self.log.t.append(round(self._t, 6))
@@ -392,7 +394,7 @@ class VideoRecorder:
         """Append one RGB frame."""
         self.frames.append(np.ascontiguousarray(rgb[..., :3]))
 
-    def close(self, sheet_frames: int = 6, sheet_width: int = 1920) -> None:
+    def close(self) -> None:
         """Write the video and ``<stem>_sheet.jpg``."""
         if not self.frames:
             return
@@ -404,10 +406,10 @@ class VideoRecorder:
         for frame in self.frames:
             writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
         writer.release()
-        idx = np.linspace(0, len(self.frames) - 1, sheet_frames).round().astype(int)
+        idx = np.linspace(0, len(self.frames) - 1, SHEET_FRAMES).round().astype(int)
         cols = 3
         rows = int(np.ceil(len(idx) / cols))
-        tile_w = sheet_width // cols
+        tile_w = SHEET_WIDTH // cols
         tile_h = int(round(h * tile_w / w))
         sheet = np.zeros((rows * tile_h, cols * tile_w, 3), np.uint8)
         for k, i in enumerate(idx):

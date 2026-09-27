@@ -32,7 +32,7 @@ from numpy.typing import NDArray
 
 from r2s2r.capture.stereo import add_stereo_depth
 from r2s2r.robots import get_robot
-from r2s2r.structs import Capture, DepthView, FrameRecord, read_depth
+from r2s2r.structs import Capture, DepthView, FrameRecord, read_depth, read_rgb
 
 if TYPE_CHECKING:  # MuJoCo is imported only when the robot is cut out
     from r2s2r.robots.mask import RobotMasker
@@ -169,10 +169,7 @@ class Workspace:
 
     def image(self, frame: FrameRecord) -> NDArray[np.uint8]:
         """The frame's colour image, RGB."""
-        bgr = cv2.imread(str(self.image_path(frame)))
-        if bgr is None:
-            raise IOError(f"cannot read {self.image_path(frame)}")
-        return np.asarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), np.uint8)
+        return read_rgb(self.image_path(frame))
 
     def reconstructable(self) -> list[FrameRecord]:
         """Frames of the static period that have depth."""
@@ -267,18 +264,6 @@ class Workspace:
         if self._masker is not None:
             self._masker.close()
             self._masker = None
-
-
-def load_mask(path: str | Path, shape: tuple[int, int]) -> NDArray[np.bool_]:
-    """A binary mask image, at ``shape`` (H, W)."""
-    raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    if raw is None:
-        raise IOError(f"cannot read mask {path}")
-    if raw.ndim == 3:
-        raw = raw[..., -1] if raw.shape[2] == 4 else raw.max(axis=2)
-    if raw.shape != shape:
-        raw = cv2.resize(raw, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
-    return np.asarray(raw > 127)
 
 
 def _label(image: NDArray[np.uint8], text: str) -> None:

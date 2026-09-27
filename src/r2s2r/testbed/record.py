@@ -26,16 +26,17 @@ import numpy as np
 from numpy.typing import NDArray
 
 from r2s2r.structs import Capture, FrameRecord, RobotTrajectory, write_depth
+from r2s2r.testbed.policy import CONTROL_DT
 from r2s2r.testbed.worlds import MujocoWorld
 from r2s2r.transforms import look_at, make_transform
 
 # The depth sensor's range in metres; outside it there is no return (0). The near
 # limit is where physcoder's (and the real RealSense's) depth starts.
-MIN_DEPTH, MAX_DEPTH = 0.07, 10.0
+SENSOR_MIN_DEPTH, SENSOR_MAX_DEPTH = 0.07, 10.0
 DEPTH_NOTE = (
-    f"rendered by MuJoCo (planar, exact; none outside [{MIN_DEPTH}, {MAX_DEPTH}] m)"
+    "rendered by MuJoCo (planar, exact; none outside "
+    f"[{SENSOR_MIN_DEPTH}, {SENSOR_MAX_DEPTH}] m)"
 )
-CONTROL_DT = 0.02  # seconds per recorded step
 JOINT_SPEED = 0.6  # rad/s of the joint that moves most
 CLEARANCE = 0.03  # m the arm keeps from the scene
 IK_POS_TOL, IK_ROT_TOL = 0.01, 0.05  # m, rad: a view reached closely enough
@@ -220,7 +221,7 @@ def _save(
                 str(out_dir / rgb_rel), cv2.cvtColor(out["rgb"], cv2.COLOR_RGB2BGR)
             )
             depth = out["depth"]
-            depth[(depth < MIN_DEPTH) | (depth > MAX_DEPTH)] = 0.0
+            depth[(depth < SENSOR_MIN_DEPTH) | (depth > SENSOR_MAX_DEPTH)] = 0.0
             write_depth(out_dir / depth_rel, depth)
             frames.append(
                 FrameRecord(

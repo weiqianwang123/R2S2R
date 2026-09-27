@@ -40,9 +40,9 @@ from r2s2r.pipeline.stages import (
     fresh,
     newer_than_previous,
 )
-from r2s2r.pipeline.workspace import RUN_FILENAME, Workspace
 from r2s2r.sim import isaac
 from r2s2r.structs import CAPTURE_FILENAME, Capture
+from r2s2r.workspace import RUN_FILENAME, Workspace
 
 logger = logging.getLogger(__name__)
 

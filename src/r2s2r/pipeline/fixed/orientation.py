@@ -33,7 +33,7 @@ from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
 from r2s2r.assets import object_points
-from r2s2r.mjrender import SceneRenderer
+from r2s2r.mjrender import MAX_SIZE, SceneRenderer
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
 from r2s2r.transforms import make_transform
 
@@ -58,7 +58,7 @@ class OrientationConfig:
     keep_ratio: float = 1.25
     keep_margin: float = 0.003
     crop_margin: float = 0.25  # of the object's box, around the VLM's image crops
-    max_size: tuple[int, int] = (2560, 1600)
+    max_size: tuple[int, int] = MAX_SIZE
 
 
 def turned(obj: ObjectSpec, T_base_support: NDArray, degrees: float) -> NDArray:
@@ -137,8 +137,8 @@ def _residuals(
         renders = {}
         for turn, T in poses.items():
             renderer.pose(index, T)
-            renders[turn] = renderer.render(view, index)
-        union = np.logical_or.reduce([r["mask"] for r in renders.values()])
+            renders[turn] = renderer.render(view)
+        union = np.logical_or.reduce([r["object"] == index for r in renders.values()])
         valid = union & (view.depth > 0)
         if valid.sum() < 50:
             continue
@@ -185,15 +185,15 @@ def _ask_vlm(
     best_view, best_area = None, 0
     for view in with_image:
         renderer.pose(index, poses[kept[0]])
-        area = int(renderer.render(view, index)["mask"].sum())
+        area = int((renderer.render(view)["object"] == index).sum())
         if area > best_area:
             best_view, best_area = view, area
     if best_view is None:
         return fallback, "object not in view"
     for turn in kept:
         renderer.pose(index, poses[turn])
-        renders[turn] = renderer.render(best_view, index)
-    union = np.logical_or.reduce([r["mask"] for r in renders.values()])
+        renders[turn] = renderer.render(best_view)
+    union = np.logical_or.reduce([r["object"] == index for r in renders.values()])
     ys, xs = np.nonzero(union)
     pad_y = int(cfg.crop_margin * (ys.max() - ys.min() + 1))
     pad_x = int(cfg.crop_margin * (xs.max() - xs.min() + 1))
@@ -211,7 +211,8 @@ def _ask_vlm(
             str(paths[0]), cv2.cvtColor(best_view.image[box], cv2.COLOR_RGB2BGR)
         )
         for n, turn in enumerate(kept):
-            rgb = np.where(renders[turn]["mask"][..., None], renders[turn]["rgb"], 255)
+            mask = renders[turn]["object"] == index
+            rgb = np.where(mask[..., None], renders[turn]["rgb"], 255)
             paths.append(out_dir / f"candidate_{n + 1}_turn{int(turn)}.png")
             cv2.imwrite(
                 str(paths[-1]),

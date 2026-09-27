@@ -53,6 +53,21 @@ class GripperSpec:
                 f"followers must be one of {FOLLOWER_MODES}, not {self.followers!r}"
             )
 
+    def driver_at(self, level: float) -> float:
+        """The MuJoCo driver joint's position at opening ``level`` (clipped to 0-1)."""
+        return self.open + min(max(float(level), 0.0), 1.0) * (self.closed - self.open)
+
+    def level_of(self, driver: float) -> float:
+        """The opening (clipped to 0-1) at the MuJoCo driver joint position
+        ``driver``."""
+        level = (float(driver) - self.open) / (self.closed - self.open)
+        return min(max(level, 0.0), 1.0)
+
+    def ctrl_at(self, level: float) -> float:
+        """The MuJoCo actuator's control at opening ``level``."""
+        lo, hi = self.ctrl
+        return lo + float(level) * (hi - lo)
+
 
 def _no_position_control(mjspec: Any) -> None:
     """For MJCFs whose arm actuators already hold joint positions."""

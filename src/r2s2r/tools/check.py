@@ -15,7 +15,6 @@ import cv2
 import numpy as np
 
 from r2s2r.mjrender import SceneRenderer
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.sim.compare import (
     comparison_panel,
     depth_residuals,
@@ -24,6 +23,7 @@ from r2s2r.sim.compare import (
 )
 from r2s2r.structs import SCENE_FILENAME, SceneSpec
 from r2s2r.tools.objects import assemble
+from r2s2r.workspace import Workspace
 
 
 def check(
@@ -58,14 +58,15 @@ def check(
             frame = ws.frame(fid)
             view = ws.depth_view(frame)
             assert view.image is not None
-            renders = [renderer.render(view, i) for i in range(len(scene.objects))]
-            masks = {obj.name: r["mask"] for obj, r in zip(scene.objects, renders)}
-            sim = renders[0]["rgb"]
-            panel = comparison_panel(view.image, sim, masks)
+            out = renderer.render(view)
+            masks = {
+                obj.name: out["object"] == i for i, obj in enumerate(scene.objects)
+            }
+            panel = comparison_panel(view.image, out["rgb"], masks)
             numbers = depth_residuals(
-                view.depth.astype(np.float32), renders[0]["depth"], masks
+                view.depth.astype(np.float32), out["depth"], masks
             )
-            panel = np.hstack([panel, residual_image(view.depth, renders[0]["depth"])])
+            panel = np.hstack([panel, residual_image(view.depth, out["depth"])])
             path = out_dir / "frames" / f"{fid}.png"
             cv2.imwrite(str(path), cv2.cvtColor(panel, cv2.COLOR_RGB2BGR))
             rows.append({"frame": fid, "image": str(path), **numbers})

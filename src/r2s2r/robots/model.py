@@ -3,9 +3,9 @@
 :class:`RobotModel` compiles a :class:`~r2s2r.robots.spec.RobotSpec`'s MJCF and sets the
 arm joints and the gripper (0 open, 1 closed; the other gripper joints follow the
 driver as the spec says), gives the pose of any body, site or camera, and solves
-inverse kinematics for one of them by damped least squares. Every simulator and the
-real robot take joint targets, so kinematics lives here, once, from the same model the
-masker and the viewer draw.
+inverse kinematics for one of them by damped least squares. Every simulator takes joint
+targets, so kinematics lives here, once, from the same model the masker and the viewer
+draw.
 """
 
 from __future__ import annotations
@@ -75,11 +75,6 @@ class GripperPoser:
         ]
         self._table = np.stack([self._solve(model, robot, lv) for lv in self.LEVELS])
 
-    def driver_position(self, level: float) -> float:
-        """The driver joint's position at ``level``."""
-        g = self.gripper
-        return g.open + float(np.clip(level, 0.0, 1.0)) * (g.closed - g.open)
-
     def positions(self, level: float) -> NDArray[np.float64]:
         """Positions of :attr:`joints` at ``level``."""
         level = float(np.clip(level, 0.0, 1.0))
@@ -87,7 +82,7 @@ class GripperPoser:
             return np.array(
                 [np.interp(level, self.LEVELS, col) for col in self._table.T]
             )
-        x = self.driver_position(level)
+        x = self.gripper.driver_at(level)
         values = [x]
         for y0, x0, c in self._poly:
             dx = x - x0
@@ -98,8 +93,8 @@ class GripperPoser:
 
     def _solve(self, model: Any, robot: RobotSpec, level: float) -> NDArray[np.float64]:
         data = mujoco.MjData(model)
-        lo, hi = self.gripper.ctrl
-        data.ctrl[model.actuator(self.gripper.actuator).id] = lo + level * (hi - lo)
+        actuator = model.actuator(self.gripper.actuator).id
+        data.ctrl[actuator] = self.gripper.ctrl_at(level)
         arm_q = [model.joint(j).qposadr[0] for j in robot.arm_joints]
         arm_v = [model.joint(j).dofadr[0] for j in robot.arm_joints]
         gravity = model.opt.gravity.copy()

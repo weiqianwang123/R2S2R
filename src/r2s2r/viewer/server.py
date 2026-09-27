@@ -28,11 +28,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import cv2
 
-from r2s2r.pipeline.workspace import RUN_FILENAME, Workspace
 from r2s2r.robots import get_robot
 from r2s2r.viewer.robot import robot_glb, robot_poses
 from r2s2r.viewer.scenes import mesh_glb, mesh_preview, scene_glb
 from r2s2r.viewer.state import recording, run_state
+from r2s2r.workspace import RUN_FILENAME, Workspace
 
 logger = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"

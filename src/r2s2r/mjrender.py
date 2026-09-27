@@ -35,12 +35,7 @@ CAMERA_NAME = "r2s2r_camera"
 # near plane centimetres out in a large scene and cuts off what a wrist camera sees.
 NEAR, FAR = 0.005, 50.0
 HIDDEN = (100.0, 100.0, -100.0)  # where SceneRenderer puts objects out of view
-
-
-def set_clip_planes(model: Any, near: float = NEAR, far: float = FAR) -> None:
-    """Fix a compiled model's clip planes in metres."""
-    model.vis.map.znear = near / model.stat.extent
-    model.vis.map.zfar = far / model.stat.extent
+MAX_SIZE = (2560, 1600)  # render buffer (width, height) for any camera a run has
 
 
 def add_camera(spec: Any, max_size: tuple[int, int]) -> None:
@@ -55,7 +50,8 @@ class CameraRenderer:
     def __init__(self, model: Any, data: Any, max_size: tuple[int, int]) -> None:
         self.model, self.data = model, data
         self.max_size = max_size
-        set_clip_planes(model)
+        model.vis.map.znear = NEAR / model.stat.extent
+        model.vis.map.zfar = FAR / model.stat.extent
         self.cam = model.camera(CAMERA_NAME).id
         self._renderers: dict[tuple[int, int], Any] = {}
 
@@ -165,6 +161,8 @@ class SceneRenderer:
         self.data = mujoco.MjData(self.model)
         self.camera = CameraRenderer(self.model, self.data, max_size)
         self.bodies = [self.model.body(f"obj{i}").id for i in range(len(scene.objects))]
+        self._object_of = np.full(self.model.nbody, -1)  # body id -> object index
+        self._object_of[self.bodies] = np.arange(len(self.bodies))
 
     def pose(self, index: int, T_base_obj: NDArray | None) -> None:
         """Place object ``index`` (None: out of view)."""
@@ -175,13 +173,14 @@ class SceneRenderer:
         self.data.mocap_pos[mocap] = T_base_obj[:3, 3]
         self.data.mocap_quat[mocap] = rotation_to_quat(T_base_obj[:3, :3])
 
-    def render(self, view: DepthView, index: int) -> dict[str, NDArray]:
-        """The view's ``rgb`` / ``depth`` / ``geom``; ``mask`` marks the pixels object
-        ``index`` covers."""
+    def render(self, view: DepthView) -> dict[str, NDArray]:
+        """The view's ``rgb`` / ``depth`` / ``geom``, and ``object``: the index of the
+        object each pixel shows (-1: none), so ``out["object"] == i`` is object ``i``'s
+        mask."""
         h, w = view.depth.shape
         out = self.camera.render(view.K, w, h, view.T_base_cam)
         body = self.model.geom_bodyid[np.maximum(out["geom"], 0)]
-        out["mask"] = (out["geom"] >= 0) & (body == self.bodies[index])
+        out["object"] = np.where(out["geom"] >= 0, self._object_of[body], -1)
         return out
 
     def close(self) -> None:

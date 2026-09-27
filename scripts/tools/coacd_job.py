@@ -3,7 +3,7 @@ r2s2r.tools.envjobs.
 
     python coacd_job.py JOB.json RESULT.json
 
-JOB: {"mesh": PATH, "out_dir": DIR, "threshold": 0.05, "max_hulls": 16}
+JOB: {"mesh": PATH, "out_dir": DIR, "max_hulls": 16}
 
 Writes ``DIR/hull_<k>.obj``.
 """
@@ -23,7 +23,7 @@ def main(job_path, result_path):
     mesh = trimesh.load(job["mesh"], force="mesh", process=True)
     parts = coacd.run_coacd(
         coacd.Mesh(np.asarray(mesh.vertices), np.asarray(mesh.faces)),
-        threshold=float(job.get("threshold", 0.05)),
+        threshold=0.05,  # CoACD's concavity threshold (its default)
         max_convex_hull=int(job.get("max_hulls", 16)),
     )
     out_dir = Path(job["out_dir"])

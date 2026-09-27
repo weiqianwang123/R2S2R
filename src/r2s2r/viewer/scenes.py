@@ -11,11 +11,10 @@ import numpy as np
 import trimesh
 
 from r2s2r.assets import urdf_visual_meshes
-from r2s2r.structs import SCENE_FILENAME, SceneSpec
-from r2s2r.tools.geometry import UP_ROTATIONS, load_mesh
-from r2s2r.tools.objects import render_preview
+from r2s2r.structs import SCENE_FILENAME, SUPPORT_THICKNESS, SceneSpec
+from r2s2r.tools.geometry import UP_ROTATIONS, load_mesh, load_support
+from r2s2r.tools.objects import read_objects_file, render_preview
 
-SUPPORT_THICKNESS = 0.02
 SUPPORT_COLOR = [150, 170, 200, 110]
 
 
@@ -43,10 +42,9 @@ def mesh_preview(path: Path, up: str) -> bytes:
 
 
 def scene_glb(path: Path) -> tuple[bytes, dict[str, Any]]:
-    """A scene directory (``scene.json``) or an objects file as a GLB of its objects and
-    support slab, posed in the base frame; and what it holds."""
+    """A scene directory (``scene.json``), an objects file or a support file as a GLB of
+    its objects and support slab, posed in the base frame; and what it holds."""
     scene: Any = trimesh.Scene()
-    T_support: np.ndarray | None
     extent: Any
     info: dict[str, Any] = {"objects": []}
     if path.is_dir() or path.name == SCENE_FILENAME:
@@ -65,28 +63,23 @@ def scene_glb(path: Path) -> tuple[bytes, dict[str, Any]]:
                 }
             )
     else:
-        spec_json = json.loads(path.read_text(encoding="utf-8"))
-        base = path.parent
-        support = spec_json.get(
-            "support", spec_json if "T_base_support" in spec_json else None
-        )
-        if isinstance(support, str):
-            support = json.loads((base / support).read_text(encoding="utf-8"))
-        T_support = np.asarray(support["T_base_support"], float) if support else None
-        extent = support.get("extent") if support else None
-        for obj in spec_json.get("objects", []):
-            mesh_path = Path(obj["mesh"])
-            mesh_path = mesh_path if mesh_path.is_absolute() else base / mesh_path
-            loaded = load_mesh(mesh_path)
-            scale = np.broadcast_to(np.asarray(obj.get("scale", 1.0), float), (3,))
-            loaded.apply_transform(np.diag([*scale, 1.0]))
-            T = np.asarray(obj["T_base_obj"], float)
+        objects: list[dict[str, Any]] = []
+        if "objects" in json.loads(path.read_text(encoding="utf-8")):
+            spec_file = read_objects_file(path)
+            T_support, extent = spec_file.T_base_support, spec_file.extent
+            objects = spec_file.objects
+        else:
+            T_support, extent = load_support(path)
+        for entry in objects:
+            loaded = load_mesh(entry["mesh"])
+            loaded.apply_transform(np.diag([*entry["scale"], 1.0]))
+            T = np.asarray(entry["T_base_obj"], float)
             loaded.apply_transform(T)
-            scene.add_geometry(loaded, node_name=str(obj["name"]))
+            scene.add_geometry(loaded, node_name=str(entry["name"]))
             info["objects"].append(
-                {"name": obj["name"], "position": T[:3, 3].round(4).tolist()}
+                {"name": entry["name"], "position": T[:3, 3].round(4).tolist()}
             )
-    if T_support is not None and extent:
+    if extent:
         slab = trimesh.creation.box(extents=[extent[0], extent[1], SUPPORT_THICKNESS])
         slab.apply_translation([0, 0, -SUPPORT_THICKNESS / 2])
         slab.apply_transform(T_support)

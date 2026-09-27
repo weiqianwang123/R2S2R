@@ -27,7 +27,6 @@ parser.add_argument("capture_dir", type=Path)
 parser.add_argument("--out", type=Path, required=True)
 parser.add_argument("--cameras", nargs="+", help="roles or serials (default: all)")
 parser.add_argument("--every", type=int, default=1, help="render every n-th frame step")
-parser.add_argument("--physics-dt", type=float, default=0.005)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
@@ -46,7 +45,6 @@ def main() -> None:
     config = ReplayConfig(
         cameras=tuple(args.cameras) if args.cameras else None,
         every=args.every,
-        physics_dt=args.physics_dt,
         device=args.device,
     )
     log = replay(spec, capture, args.out, config)

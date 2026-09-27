@@ -22,19 +22,23 @@ from scipy.spatial.transform import Rotation
 
 from r2s2r.assets import VisualMesh
 from r2s2r.mjrender import CameraRenderer, add_camera, add_mesh, mujoco
-from r2s2r.pipeline.workspace import Workspace, load_mask
 from r2s2r.structs import DepthView, FrameRecord
+from r2s2r.tools.segment import load_mask
 from r2s2r.transforms import (
     backproject,
     invert,
     make_transform,
     project_points,
+    scale_intrinsics,
+    tilt_deg,
     transform_points,
 )
+from r2s2r.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
 MAX_DEPTH = 2.5
+PLANE_THRESHOLD = 0.005  # m: points this near a plane lie on it
 # A mesh file's up axis (its objects-file ``up``) -> the rotation that turns it z-up.
 # Generated meshes (Hunyuan3D, glTF) are y-up.
 UP_ROTATIONS = {
@@ -92,19 +96,16 @@ def points(
     out_path: str | Path,
     support_file: str | Path | None = None,
     stride: int = 2,
-    erode_px: int = 3,
 ) -> dict[str, Any]:
-    """Fused points of the frames (inside their masks, where given) as a coloured PLY,
-    and where they lie."""
+    """Fused points of the frames (inside their masks, shrunk by 3 pixels, where given)
+    as a coloured PLY, and where they lie."""
     all_pts, all_rgb, per_frame = [], [], {}
     for fid in dict.fromkeys([*frame_ids, *masks]):
         frame = ws.frame(fid)
         cam = ws.capture.cameras[frame.camera]
         mask = load_mask(masks[fid], (cam.height, cam.width)) if fid in masks else None
         view = ws.depth_view(frame)
-        pts, pixels = view_points(
-            view, mask, erode_px if mask is not None else 0, stride
-        )
+        pts, pixels = view_points(view, mask, 3 if mask is not None else 0, stride)
         assert view.image is not None
         per_frame[fid] = int(len(pts))
         all_pts.append(pts)
@@ -179,7 +180,7 @@ def cluster(pts: NDArray[np.float64], voxel: float, min_points: int) -> list:
 # ------------------------------------------------------------------------ support
 def fit_plane(
     pts: NDArray[np.float64],
-    threshold: float = 0.005,
+    threshold: float = PLANE_THRESHOLD,
     iterations: int = 500,
     seed: int = 0,
 ) -> tuple[NDArray[np.float64], float, NDArray[np.bool_]]:
@@ -252,7 +253,6 @@ def support(
     masks: dict[str, str],
     out_path: str | Path,
     frame_ids: list[str] | None = None,
-    threshold: float = 0.005,
 ) -> dict[str, Any]:
     """The support plane through the masked pixels of several frames (or whole frames),
     its outline as a rectangle, and the support frame at the rectangle's centre.
@@ -275,7 +275,7 @@ def support(
     pts, owner = np.concatenate(chunks), np.concatenate(owners)
     if len(pts) < 100:
         raise ValueError("too few depth points in the masks to fit a plane")
-    n, d, inliers = fit_plane(pts, threshold)
+    n, d, inliers = fit_plane(pts)
     if n @ np.mean(centres, axis=0) + d < 0:  # the normal points to the cameras
         n, d = -n, -d
     x = np.array([1.0, 0.0, 0.0]) - n[0] * n
@@ -286,14 +286,14 @@ def support(
     origin -= (n @ origin + d) * n
     T0 = make_transform(np.column_stack([x, np.cross(n, x), n]), origin)
     pts_s = transform_points(invert(T0), pts[inliers])
-    centre, size, yaw = fit_support_outline(pts_s, np.zeros(2), threshold, 0.01)
+    centre, size, yaw = fit_support_outline(pts_s, np.zeros(2), PLANE_THRESHOLD, 0.01)
     T_base_support = T0 @ planar(yaw, *centre)
     residual = np.abs(pts[inliers] @ n + d)
     summary: dict[str, Any] = {
         "T_base_support": np.round(T_base_support, 6).tolist(),
         "extent": [round(size[0], 4), round(size[1], 4)],
         "normal_base": np.round(n, 4).tolist(),
-        "tilt_deg": round(float(np.degrees(np.arccos(np.clip(n[2], -1, 1)))), 2),
+        "tilt_deg": round(tilt_deg(n), 2),
         "height_at_base_origin_m": round(
             float(-d / n[2]) if abs(n[2]) > 1e-6 else 0, 4
         ),
@@ -529,9 +529,7 @@ class _View:
             int(round(cam.width * self.factor)),
             int(round(cam.height * self.factor)),
         )
-        self.K = cam.K.copy()
-        self.K[:2] *= self.factor
-        self.K[:2, 2] += 0.5 * self.factor - 0.5
+        self.K = scale_intrinsics(cam.K, self.factor)
         self.mask_full = load_mask(mask_path, self.full)
         small = (self.size[1], self.size[0])
         self.mask = load_mask(mask_path, small)
@@ -586,28 +584,7 @@ def fit(
     observed = _object_points(ws, views, T_base_support)
     if len(observed) < 20:
         raise ValueError("too few depth points inside the masks")
-    obs_h = float(np.percentile(observed[:, 2], 98))
-    obs_long = _long_side(observed[:, :2])
-    model_long = _long_side(model_pts[:, :2])
-    if scale is None:
-        scale = obs_h / model_h if obs_h >= 0.03 else obs_long / model_long
-        scale_source = "height" if obs_h >= 0.03 else "footprint"
-    else:
-        scale_source = "given"
-
-    # Yaw and position from the footprints.
-    xy0 = np.median(observed[:, :2], axis=0)
-    z0 = 0.0 if rest else obs_h - scale * model_h
-    if yaw_deg is None:
-        placed = model_pts * scale + [*xy0, 0.0]
-        T_fix, _, iou_fp = register_footprint(
-            placed, observed, yaw_window_deg=180.0, cell=0.003
-        )
-        yaw0 = float(np.arctan2(T_fix[1, 0], T_fix[0, 0]))
-        xy_init = (T_fix @ np.array([*xy0, 0.0, 1.0]))[:2]
-    else:
-        yaw0, xy_init, iou_fp = float(np.radians(yaw_deg)), xy0, None
-    params = np.array([np.log(scale), yaw0, xy_init[0], xy_init[1], z0])
+    params, start = _initial_pose(observed, model_pts, model_h, scale, yaw_deg, rest)
 
     cams = [ws.capture.cameras[v.frame.camera] for v in views]
     renderer = SilhouetteRenderer(
@@ -641,13 +618,7 @@ def fit(
         T_base_canon = pose(params)
         T_canon = make_transform(R_up, -s * centre)  # scaled mesh file -> canon
         T_base_obj = T_base_canon @ T_canon
-        for v, row in zip(views, rows):
-            T_obj_cam = invert(T_base_canon) @ v.frame.T_base_cam
-            cam = ws.capture.cameras[v.frame.camera]
-            sil, _ = renderer.render(cam.K, cam.width, cam.height, T_obj_cam, s)
-            path = out_dir / f"{v.fid}.png"
-            _fit_overlay(ws.image(v.frame), v.mask_full, sil, row, path)
-            row["overlay"] = str(path)
+        _write_overlays(ws, views, rows, renderer, T_base_canon, s, out_dir)
     finally:
         renderer.close()
 
@@ -660,15 +631,75 @@ def fit(
         "yaw_deg": round(float(np.degrees(params[1])), 2),
         "rests_on_support": rest,
         "size_m": np.round(size, 4).tolist(),
-        "observed_height_m": round(obs_h, 4),
-        "scale_from": scale_source,
-        "footprint_iou_init": None if iou_fp is None else round(float(iou_fp), 3),
+        **start,
         "mean_iou_init": round(initial, 3),
         "mean_iou": round(final, 3),
         "frames": {v.fid: row for v, row in zip(views, rows)},
     }
     (out_dir / "fit.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     return summary
+
+
+def _initial_pose(
+    observed: NDArray[np.float64],
+    model_pts: NDArray[np.float64],
+    model_h: float,
+    scale: float | None,
+    yaw_deg: float | None,
+    rest: bool,
+) -> tuple[NDArray[np.float64], dict[str, Any]]:
+    """Where :func:`fit`'s search starts (log scale, yaw, x, y, z in the support frame)
+    for the upright mesh (its points ``model_pts``, its height ``model_h``) on the
+    object's ``observed`` points, and what it started from: the scale from the observed
+    height (or footprint, for flat objects) unless given, yaw and position from matching
+    top-down footprints (a given yaw kept)."""
+    obs_h = float(np.percentile(observed[:, 2], 98))
+    obs_long = _long_side(observed[:, :2])
+    model_long = _long_side(model_pts[:, :2])
+    if scale is None:
+        scale = obs_h / model_h if obs_h >= 0.03 else obs_long / model_long
+        scale_source = "height" if obs_h >= 0.03 else "footprint"
+    else:
+        scale_source = "given"
+
+    # Yaw and position from the footprints.
+    xy0 = np.median(observed[:, :2], axis=0)
+    z0 = 0.0 if rest else obs_h - scale * model_h
+    if yaw_deg is None:
+        placed = model_pts * scale + [*xy0, 0.0]
+        T_fix, _, iou_fp = register_footprint(
+            placed, observed, yaw_window_deg=180.0, cell=0.003
+        )
+        yaw0 = float(np.arctan2(T_fix[1, 0], T_fix[0, 0]))
+        xy_init = (T_fix @ np.array([*xy0, 0.0, 1.0]))[:2]
+    else:
+        yaw0, xy_init, iou_fp = float(np.radians(yaw_deg)), xy0, None
+    params = np.array([np.log(scale), yaw0, xy_init[0], xy_init[1], z0])
+    return params, {
+        "observed_height_m": round(obs_h, 4),
+        "scale_from": scale_source,
+        "footprint_iou_init": None if iou_fp is None else round(float(iou_fp), 3),
+    }
+
+
+def _write_overlays(
+    ws: Workspace,
+    views: list[_View],
+    rows: list[dict[str, Any]],
+    renderer: SilhouetteRenderer,
+    T_base_canon: NDArray[np.float64],
+    scale: float,
+    out_dir: Path,
+) -> None:
+    """Per frame, at full resolution, ``<frame>.png``: the mask (green) and the fitted
+    mesh (red) on the image; its path goes into the frame's row."""
+    for v, row in zip(views, rows):
+        T_obj_cam = invert(T_base_canon) @ v.frame.T_base_cam
+        cam = ws.capture.cameras[v.frame.camera]
+        sil, _ = renderer.render(cam.K, cam.width, cam.height, T_obj_cam, scale)
+        path = out_dir / f"{v.fid}.png"
+        _fit_overlay(ws.image(v.frame), v.mask_full, sil, row, path)
+        row["overlay"] = str(path)
 
 
 def _object_points(

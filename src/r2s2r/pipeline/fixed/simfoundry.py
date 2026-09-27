@@ -11,7 +11,7 @@ own conda environments, driven through its reconstruction orchestrator. This mod
    here is rigid; 13-14 import into OmniGibson), their VLM calls through Codex;
 3. rebuilds from other frames when a frame gives no objects;
 4. reads the stage outputs back as a scene in the robot base frame, and copies an
-   object's mesh, texture and collision hulls out of its stage-11 URDF.
+   object's mesh, texture and collision hulls out of its SimFoundry stage 11 URDF.
 
 SimFoundry reconstructs from the one candidate its frame selection picks, and defines
 its world frame on the support plane seen there. The candidate's index is mapped back to
@@ -36,18 +36,25 @@ import cv2
 import numpy as np
 import trimesh
 
+from r2s2r.assets import urdf_origin, urdf_vector
 from r2s2r.paths import (
+    CODEX_MODEL,
     ENV_MESH,
     ENV_SIMFOUNDRY,
     SIMFOUNDRY_DIR,
     codex_bin,
     mamba_exe,
 )
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import Capture, DepthView, FrameRecord, ObjectSpec, SceneSpec
 from r2s2r.tools.envjobs import simfoundry_env
 from r2s2r.tools.segment import slug
-from r2s2r.transforms import invert, pos_quat_to_matrix, quat_xyzw_to_wxyz
+from r2s2r.transforms import (
+    invert,
+    pos_quat_to_matrix,
+    quat_xyzw_to_wxyz,
+    scale_intrinsics,
+)
+from r2s2r.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +62,6 @@ FRAME_MAP_FILENAME = "r2s2r_frames.json"
 STAGES = ("3", "4", "5", "6", "7", "8", "10", "11", "12")
 # FoundationStereo runs at half of the 1280-pixel images SimFoundry was made for.
 CANDIDATE_WIDTH = 640
-CODEX_MODEL = "gpt-6-astra"
 FRAME_SELECTIONS = ("codex", "hybrid", "heuristic", "vlm")
 SETTINGS = (
     "s3_ground.use_fs=true",  # depth from s2_fs/
@@ -85,9 +91,7 @@ class SimFoundryConfig:
 def candidates(capture: Capture, max_frames: int) -> list[FrameRecord]:
     """The frames offered to SimFoundry: up to ``max_frames`` static frames with depth,
     spread over the cameras (in the run's camera order)."""
-    frames = capture.select_frames(
-        None, max_frames, lambda f: f.depth_image is not None
-    )
+    frames = capture.select_frames(max_frames, lambda f: f.depth_image is not None)
     if not frames:
         raise ValueError(f"capture {capture.name} has no static frames with depth")
     return frames
@@ -101,15 +105,12 @@ def candidate_view(ws: Workspace, frame: FrameRecord) -> DepthView:
     h, w = view.depth.shape
     scale = min(1.0, CANDIDATE_WIDTH / w)
     size = (int(round(w * scale)), int(round(h * scale)))
-    K = view.K.copy()
-    K[:2, :2] *= scale
-    K[:2, 2] = (K[:2, 2] + 0.5) * scale - 0.5
     return replace(
         view,
         depth=np.asarray(
             cv2.resize(view.depth, size, interpolation=cv2.INTER_NEAREST), np.float64
         ),
-        K=K,
+        K=scale_intrinsics(view.K, scale),
         image=np.asarray(
             cv2.resize(view.image, size, interpolation=cv2.INTER_AREA), np.uint8
         ),
@@ -241,17 +242,18 @@ class SimFoundry:
             raise subprocess.CalledProcessError(proc.returncode, cmd)
 
     def retry_empty(self) -> SceneSpec | None:
-        """After a frame that gave no objects: stages 3-12 again, pinned to other frames
-        until one gives objects (the camera with the fewest empty frames first, then the
-        best frame score); the scene (its provenance says which frames gave nothing), or
-        None if none does.
+        """After a frame that gave no objects: SimFoundry stages 3-12 again, pinned to
+        other frames until one gives objects (the camera with the fewest empty frames
+        first, then the best frame score); the scene (its provenance says which frames
+        gave nothing), or None if none does.
 
-        Stage 3 fits the support surface in one frame, choosing the largest surface it
-        detects, and from some viewpoints that is not the one the objects stand on (on
-        DROID, the robot's own mounting table, whose clamps also pass for objects in the
-        frame scores). Another camera, or another moment, sees it differently. Every
-        rebuild starts from stage 3 on a clean slate, so nothing of the empty one stays;
-        a frame that gives no objects costs little, since stage 5 then ends at once.
+        SimFoundry stage 3 fits the support surface in one frame, choosing the largest
+        surface it detects, and from some viewpoints that is not the one the objects
+        stand on (on DROID, the robot's own mounting table, whose clamps also pass for
+        objects in the frame scores). Another camera, or another moment, sees it
+        differently. Every rebuild starts from SimFoundry stage 3 on a clean slate, so
+        nothing of the empty one stays; a frame that gives no objects costs little,
+        since SimFoundry stage 5 then ends at once.
         """
         selection = self.selection()
         scores = [s for s in selection.get("scores", []) if s.get("eligible")]
@@ -296,7 +298,9 @@ class SimFoundry:
             return selection
         pinned = sorted(ground.glob("image_*_floor_info.json"))
         if len(pinned) != 1:
-            raise FileNotFoundError(f"no frame selection in {ground}: did stage 3 run?")
+            raise FileNotFoundError(
+                f"no frame selection in {ground}: did SimFoundry stage 3 run?"
+            )
         return {
             "selected_idx": int(pinned[0].name.split("_")[1]),
             "decided_by": "pinned",
@@ -304,8 +308,8 @@ class SimFoundry:
 
     def parse(self) -> SceneSpec:
         """SimFoundry's scene in the robot base frame. Each object's asset is its
-        stage-11 URDF as SimFoundry wrote it, and its name its category's (numbered
-        when several share one)."""
+        SimFoundry stage 11 URDF as written, and its name its category's (numbered when
+        several share one)."""
         selection = self.selection()
         idx = int(selection["selected_idx"])
         ref = self.frame_of(idx)
@@ -358,8 +362,9 @@ class SimFoundry:
 
 
 def copy_object(urdf: Path, out_dir: Path) -> tuple[Path, list[Path]]:
-    """A stage-11 object's visual mesh (with its textures) and collision hulls, copied
-    into ``out_dir`` in its link frame (each hull's scale baked in); their paths.
+    """A SimFoundry stage 11 object's visual mesh (with its textures) and collision
+    hulls, copied into ``out_dir`` in its link frame (each hull's scale baked in); their
+    paths.
 
     A SimFoundry object is one link, its visual mesh and collision hulls at the link's
     origin, the hulls scaled, the visual mesh not."""
@@ -367,9 +372,11 @@ def copy_object(urdf: Path, out_dir: Path) -> tuple[Path, list[Path]]:
     visuals = links[0].findall("visual/geometry/mesh") if len(links) == 1 else []
     if (
         len(visuals) != 1
-        or not np.allclose(_numbers(visuals[0], "scale", "1 1 1"), 1)
+        or not np.allclose(urdf_vector(visuals[0], "scale", "1 1 1"), 1)
         or not all(
-            _at_origin(el) for el in links[0] if el.tag in ("visual", "collision")
+            np.allclose(urdf_origin(el), np.eye(4))
+            for el in links[0]
+            if el.tag in ("visual", "collision")
         )
     ):
         raise ValueError(
@@ -381,7 +388,7 @@ def copy_object(urdf: Path, out_dir: Path) -> tuple[Path, list[Path]]:
     for k, el in enumerate(links[0].findall("collision/geometry/mesh")):
         hull = trimesh.load(urdf.parent / el.attrib["filename"], force="mesh")
         assert isinstance(hull, trimesh.Trimesh)
-        hull.apply_transform(np.diag([*_numbers(el, "scale", "1 1 1"), 1.0]))
+        hull.apply_transform(np.diag([*urdf_vector(el, "scale", "1 1 1"), 1.0]))
         hulls.append(out_dir / "collision" / f"hull_{k}.obj")
         hulls[-1].parent.mkdir(exist_ok=True)
         hull.export(hulls[-1])
@@ -406,19 +413,6 @@ def _copy_obj(source: Path, out_dir: Path) -> Path:
             lines.append(mline)
         (out_dir / mtl.name).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return mesh
-
-
-def _numbers(el: ET.Element, key: str, default: str) -> np.ndarray:
-    return np.array(el.attrib.get(key, default).split(), float)
-
-
-def _at_origin(part: ET.Element) -> bool:
-    """Whether a visual or collision part sits at its link's origin."""
-    origin = part.find("origin")
-    return origin is None or not (
-        np.any(_numbers(origin, "xyz", "0 0 0"))
-        or np.any(_numbers(origin, "rpy", "0 0 0"))
-    )
 
 
 def _read_json(path: Path) -> Any:

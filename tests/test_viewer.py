@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 from conftest import rgbd_capture
 
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import Capture
 from r2s2r.viewer.server import Viewers, make_handler
 from r2s2r.viewer.state import run_state
+from r2s2r.workspace import Workspace
 
 
 def _run(tmp_path, name="run", method="agentic"):

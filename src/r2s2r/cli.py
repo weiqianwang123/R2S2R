@@ -39,11 +39,12 @@ from pathlib import Path
 from typing import Callable
 
 from r2s2r.capture.droid import DEFAULT_ROLES, load_droid_episode
-from r2s2r.pipeline.agentic.method import AgentConfig, AgentMethod
+from r2s2r.pipeline.agentic.method import AgenticConfig, AgenticMethod
 from r2s2r.pipeline.fixed import FixedMethod
 from r2s2r.pipeline.fixed.simfoundry import FRAME_SELECTIONS, SimFoundryConfig
 from r2s2r.pipeline.run import Method, run
 from r2s2r.pipeline.stages import PRODUCTS, STAGE_DIRS, STAGES
+from r2s2r.sim import isaac
 from r2s2r.structs import SCENE_FILENAME, Capture, SceneSpec
 from r2s2r.tools.cli import add_tool_parser, print_json
 
@@ -61,7 +62,7 @@ def _fixed(args: argparse.Namespace) -> Method:
 
 
 def _agentic(args: argparse.Namespace) -> Method:
-    return AgentMethod(AgentConfig(model=args.model, reasoning=args.reasoning))
+    return AgenticMethod(AgenticConfig(model=args.model, reasoning=args.reasoning))
 
 
 METHODS: dict[str, Callable[[argparse.Namespace], Method]] = {
@@ -148,7 +149,6 @@ def _eval(args: argparse.Namespace) -> None:
 
 def _pick(args: argparse.Namespace) -> None:
     # pylint: disable=import-outside-toplevel
-    from r2s2r.sim import isaac
     from r2s2r.testbed.evaluate import evaluate, summary
     from r2s2r.testbed.pick import match_target, oracle_scene, run_pick
     from r2s2r.testbed.policy import summarize
@@ -244,8 +244,8 @@ def main(argv: list[str] | None = None) -> None:
         "--override", action="append", default=[], help="SimFoundry Hydra override"
     )
     agentic = p.add_argument_group("agentic")
-    agentic.add_argument("--model", default=AgentConfig.model)
-    agentic.add_argument("--reasoning", default=AgentConfig.reasoning)
+    agentic.add_argument("--model", default=AgenticConfig.model)
+    agentic.add_argument("--reasoning", default=AgenticConfig.reasoning)
     p.set_defaults(func=_run)
     add_tool_parser(sub)
 

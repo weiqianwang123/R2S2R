@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from r2s2r.mjrender import CameraRenderer, add_camera
+from r2s2r.mjrender import MAX_SIZE, CameraRenderer, add_camera
 from r2s2r.robots.model import RobotModel
 from r2s2r.robots.spec import RobotSpec
 
@@ -41,7 +41,7 @@ class RobotMasker:
         self,
         robot: RobotSpec,
         config: MaskConfig | None = None,
-        max_size: tuple[int, int] = (2560, 1600),
+        max_size: tuple[int, int] = MAX_SIZE,
     ) -> None:
         self.config = config or MaskConfig()
         mjspec = robot.mjcf()

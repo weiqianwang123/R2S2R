@@ -21,11 +21,12 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from r2s2r.paths import REPO_ROOT, SIMFOUNDRY_DIR, codex_bin
+from r2s2r.capture.stereo import DEPTH_NOTE
+from r2s2r.paths import CODEX_MODEL, REPO_ROOT, SIMFOUNDRY_DIR, codex_bin
 from r2s2r.pipeline.run import problems
-from r2s2r.pipeline.stages import read_json
-from r2s2r.pipeline.workspace import Workspace
+from r2s2r.pipeline.stages import read_json, support_file
 from r2s2r.tools.geometry import load_support
+from r2s2r.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,11 @@ MIN_FRAMES, MAX_FRAMES = 4, 8
 
 
 @dataclass
-class AgentConfig:
+class AgenticConfig:
     """How to run the agent."""
 
     codex_bin: str = field(default_factory=codex_bin)
-    model: str = "gpt-6-astra"
+    model: str = CODEX_MODEL
     reasoning: str = "xhigh"
     retries: int = 2  # resumptions while a stage's output is invalid
     timeout_s: float = 4 * 3600  # per codex call, a safety net only
@@ -47,14 +48,14 @@ class RepositoryChanged(RuntimeError):
     """The agent changed files outside its run."""
 
 
-class AgentMethod:
+class AgenticMethod:
     """The agent does stages 2, 3, 4 and 6, with the tools."""
 
     name = "agentic"
     stages: tuple[str, ...] = ("2", "3", "4", "6")
 
-    def __init__(self, config: AgentConfig | None = None) -> None:
-        self.config = config or AgentConfig()
+    def __init__(self, config: AgenticConfig | None = None) -> None:
+        self.config = config or AgenticConfig()
 
     def run_stage(self, ws: Workspace, key: str, stage_dir: Path) -> dict[str, Any]:
         """One agent session on the stage (resumed while its product is invalid); the
@@ -105,8 +106,7 @@ class AgentMethod:
             frames = list(out.get("frames") or [])
         except (ValueError, AttributeError, TypeError):
             return []  # the shared check says what is wrong
-        support = out.get("support")
-        support = support.get("file") if isinstance(support, dict) else None
+        support = support_file(out)
         found = []
         if not MIN_FRAMES <= len(frames) <= MAX_FRAMES:
             found.append(
@@ -130,7 +130,7 @@ class AgentMethod:
 
 
 def _codex(
-    prompt: str, cwd: Path, cfg: AgentConfig, session: str | None, name: str
+    prompt: str, cwd: Path, cfg: AgenticConfig, session: str | None, name: str
 ) -> str:
     """One ``codex exec`` (or a resumption of ``session``); the session id."""
     common = [
@@ -203,7 +203,7 @@ def render_brief(name: str, ws: Workspace) -> str:
     depth_note = (
         "computed from the stereo pairs by FoundationStereo; it is smooth at object "
         "edges and less reliable on thin, dark or shiny things."
-        if "FoundationStereo" in str(cap.metadata.get("depth", ""))
+        if cap.metadata.get("depth") == DEPTH_NOTE
         else "measured by the cameras."
     )
     values = {

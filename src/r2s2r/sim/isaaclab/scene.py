@@ -1,4 +1,5 @@
-"""Build an Isaac Lab scene from a :class:`~r2s2r.structs.SceneSpec`.
+"""Build an Isaac Lab scene from a :class:`~r2s2r.structs.SceneSpec`, and run it
+(:class:`Session`: what the replay, the settling and the pick test share).
 
 Isaac Lab modules can only be imported once the Omniverse app is running, so import this
 module after ``isaaclab.app.AppLauncher`` has started.
@@ -10,7 +11,7 @@ pose with the real intrinsics (OpenCV convention == Isaac Lab's "ros" camera
 convention). There is one environment, at the world origin: some robots' USDs pin their
 root there.
 
-Objects are spawned from single-file USDs (:func:`object_usd`): the backend's URDF
+Objects are spawned from single-file USDs (:func:`object_usd`): the assembled URDF
 converted, its rigid body on the default prim, and a physics material with the object's
 friction bound to its colliders. physcoder loads the same files, with the
 ``metadata.yaml`` :func:`write_metadata` puts beside them.
@@ -30,18 +31,24 @@ import yaml
 from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
+from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
 from numpy.typing import NDArray
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from r2s2r.assets import bottom_offset
 from r2s2r.robots.spec import RobotSpec
-from r2s2r.structs import CameraSpec, ObjectSpec, SceneSpec
-from r2s2r.transforms import make_transform, matrix_to_pos_quat
+from r2s2r.structs import SUPPORT_THICKNESS, CameraSpec, ObjectSpec, SceneSpec
+from r2s2r.transforms import (
+    make_transform,
+    matrix_to_pos_quat,
+    pos_quat_to_matrix,
+    transform_points,
+)
 
-SUPPORT_THICKNESS = 0.02
 SUPPORT_EXTENT = (0.6, 0.6)  # for scenes whose support outline is unknown
 METADATA_FILENAME = "metadata.yaml"
+PHYSICS_DT = 0.005  # seconds per physics step
 
 
 def _pose(T: NDArray) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -198,7 +205,7 @@ def write_metadata(
             if prim.IsA(UsdGeom.Mesh):
                 pts = np.asarray(UsdGeom.Mesh(prim).GetPointsAttr().Get(), float)
                 M = np.array(cache.ComputeRelativeTransform(prim, root)[0]).T
-                points.append(pts @ M[:3, :3].T + M[:3, 3])
+                points.append(transform_points(M, pts))
     if not points:
         raise ValueError(f"{usd_path} has no collision meshes")
     pos, quat = bottom_offset(
@@ -284,9 +291,20 @@ def centered_render_size(cam: CameraSpec) -> tuple[int, int, int, int]:
     return 2 * half_w, 2 * half_h, int(round(half_w - cx)), int(round(half_h - cy))
 
 
+def crop_window(cam: CameraSpec) -> tuple[slice, slice]:
+    """Where the real image lies in the camera's render (rows, columns)."""
+    _, _, x0, y0 = centered_render_size(cam)
+    return slice(y0, y0 + cam.height), slice(x0, x0 + cam.width)
+
+
 def camera_key(cam: CameraSpec) -> str:
     """The scene entity of a camera."""
     return f"camera_{cam.role}"
+
+
+def object_key(index: int) -> str:
+    """The scene entity of the scene's object ``index``."""
+    return f"object_{index}"
 
 
 def camera_cfg(cam: CameraSpec, T_base_cam: NDArray, near: float) -> CameraCfg:
@@ -339,7 +357,7 @@ def build_scene_cfg(
     setattr(cfg, "robot", robot_cfg(robot, scene.joint_positions))
     setattr(cfg, "support", support_cfg(scene))
     for i, obj in enumerate(scene.objects):
-        setattr(cfg, f"object_{i}", object_cfg(obj, i, kinematic_objects))
+        setattr(cfg, object_key(i), object_cfg(obj, i, kinematic_objects))
     # A dim dome keeps the background dark so renders overlay cleanly on real frames;
     # a distant light gives the geometry readable shading.
     setattr(
@@ -366,3 +384,58 @@ def build_scene_cfg(
             camera_cfg(cam, T_base_cam, robot.isaac_camera_near),
         )
     return cfg
+
+
+# ------------------------------------------------------------------------ session
+class Session:
+    """A scene running in Isaac Lab (:func:`build_scene_cfg`): the simulation, the
+    interactive scene, the robot's arm and gripper joints, the objects by name.
+
+    ``robot`` is the scene's embodiment; ``kinematic_objects`` holds the objects where
+    they are placed; ``cameras`` as for :func:`build_scene_cfg`.
+    """
+
+    def __init__(
+        self,
+        spec: SceneSpec,
+        robot: RobotSpec,
+        kinematic_objects: bool,
+        device: str,
+        cameras: Iterable[tuple[CameraSpec, NDArray]] = (),
+    ) -> None:
+        self.robot_spec = robot
+        self.sim = SimulationContext(SimulationCfg(dt=PHYSICS_DT, device=device))
+        self.scene = make_scene(
+            build_scene_cfg(spec, robot, kinematic_objects, cameras), robot
+        )
+        self.sim.reset()
+        self.dt = self.sim.get_physics_dt()
+        self.robot: Articulation = self.scene["robot"]
+        self.arm_ids, _ = self.robot.find_joints(
+            list(robot.isaac_arm_joints), preserve_order=True
+        )
+        self.grip_ids, self.grip_open, self.grip_closed = gripper_joints(
+            self.robot, robot
+        )
+        self.names = {object_key(i): obj.name for i, obj in enumerate(spec.objects)}
+
+    def gripper_targets(self, level: float) -> torch.Tensor:
+        """The gripper joints' positions at opening ``level`` (0 open, 1 closed)."""
+        return self.grip_open + level * (self.grip_closed - self.grip_open)
+
+    def step_physics(self, n: int, render: bool = False) -> None:
+        """``n`` physics steps; ``render`` renders on the last."""
+        for i in range(n):
+            self.scene.write_data_to_sim()
+            self.sim.step(render=render and i == n - 1)
+            self.scene.update(self.dt)
+
+    def object_poses(self) -> dict[str, NDArray[np.float64]]:
+        """Every object's pose in the robot base frame (the environment is at the
+        origin)."""
+        out = {}
+        for key, obj in self.scene.rigid_objects.items():
+            pos = obj.data.root_pos_w[0].cpu().numpy()
+            quat = obj.data.root_quat_w[0].cpu().numpy()
+            out[self.names[key]] = pos_quat_to_matrix(pos, quat)
+        return out

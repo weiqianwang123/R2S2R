@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from r2s2r.robots import get_robot, ur5e_2f140
+from r2s2r.robots import franka_panda, get_robot, ur5e_2f140
 from r2s2r.robots.spec import MENAGERIE_DIR, RobotSpec
 from r2s2r.structs import (
     CameraSpec,
@@ -35,7 +35,7 @@ CLOSE_STEP = 8  # gripper starts closing here
 LATENCY_MS = 41
 RGBD_K = intrinsics_matrix(300.0, 300.0, 159.5, 119.5)
 RGBD_SIZE = (320, 240)
-HOME_Q = np.array([0, -0.785, 0, -2.356, 0, 1.571, 0.785])  # the Panda's
+HOME_Q = np.array(franka_panda.HOME_Q)
 ROBOT_ASSETS = {
     "franka_panda": MENAGERIE_DIR / "franka_emika_panda",
     "droid_franka": MENAGERIE_DIR / "robotiq_2f85",

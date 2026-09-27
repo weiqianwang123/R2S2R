@@ -24,6 +24,16 @@ CAPTURE_FILENAME = "capture.json"
 TRAJECTORY_FILENAME = "trajectory.npz"
 SCENE_FILENAME = "scene.json"
 DEPTH_PNG_SCALE = 0.001  # meters per unit of uint16 depth PNGs
+# A support is simulated and drawn as a slab this thick (m), its top face the plane.
+SUPPORT_THICKNESS = 0.02
+
+
+def read_rgb(path: str | Path) -> NDArray[np.uint8]:
+    """A colour image, RGB."""
+    bgr = cv2.imread(str(path))
+    if bgr is None:
+        raise IOError(f"cannot read {path}")
+    return np.asarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), np.uint8)
 
 
 def read_depth(path: str | Path) -> NDArray[np.float32]:
@@ -203,18 +213,17 @@ class Capture:
 
     def select_frames(
         self,
-        cameras: Iterable[str] | None = None,
         max_frames: int | None = None,
         keep: Callable[[FrameRecord], bool] | None = None,
     ) -> list[FrameRecord]:
-        """Frames of the static period from any mix of cameras.
+        """Frames of the static period from every camera.
 
         At most ``max_frames`` in total, shared evenly between the cameras (a camera
         with fewer frames leaves its share to the others) and spread evenly over each
         camera's frames. ``keep`` filters frames first.
         """
         pools = {}
-        for serial in self.resolve_cameras(cameras):
+        for serial in self.cameras:
             pool = [
                 f
                 for f in self.frames_of(serial)
@@ -360,8 +369,7 @@ class SceneSpec:
 
     @classmethod
     def load(cls, root: str | Path) -> SceneSpec:
-        """Read a scene saved by :meth:`save`; asset paths come back absolute (older
-        scenes saved them absolute, which reads the same)."""
+        """Read a scene saved by :meth:`save`; asset paths come back absolute."""
         root = Path(root).resolve()
         d = json.loads((root / SCENE_FILENAME).read_text(encoding="utf-8"))
         objects = []

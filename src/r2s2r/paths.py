@@ -1,6 +1,6 @@
 """Where r2s2r finds what it does not ship: its own checkout (scripts), the SimFoundry
 submodule, the asset cache, physcoder's assets, the conda environments the model jobs run
-in, and the executables it drives.
+in, and the executables it drives (and the Codex model it asks).
 
 The one home of these; every other module asks here.
 """
@@ -33,6 +33,7 @@ ENV_MESH = "hunyuan"
 # The ChatGPT desktop app's bundled Codex CLI is kept current; a separately installed
 # `codex` can be too old for the newest models.
 DESKTOP_APP_CODEX = Path("/usr/lib/chatgpt/resources/codex")
+CODEX_MODEL = "gpt-6-astra"  # the model every Codex call uses by default
 
 
 def mamba_exe() -> str:

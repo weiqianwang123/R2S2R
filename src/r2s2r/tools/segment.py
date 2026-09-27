@@ -1,4 +1,5 @@
-"""Tools on images: segmenting frames with SAM3, cropping an object for generation."""
+"""Tools on images: segmenting frames with SAM3, reading the masks, cropping an object
+for generation."""
 
 from __future__ import annotations
 
@@ -12,14 +13,26 @@ import numpy as np
 from numpy.typing import NDArray
 
 from r2s2r.paths import ENV_SIMFOUNDRY
-from r2s2r.pipeline.workspace import Workspace, load_mask
 from r2s2r.sim.compare import COLORS
 from r2s2r.tools.envjobs import run_env_job
+from r2s2r.workspace import Workspace
 
 
 def slug(text: str) -> str:
     """A file-name-safe version of ``text``."""
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").lower() or "object"
+
+
+def load_mask(path: str | Path, shape: tuple[int, int]) -> NDArray[np.bool_]:
+    """A binary mask image, at ``shape`` (H, W)."""
+    raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if raw is None:
+        raise IOError(f"cannot read mask {path}")
+    if raw.ndim == 3:
+        raw = raw[..., -1] if raw.shape[2] == 4 else raw.max(axis=2)
+    if raw.shape != shape:
+        raw = cv2.resize(raw, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
+    return np.asarray(raw > 127)
 
 
 def segment(

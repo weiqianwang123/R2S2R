@@ -48,6 +48,12 @@ def transform_points(T_a_b: ArrayLike, points_b: ArrayLike) -> NDArray[np.float6
     return np.asarray(points_b, dtype=np.float64) @ T[:3, :3].T + T[:3, 3]
 
 
+def tilt_deg(axis: ArrayLike) -> float:
+    """How far (degrees) a unit ``axis`` (a plane's normal, a frame's z) leans from
+    the base frame's z."""
+    return float(np.degrees(np.arccos(np.clip(np.asarray(axis, float)[2], -1.0, 1.0))))
+
+
 def look_at(eye: ArrayLike, target: ArrayLike) -> NDArray[np.float64]:
     """``T_base_cam`` of an OpenCV camera at ``eye`` looking at ``target``, level (its x
     axis horizontal; z is up)."""
@@ -96,6 +102,15 @@ def intrinsics_matrix(
 ) -> NDArray[np.float64]:
     """Build a 3x3 pinhole intrinsics matrix."""
     return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]])
+
+
+def scale_intrinsics(K: ArrayLike, scale: float) -> NDArray[np.float64]:
+    """``K`` of the image resized by ``scale`` (pixel centres at integer coordinates,
+    before and after)."""
+    K = np.array(K, dtype=np.float64)
+    K[:2, :2] *= scale
+    K[:2, 2] = (K[:2, 2] + 0.5) * scale - 0.5
+    return K
 
 
 def project_points(

@@ -6,7 +6,7 @@ import json
 import cv2
 import numpy as np
 import pytest
-import trimesh
+from conftest import box_urdf
 
 pytest.importorskip("mujoco")
 
@@ -35,23 +35,15 @@ TARGET = (0.5, 0.0, 0.04)  # where the cameras look
 
 
 def _scene(tmp_path, xy):
-    box = trimesh.creation.box(extents=(0.06, 0.06, 0.08))
-    box.apply_translation([0, 0, 0.04])
-    box.export(tmp_path / "box.obj")
-    (tmp_path / "box.urdf").write_text(
-        '<robot name="box"><link name="base"><visual><geometry>'
-        '<mesh filename="box.obj"/></geometry></visual></link></robot>'
-    )
-    obj = ObjectSpec(
-        "box", "box", str(tmp_path / "box.urdf"), make_transform(np.eye(3), [*xy, 0.0])
-    )
+    urdf = box_urdf(tmp_path, (0.06, 0.06, 0.08))
+    obj = ObjectSpec("box", "box", str(urdf), make_transform(np.eye(3), [*xy, 0.0]))
     return SceneSpec("t", "franka_panda", [obj], np.eye(4), {}, "c", 0, np.zeros(7))
 
 
 def _render(scene, T):
     renderer = SceneRenderer(scene, (320, 240))
     renderer.pose(0, scene.objects[0].T_base_obj)
-    out = renderer.render(DepthView("c", 0, np.zeros((240, 320)), K, T), 0)
+    out = renderer.render(DepthView("c", 0, np.zeros((240, 320)), K, T))
     renderer.close()
     return out["rgb"], out["depth"].astype(float)
 

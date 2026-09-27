@@ -67,7 +67,7 @@ def _views(scene):
     for eye in ((0.1, 0.3, 0.4), (0.5, -0.45, 0.35), (0.95, 0.2, 0.4)):
         T = look_at(eye, TARGET)
         stub = DepthView("cam", 0, np.zeros((240, 320)), K, T)
-        out = renderer.render(stub, 0)
+        out = renderer.render(stub)
         views.append(DepthView("cam", 0, out["depth"].astype(float), K, T, out["rgb"]))
     renderer.close()
     return views

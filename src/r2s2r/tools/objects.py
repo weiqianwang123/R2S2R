@@ -27,18 +27,23 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
 import trimesh
+from numpy.typing import NDArray
 
-from r2s2r.assets import VisualMesh, base_color_texture, make_sim_ready
+from r2s2r.assets import (
+    VisualMesh,
+    base_color_texture,
+    make_sim_ready,
+    write_object_urdf,
+)
 from r2s2r.mjrender import CameraRenderer, add_camera, add_mesh, mujoco
 from r2s2r.paths import ENV_MESH, ENV_SIMFOUNDRY, SIMFOUNDRY_DIR
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import FrameRecord, ObjectSpec, SceneSpec
 from r2s2r.tools.envjobs import run_env_job
 from r2s2r.tools.geometry import UP_ROTATIONS, load_mesh, load_support
@@ -51,6 +56,7 @@ from r2s2r.transforms import (
     make_transform,
     transform_points,
 )
+from r2s2r.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +70,6 @@ def generate(
     images: dict[str, str],
     out_dir: str | Path,
     seed: int = 1,
-    low_vram: bool = True,
 ) -> dict[str, Any]:
     """A textured mesh per image (RGBA, object on a transparent background) with
     Hunyuan3D-2.1, in ``out_dir/<name>/``: ``mesh.glb``, ``mesh.obj`` (+ texture),
@@ -81,7 +86,7 @@ def generate(
     ]
     result = run_env_job(
         "hunyuan_job.py",
-        {"repo": str(HUNYUAN_REPO), "low_vram": low_vram, "items": items},
+        {"repo": str(HUNYUAN_REPO), "items": items},
         ws.root / "cache" / "jobs",
         ENV_MESH,
     )
@@ -165,6 +170,38 @@ def render_preview(
 
 
 # ----------------------------------------------------------------------- assemble
+@dataclass
+class ObjectsFile:
+    """An objects file, read: its support, and its objects as written but for their
+    ``mesh`` and ``collision`` parts (absolute paths) and ``scale`` (three values)."""
+
+    T_base_support: NDArray[np.float64]
+    extent: tuple[float, float] | None
+    objects: list[dict[str, Any]]
+    reference_frame: str | None
+
+
+def read_objects_file(path: str | Path) -> ObjectsFile:
+    """The objects file at ``path`` (see the module doc)."""
+    path = Path(path).resolve()
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    base = path.parent  # what the relative paths in it start from
+    support = spec["support"]
+    T_base_support, extent = load_support(
+        _resolve(base, support) if isinstance(support, str) else support
+    )
+    objects = [
+        {
+            **obj,
+            "mesh": _resolve(base, obj["mesh"]),
+            "scale": np.broadcast_to(np.asarray(obj.get("scale", 1.0), float), (3,)),
+            "collision": [_resolve(base, h) for h in obj.get("collision") or []],
+        }
+        for obj in spec["objects"]
+    ]
+    return ObjectsFile(T_base_support, extent, objects, spec.get("reference_frame"))
+
+
 def assemble(
     ws: Workspace,
     objects_path: str | Path,
@@ -185,19 +222,15 @@ def assemble(
     if collision not in ("coacd", "hull", "none"):
         raise ValueError(f"unknown collision {collision!r} (coacd, hull, none)")
     objects_path = Path(objects_path).resolve()
-    spec = json.loads(objects_path.read_text(encoding="utf-8"))
-    base = objects_path.parent  # what the relative paths in it start from
+    spec = read_objects_file(objects_path)
+    T_base_support = spec.T_base_support
     out_dir = Path(out_dir).resolve()
-    support_src = spec["support"]
-    if isinstance(support_src, str):
-        support_src = str(_resolve(base, support_src))
-    T_base_support, extent = load_support(support_src)
-    names = [o["name"] for o in spec["objects"]]
+    names = [o["name"] for o in spec.objects]
     if len(set(names)) != len(names):
         raise ValueError(f"object names must be unique: {names}")
 
     objects, report, sources = [], {}, {}
-    for obj in spec["objects"]:
+    for obj in spec.objects:
         name = slug(obj["name"])
         T_base_obj = np.asarray(obj["T_base_obj"], float)
         if not is_rigid(T_base_obj):
@@ -208,14 +241,12 @@ def assemble(
         if obj_dir.exists():
             shutil.rmtree(obj_dir)
         obj_dir.mkdir(parents=True)
-        mesh = load_mesh(_resolve(base, obj["mesh"]))
-        scaling = np.diag([*np.broadcast_to(obj.get("scale", 1.0), (3,)), 1.0])
+        mesh = load_mesh(obj["mesh"])
+        scaling = np.diag([*obj["scale"], 1.0])
         mesh.apply_transform(scaling)
         mesh.export(obj_dir / "visual.obj")
-        if obj.get("collision"):
-            hulls = _given_hulls(
-                [_resolve(base, h) for h in obj["collision"]], scaling, obj_dir
-            )
+        if obj["collision"]:
+            hulls = _given_hulls(obj["collision"], scaling, obj_dir)
             sources[name] = "given"
         else:
             hulls = _collision(ws, mesh, obj_dir, collision, max_hulls)
@@ -224,7 +255,14 @@ def assemble(
         mass = obj.get("mass")
         mass = float(mass) if mass else DEFAULT_DENSITY * float(hull.volume)
         urdf = obj_dir / f"{name}.urdf"
-        _write_urdf(urdf, name, hull, mass, [h.relative_to(obj_dir) for h in hulls])
+        write_object_urdf(
+            urdf,
+            name,
+            mass,
+            hull.center_mass,
+            np.asarray(hull.moment_inertia) * mass / float(hull.mass),
+            [h.relative_to(obj_dir) for h in hulls],
+        )
         asset = make_sim_ready(urdf, invert(T_base_support) @ T_base_obj)
         objects.append(
             ObjectSpec(
@@ -254,7 +292,7 @@ def assemble(
             ),
         }
 
-    ref = spec.get("reference_frame")
+    ref = spec.reference_frame
     frame = ws.frame(ref) if ref else _default_reference(ws)
     kinds = set(sources.values())
     scene = SceneSpec(
@@ -271,7 +309,7 @@ def assemble(
             "objects_file": str(objects_path),
             "collision": sources if len(kinds) > 1 else next(iter(kinds), collision),
         },
-        support_extent=extent,
+        support_extent=spec.extent,
     )
     scene.save(out_dir)
     return {"scene": str(out_dir / "scene.json"), "objects": report}
@@ -328,41 +366,3 @@ def _collision(
     path = out / "hull_0.obj"
     mesh.convex_hull.export(path)
     return [path]
-
-
-def _write_urdf(
-    path: Path, name: str, hull: trimesh.Trimesh, mass: float, hulls: list[Path]
-) -> None:
-    """One link: the visual mesh, the collision parts, the inertia of ``hull`` (uniform
-    density) at ``mass``."""
-    inertia = np.asarray(hull.moment_inertia) * mass / float(hull.mass)
-    com = np.asarray(hull.center_mass)
-    robot = ET.Element("robot", {"name": name})
-    link = ET.SubElement(robot, "link", {"name": "base"})
-    inertial = ET.SubElement(link, "inertial")
-    ET.SubElement(
-        inertial, "origin", {"xyz": " ".join(f"{v:.6f}" for v in com), "rpy": "0 0 0"}
-    )
-    ET.SubElement(inertial, "mass", {"value": f"{mass:.6f}"})
-    ET.SubElement(
-        inertial,
-        "inertia",
-        {
-            k: f"{inertia[i, j]:.8e}"
-            for k, (i, j) in {
-                "ixx": (0, 0),
-                "ixy": (0, 1),
-                "ixz": (0, 2),
-                "iyy": (1, 1),
-                "iyz": (1, 2),
-                "izz": (2, 2),
-            }.items()
-        },
-    )
-    visual = ET.SubElement(link, "visual")
-    ET.SubElement(ET.SubElement(visual, "geometry"), "mesh", {"filename": "visual.obj"})
-    for k, rel in enumerate(hulls):
-        col = ET.SubElement(link, "collision", {"name": f"hull_{k}"})
-        ET.SubElement(ET.SubElement(col, "geometry"), "mesh", {"filename": str(rel)})
-    ET.indent(robot)
-    ET.ElementTree(robot).write(path, xml_declaration=True, encoding="utf-8")

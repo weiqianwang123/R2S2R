@@ -6,6 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import trimesh
+from conftest import box_urdf
 from scipy.spatial.transform import Rotation
 
 from r2s2r.pipeline.fixed.refine import match_clusters, refine_scene
@@ -16,21 +17,6 @@ from r2s2r.transforms import intrinsics_matrix, make_transform
 BOX = (0.12, 0.06, 0.05)  # object size (m)
 TABLE = (0.40, 0.30)  # support size (m)
 TABLE_YAW = np.deg2rad(20.0)
-
-
-def _write_box_urdf(tmp_path, scale=(1.0, 1.0, 1.0)):
-    mesh = trimesh.creation.box(extents=np.array(BOX) / np.array(scale))
-    mesh.apply_translation([0, 0, BOX[2] / 2 / scale[2]])  # origin at the bottom
-    mesh.export(tmp_path / "box.obj")
-    s = " ".join(str(v) for v in scale)
-    (tmp_path / "box.urdf").write_text(
-        '<robot name="box"><link name="base"><visual><geometry>'
-        f'<mesh filename="box.obj" scale="{s}"/></geometry></visual>'
-        "<collision><geometry>"
-        f'<mesh filename="box.obj" scale="{s}"/></geometry></collision>'
-        "</link></robot>"
-    )
-    return tmp_path / "box.urdf"
 
 
 def _yaw(T_or_yaw, xyz=(0.0, 0.0, 0.0)):
@@ -93,7 +79,7 @@ def test_register_footprint_recovers_shift_and_yaw():
 
 def test_refine_scene_moves_misplaced_object(tmp_path):
     """A box placed 4 cm and 12 degrees off is put back where the depth sees it."""
-    urdf = _write_box_urdf(tmp_path)
+    urdf = box_urdf(tmp_path, BOX)
     truth = _yaw(np.deg2rad(30.0), [0.52, 0.03, 0.0])
     K = intrinsics_matrix(120.0, 120.0, 80.0, 60.0)
     depth, T_base_cam = _overhead_depth(truth, K)
@@ -128,7 +114,7 @@ def test_refine_scene_levels_the_support_and_the_views(tmp_path):
     (on real depth it merges with the objects there). The plane is refit to the views
     and each view levelled onto it: only the box stands above the support, and it is
     put back on the true table."""
-    urdf = _write_box_urdf(tmp_path)
+    urdf = box_urdf(tmp_path, BOX)
     truth = _yaw(np.deg2rad(30.0), [0.52, 0.03, 0.0])
     K = intrinsics_matrix(240.0, 240.0, 160.0, 120.0)
     views = []

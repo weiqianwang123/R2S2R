@@ -18,10 +18,11 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from r2s2r.structs import Capture, DepthView, SceneSpec, read_depth
+from r2s2r.structs import Capture, DepthView, SceneSpec, read_depth, read_rgb
 from r2s2r.transforms import pos_quat_to_matrix
 
 RESIDUAL_CLIP = 0.05  # metres; the residual image saturates here
+THUMB_HEIGHT = 180  # pixels, of a contact sheet's rows
 # Object outlines (RGB), one colour per object in turn.
 COLORS = [
     (255, 64, 64),
@@ -69,16 +70,15 @@ def compare_replay(
             step, serial = int(entry["step"]), entry["camera"]
             frame = capture.frame(serial, step)
             cam = capture.cameras[serial]
-            real = _read_rgb(capture.root / frame.left_image)
-            sim = _read_rgb(replay_dir / entry["sim_rgb"])
+            real = read_rgb(capture.root / frame.left_image)
+            sim = read_rgb(replay_dir / entry["sim_rgb"])
             view = DepthView(
                 serial, step, np.zeros((cam.height, cam.width)), cam.K, frame.T_base_cam
             )
-            masks = {}
-            for i, name in enumerate(names):
-                for k, other in enumerate(names):
-                    renderer.pose(k, poses[other].get(step))
-                masks[name] = renderer.render(view, i)["mask"]
+            for k, name in enumerate(names):
+                renderer.pose(k, poses[name].get(step))
+            objects = renderer.render(view)["object"]
+            masks = {name: objects == i for i, name in enumerate(names)}
             panel = comparison_panel(real, sim, masks)
             row: dict[str, Any] = {"step": step, "camera": entry["role"]}
             if frame.depth_image is not None:
@@ -169,12 +169,10 @@ def residual_image(real: NDArray, sim: NDArray) -> NDArray[np.uint8]:
     return image
 
 
-def thumbnail(
-    panel: NDArray[np.uint8], step: int, height: int = 180
-) -> NDArray[np.uint8]:
-    """``panel`` scaled to ``height``, labelled with the step."""
-    scale = height / panel.shape[0]
-    thumb = cv2.resize(panel, (int(panel.shape[1] * scale), height))
+def thumbnail(panel: NDArray[np.uint8], step: int) -> NDArray[np.uint8]:
+    """``panel`` scaled to :data:`THUMB_HEIGHT`, labelled with the step."""
+    scale = THUMB_HEIGHT / panel.shape[0]
+    thumb = cv2.resize(panel, (int(panel.shape[1] * scale), THUMB_HEIGHT))
     cv2.putText(
         thumb,
         f"step {step}",
@@ -186,10 +184,3 @@ def thumbnail(
         cv2.LINE_AA,
     )
     return np.asarray(thumb, np.uint8)
-
-
-def _read_rgb(path: str | Path) -> NDArray[np.uint8]:
-    bgr = cv2.imread(str(path))
-    if bgr is None:
-        raise FileNotFoundError(path)
-    return np.asarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), np.uint8)

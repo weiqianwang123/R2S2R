@@ -17,10 +17,13 @@ import trimesh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
+from r2s2r.assets import write_object_urdf
 from r2s2r.mjrender import geom_mesh
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec
 from r2s2r.testbed.evaluate import ground_truth, scene_errors
 from r2s2r.testbed.policy import (
+    CONTROL_DT,
+    VIDEO_EVERY,
     RobotInterface,
     VideoRecorder,
     pick_up,
@@ -132,34 +135,19 @@ def _object_urdf(world: MujocoWorld, body: str, out_dir: Path) -> Path:
         part.export(out_dir / f"collision_{i}.obj")
         collisions.append(f"collision_{i}.obj")
     if m.body_jntnum[b]:
-        mass, com, inertia = float(m.body_mass[b]), m.body_ipos[b], m.body_inertia[b]
-        rpy = Rotation.from_quat(quat_wxyz_to_xyzw(m.body_iquat[b])).as_euler("xyz")
+        mass, com = float(m.body_mass[b]), m.body_ipos[b]
+        R = Rotation.from_quat(quat_wxyz_to_xyzw(m.body_iquat[b])).as_matrix()
+        inertia = R @ np.diag(m.body_inertia[b]) @ R.T
     else:
         lo, hi = mesh.bounds
         e2 = (hi - lo) ** 2
-        mass, com, rpy = STATIC_MASS, (lo + hi) / 2, np.zeros(3)
-        inertia = (
+        mass, com = STATIC_MASS, (lo + hi) / 2
+        inertia = np.diag(
             STATIC_MASS / 12 * np.array([e2[1] + e2[2], e2[0] + e2[2], e2[0] + e2[1]])
         )
-    ixx, iyy, izz = (float(v) for v in inertia)
-    geometry = "".join(
-        f'<collision><geometry><mesh filename="{c}"/></geometry></collision>'
-        for c in collisions
-    )
     path = out_dir / f"{body}.urdf"
-    path.write_text(
-        f'<robot name="{body}"><link name="base"><inertial>'
-        f'<origin xyz="{_floats(com)}" rpy="{_floats(rpy)}"/><mass value="{mass}"/>'
-        f'<inertia ixx="{ixx}" iyy="{iyy}" izz="{izz}" ixy="0" ixz="0" iyz="0"/>'
-        '</inertial><visual><geometry><mesh filename="visual.obj"/></geometry>'
-        f"</visual>{geometry}</link></robot>",
-        encoding="utf-8",
-    )
+    write_object_urdf(path, body, mass, com, inertia, collisions)
     return path
-
-
-def _floats(values: Any) -> str:
-    return " ".join(f"{float(v):.9g}" for v in values)
 
 
 def run_pick(
@@ -168,7 +156,6 @@ def run_pick(
     target: str,
     out_dir: str | Path,
     video_camera: str | None = "ext1",
-    video_every: int = 2,
 ) -> dict[str, Any]:
     """Pick ``target`` (an object of ``scene``) in the world ``capture`` came from,
     and score by how far the world's own target rose."""
@@ -176,11 +163,11 @@ def run_pick(
     world = world_from_capture(capture)
     video = None
     if video_camera:
-        fps = 1 / (MujocoRobot.control_dt * video_every)
+        fps = 1 / (CONTROL_DT * VIDEO_EVERY)
         video = VideoRecorder(out_dir / f"mujoco_{video_camera}.mp4", fps)
 
     def record(robot: MujocoRobot) -> None:
-        if video is not None and robot.steps % video_every == 0:
+        if video is not None and robot.steps % VIDEO_EVERY == 0:
             video.add(world.render(video_camera or "")["rgb"])
 
     before = world.object_positions()

@@ -48,7 +48,7 @@ BOX_BLOCK_XML = (
     PHYSCODER_ASSETS / "mujoco" / "objects" / "single_ur_scene" / "box_block.xml"
 )
 BLOCK_LAYOUTS = ("corner", "beside")
-SETTLE_SECONDS = 1.0  # physics before ground truth is read: free objects come to rest
+GT_SETTLE_SECONDS = 1.0  # physics before ground truth is read: objects come to rest
 MOUNT_GAP = 0.05  # robot-scene pairs this near at the home pose are the arm's mount
 SUPPORT_TOLERANCE = 0.003  # m: the support's visible top is this near its collision top
 
@@ -132,22 +132,21 @@ class MujocoWorld:
         self._mount = {pair for pair, _ in self._near_pairs(MOUNT_GAP)}
 
     # ----------------------------------------------------------------- state
-    def reset(self, settle: float = SETTLE_SECONDS) -> None:
+    def reset(self) -> None:
         """The robot at its home pose, gripper open and held there, the objects where
-        the builder put them; then ``settle`` seconds of physics."""
+        the builder put them; then :data:`GT_SETTLE_SECONDS` of physics."""
         mujoco.mj_resetData(self.model, self.data)
         home = np.asarray(self.robot.home_q)
         self.kinematics.set(home, 0.0)
         self.hold(home, 0.0)
         mujoco.mj_forward(self.model, self.data)
-        self.step(settle)
+        self.step(GT_SETTLE_SECONDS)
 
     def hold(self, q: NDArray, level: float) -> None:
         """Arm joint targets and gripper opening (0 open, 1 closed) for the
         actuators."""
         self.data.ctrl[self.arm_actuators] = q
-        lo, hi = self.robot.gripper.ctrl
-        self.data.ctrl[self.gripper_actuator] = lo + float(level) * (hi - lo)
+        self.data.ctrl[self.gripper_actuator] = self.robot.gripper.ctrl_at(level)
 
     def step(self, seconds: float) -> None:
         """Simulate ``seconds``."""
@@ -160,9 +159,7 @@ class MujocoWorld:
 
     def gripper_level(self) -> float:
         """The gripper's opening from its driver joint, 0 open to 1 closed."""
-        g = self.robot.gripper
-        x = (self.data.qpos[self.driver_qadr] - g.open) / (g.closed - g.open)
-        return float(np.clip(x, 0.0, 1.0))
+        return self.robot.gripper.level_of(self.data.qpos[self.driver_qadr])
 
     def body_pose(self, name: str) -> NDArray[np.float64]:
         """``T_base_body``."""
@@ -262,7 +259,7 @@ class MujocoWorld:
         T = self.body_pose(obj.name)
         visual, colliding = self.geoms(obj.name)
         points = np.concatenate([_vertices(m, g) for g in visual])
-        points = points @ T[:3, :3].T + T[:3, 3]
+        points = transform_points(T, points)
         lo, hi = points.min(axis=0), points.max(axis=0)
         boxes = []
         for g in colliding:

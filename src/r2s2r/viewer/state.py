@@ -17,10 +17,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
-from r2s2r.pipeline.stages import STAGE_DIRS, STAGES, VALIDATORS, fresh, read_json
-from r2s2r.pipeline.workspace import RUN_FILENAME, Workspace
+from r2s2r.pipeline.stages import (
+    STAGE_DIRS,
+    STAGES,
+    VALIDATORS,
+    fresh,
+    read_json,
+    support_file,
+)
+from r2s2r.workspace import RUN_FILENAME, Workspace
 
 ACTIVE_S = 15 * 60  # a running stage that wrote nothing for longer has stopped
 ACTIVITY_CHARS = 140
@@ -41,18 +46,6 @@ def recording(ws: Workspace) -> dict[str, Any]:
         }
         for c in cap.cameras.values()
     ]
-    frames = [
-        {
-            "id": ws.frame_id(f),
-            "camera": cap.cameras[f.camera].role,
-            "step": f.step,
-            "image": _rel(ws, ws.image_path(f)),
-            "depth": f.depth_image is not None,
-            "static": ws.capture.in_static(f.step),
-            "T_base_cam": np.round(f.T_base_cam, 5).tolist(),
-        }
-        for f in sorted(cap.frames, key=lambda f: (f.step, f.camera))
-    ]
     return {
         "name": cap.name,
         "source": cap.source,
@@ -60,7 +53,7 @@ def recording(ws: Workspace) -> dict[str, Any]:
         "instruction": cap.instruction,
         "static_steps": list(cap.static_steps),
         "cameras": cameras,
-        "frames": frames,
+        "frames": ws.frame_index(),
     }
 
 
@@ -173,7 +166,7 @@ def _frames(d: Path) -> list[dict[str, Any]]:
 def _support(ws: Workspace, d: Path, objects_dir: Path) -> dict[str, Any] | None:
     """Stage 2's support; its extent, when stage 2 left it out, the objects file's."""
     out = _json(d / "output.json")
-    name = (out.get("support") or {}).get("file") if isinstance(out, dict) else None
+    name = support_file(out)
     candidates = [d / name] if name else sorted(d.glob("support*.json"))
     objects = _json(objects_dir / "objects.json")
     inline = objects.get("support") if isinstance(objects, dict) else None
@@ -302,10 +295,7 @@ def _scenes(ws: Workspace, dirs: dict[str, Path]) -> list[dict[str, Any]]:
         for name in ("scene/scene.json", "parsed/scene.json", "objects.json"):
             if (d / name).exists():
                 found.append((key, d / name))
-    output = _json(dirs["2"] / "output.json")
-    support_name = (
-        (output.get("support") or {}).get("file") if isinstance(output, dict) else None
-    )
+    support_name = support_file(_json(dirs["2"] / "output.json"))
     if support_name and (dirs["2"] / support_name).exists():
         found.append(("2", dirs["2"] / support_name))
     out: list[dict[str, Any]] = [

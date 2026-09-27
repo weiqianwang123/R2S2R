@@ -1,5 +1,5 @@
-"""URDF assets: making a backend's URDF simulation-ready, reading its geometry, and
-where an object rests.
+"""URDF assets: writing an object's URDF, making it simulation-ready, reading its
+geometry, and where an object rests.
 
 :func:`make_sim_ready` writes one ``<name>_r2s2r.urdf`` per object:
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from scipy.spatial.transform import Rotation
 
 from r2s2r.structs import ObjectSpec
@@ -69,6 +69,51 @@ def make_sim_ready(
     return out_path
 
 
+def write_object_urdf(
+    path: Path,
+    name: str,
+    mass: float,
+    com: ArrayLike,
+    inertia: ArrayLike,
+    collisions: list[Path] | list[str],
+) -> None:
+    """One link: the visual mesh ``visual.obj`` beside ``path``, the collision meshes
+    ``collisions`` (relative to it), and ``mass`` (kg) at ``com`` with the 3x3
+    ``inertia`` about it, in the link's axes."""
+    inertia = np.asarray(inertia, float)
+    robot = ET.Element("robot", {"name": name})
+    link = ET.SubElement(robot, "link", {"name": "base"})
+    inertial = ET.SubElement(link, "inertial")
+    ET.SubElement(
+        inertial,
+        "origin",
+        {"xyz": " ".join(f"{v:.6f}" for v in np.asarray(com, float)), "rpy": "0 0 0"},
+    )
+    ET.SubElement(inertial, "mass", {"value": f"{mass:.6f}"})
+    ET.SubElement(
+        inertial,
+        "inertia",
+        {
+            k: f"{inertia[i, j]:.8e}"
+            for k, (i, j) in {
+                "ixx": (0, 0),
+                "ixy": (0, 1),
+                "ixz": (0, 2),
+                "iyy": (1, 1),
+                "iyz": (1, 2),
+                "izz": (2, 2),
+            }.items()
+        },
+    )
+    visual = ET.SubElement(link, "visual")
+    ET.SubElement(ET.SubElement(visual, "geometry"), "mesh", {"filename": "visual.obj"})
+    for k, rel in enumerate(collisions):
+        col = ET.SubElement(link, "collision", {"name": f"hull_{k}"})
+        ET.SubElement(ET.SubElement(col, "geometry"), "mesh", {"filename": str(rel)})
+    ET.indent(robot)
+    ET.ElementTree(robot).write(path, xml_declaration=True, encoding="utf-8")
+
+
 # ----------------------------------------------------------------------- readers
 def urdf_visual_meshes(urdf_path: str | Path) -> list[VisualMesh]:
     """Every visual mesh, posed in the root link frame."""
@@ -84,8 +129,10 @@ def urdf_visual_meshes(urdf_path: str | Path) -> list[VisualMesh]:
             path = urdf_path.parent / mesh_el.attrib["filename"]
             mesh = trimesh.load(path, force="mesh")
             assert isinstance(mesh, trimesh.Trimesh), f"{path} is not a single mesh"
-            mesh.apply_transform(np.diag([*_vector(mesh_el, "scale", "1 1 1"), 1.0]))
-            mesh.apply_transform(poses[link.attrib["name"]] @ _origin(visual))
+            mesh.apply_transform(
+                np.diag([*urdf_vector(mesh_el, "scale", "1 1 1"), 1.0])
+            )
+            mesh.apply_transform(poses[link.attrib["name"]] @ urdf_origin(visual))
             out.append(VisualMesh(mesh, base_color_texture(path)))
     if not out:
         raise ValueError(f"no visual meshes in {urdf_path}")
@@ -113,7 +160,7 @@ def object_points(obj: ObjectSpec, n: int = 3000) -> NDArray[np.float64]:
 # ------------------------------------------------------------------ preparation
 def _bake_mesh_scales(root: ET.Element, asset_dir: Path) -> None:
     for mesh_el in root.iter("mesh"):
-        scale = _vector(mesh_el, "scale", "1 1 1")
+        scale = urdf_vector(mesh_el, "scale", "1 1 1")
         mesh_el.attrib.pop("scale", None)
         if np.allclose(scale, 1.0):
             continue
@@ -215,7 +262,7 @@ def _link_poses(root: ET.Element) -> dict[str, NDArray[np.float64]]:
         name = link.attrib["name"]
         T = np.eye(4)
         while name in joints:
-            T = _origin(joints[name]) @ T
+            T = urdf_origin(joints[name]) @ T
             name = _link(joints[name], "parent")
         poses[link.attrib["name"]] = T
     return poses
@@ -227,15 +274,17 @@ def _link(joint: ET.Element, tag: str) -> str:
     return el.attrib["link"]
 
 
-def _vector(el: ET.Element | None, key: str, default: str) -> NDArray[np.float64]:
+def urdf_vector(el: ET.Element | None, key: str, default: str) -> NDArray[np.float64]:
+    """An element's attribute ``key`` as numbers (``default`` when it has none)."""
     return np.array(
         (default if el is None else el.attrib.get(key, default)).split(), float
     )
 
 
-def _origin(el: ET.Element) -> NDArray[np.float64]:
+def urdf_origin(el: ET.Element) -> NDArray[np.float64]:
+    """The pose its ``<origin>`` gives an element (the identity without one)."""
     origin = el.find("origin")
-    rpy = _vector(origin, "rpy", "0 0 0")
+    rpy = urdf_vector(origin, "rpy", "0 0 0")
     return make_transform(
-        Rotation.from_euler("xyz", rpy).as_matrix(), _vector(origin, "xyz", "0 0 0")
+        Rotation.from_euler("xyz", rpy).as_matrix(), urdf_vector(origin, "xyz", "0 0 0")
     )

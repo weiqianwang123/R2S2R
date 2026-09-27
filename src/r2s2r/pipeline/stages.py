@@ -4,7 +4,7 @@ products must pass (a method may add its own, :class:`r2s2r.pipeline.run.Method`
 =====  ==============  ==============================================================
 stage  directory       product
 =====  ==============  ==============================================================
-1      ``inputs/``     the capture (:mod:`r2s2r.pipeline.workspace`)
+1      ``inputs/``     the capture (:mod:`r2s2r.workspace`)
 2      ``s2_frames``   ``output.json``: ``frames`` (ids of frames of the static
                        period) and ``support`` (``file``: a support JSON, its
                        ``T_base_support`` rigid)
@@ -32,10 +32,10 @@ from typing import Any, Callable
 
 import numpy as np
 
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import SceneSpec
 from r2s2r.tools.geometry import UP_ROTATIONS, load_support
 from r2s2r.transforms import is_rigid
+from r2s2r.workspace import Workspace
 
 STAGES = ("2", "3", "4", "5", "6")
 STAGE_DIRS = {
@@ -68,6 +68,13 @@ def read_json(path: str | Path) -> Any:
         raise ValueError(f"{path.name} is not valid JSON: {exc}") from exc
 
 
+def support_file(out: Any) -> str | None:
+    """The support file stage 2's ``output.json`` (``out``) names, if it names one."""
+    support = out.get("support") if isinstance(out, dict) else None
+    name = support.get("file") if isinstance(support, dict) else None
+    return name if isinstance(name, str) and name else None
+
+
 # -------------------------------------------------------------------------- checks
 def check_frames(ws: Workspace, d: Path) -> list[str]:
     """Problems with stage 2's product."""
@@ -90,9 +97,8 @@ def check_frames(ws: Workspace, d: Path) -> list[str]:
             continue
         if not ws.capture.in_static(frame.step):
             problems.append(f"{fid} is not a frame of the static period")
-    support = out.get("support")
-    support = support.get("file") if isinstance(support, dict) else None
-    if not support:
+    support = support_file(out)
+    if support is None:
         problems.append("output.json names no support file")
     else:
         problems += check_support(d / support)
@@ -187,10 +193,10 @@ def product_files(root: Path, key: str) -> list[Path]:
     files = [d / name for name in PRODUCTS[key]]
     if key == "2":
         try:
-            support = read_json(files[0]).get("support").get("file")
-        except (ValueError, AttributeError):
+            support = support_file(read_json(files[0]))
+        except ValueError:
             support = None
-        if isinstance(support, str):
+        if support is not None:
             files.append(d / support)
     return files
 

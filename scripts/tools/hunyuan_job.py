@@ -3,8 +3,7 @@ r2s2r.tools.envjobs.
 
     python hunyuan_job.py JOB.json RESULT.json
 
-JOB: {"repo": HUNYUAN_REPO, "low_vram": true,
-      "items": [{"image": RGBA_PNG, "out": OUT.glb, "seed": 1}]}
+JOB: {"repo": HUNYUAN_REPO, "items": [{"image": RGBA_PNG, "out": OUT.glb, "seed": 1}]}
 
 Writes ``OUT.glb`` (textured) and ``OUT_untextured.glb`` per item; one failed item does
 not stop the others.
@@ -34,7 +33,7 @@ def main(job_path, result_path):
     Hunyuan.set_repo_path(repo_path=repo)
     generator = make_generator(
         Hunyuan,
-        low_vram=bool(job.get("low_vram", True)),
+        low_vram=True,  # CPU offload: ~6 GB of VRAM instead of ~29
         create_shape_pipeline=True,
         create_texture_pipeline=True,
     )

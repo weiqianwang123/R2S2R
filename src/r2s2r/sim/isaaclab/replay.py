@@ -23,25 +23,22 @@ from typing import Any
 import cv2
 import numpy as np
 import torch
-from isaaclab.scene import InteractiveScene
-from isaaclab.sim import SimulationCfg, SimulationContext
-from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
 from r2s2r.robots import get_robot
 from r2s2r.sim.isaac import SETTLE_SECONDS
 from r2s2r.sim.isaaclab.scene import (
-    build_scene_cfg,
+    Session,
     camera_key,
-    centered_render_size,
-    gripper_joints,
-    make_scene,
+    crop_window,
     object_usd,
     with_object_usds,
     write_metadata,
 )
 from r2s2r.structs import CameraSpec, Capture, SceneSpec, write_depth
-from r2s2r.transforms import matrix_to_pos_quat, pos_quat_to_matrix
+from r2s2r.transforms import matrix_to_pos_quat
+
+RENDER_PASSES = 2  # renders after moving a camera, so the image catches up
 
 
 @dataclass
@@ -50,19 +47,16 @@ class ReplayConfig:
 
     cameras: tuple[str, ...] | None = None  # roles or serials; None: every camera
     every: int = 1  # render every n-th step that has frames
-    render_passes: int = 2  # renders after moving a camera, so the image catches up
-    physics_dt: float = 0.005
     device: str = "cuda:0"
 
 
-class _Session:
-    """A scene in Isaac Lab with the capture's robot, set to its recorded states."""
+class _Recorded(Session):
+    """A session with the capture's robot, set to its recorded states."""
 
     def __init__(
         self,
         spec: SceneSpec,
         capture: Capture,
-        physics_dt: float,
         device: str,
         cameras: dict[str, CameraSpec],
         kinematic_objects: bool,
@@ -74,60 +68,22 @@ class _Session:
                 "(its trajectory.npz)"
             )
         self.traj = traj
-        self.robot_spec = get_robot(capture.embodiment)
-        self.sim = SimulationContext(SimulationCfg(dt=physics_dt, device=device))
         poses = [
             (cam, next(f for f in capture.frames if f.camera == s).T_base_cam)
             for s, cam in cameras.items()
         ]
-        self.scene = make_scene(
-            build_scene_cfg(spec, self.robot_spec, kinematic_objects, poses),
-            self.robot_spec,
-        )
-        self.sim.reset()
-        self.dt = self.sim.get_physics_dt()
-        self.robot = self.scene["robot"]
-        self.arm_ids, _ = self.robot.find_joints(
-            list(self.robot_spec.isaac_arm_joints), preserve_order=True
-        )
-        self.grip_ids, self.grip_open, self.grip_closed = gripper_joints(
-            self.robot, self.robot_spec
-        )
-        self.names = {f"object_{i}": obj.name for i, obj in enumerate(spec.objects)}
+        robot = get_robot(capture.embodiment)
+        super().__init__(spec, robot, kinematic_objects, device, poses)
         self.index = {int(s): i for i, s in enumerate(traj.steps.tolist())}
-
-    def state(self, i: int) -> torch.Tensor:
-        """Joint positions of trajectory row ``i``."""
-        target = self.robot.data.default_joint_pos.clone()
-        target[0, self.arm_ids] = target.new_tensor(self.traj.joint_positions[i])
-        level = float(np.clip(self.traj.gripper_position[i], 0.0, 1.0))
-        target[0, self.grip_ids] = self.grip_open + level * (
-            self.grip_closed - self.grip_open
-        )
-        return target
-
-    def step_physics(self, n: int) -> None:
-        """``n`` physics steps."""
-        for _ in range(n):
-            self.scene.write_data_to_sim()
-            self.sim.step(render=False)
-            self.scene.update(self.dt)
 
     def set_state(self, i: int) -> None:
         """The robot at trajectory row ``i``, and held there."""
-        state = self.state(i)
+        state = self.robot.data.default_joint_pos.clone()
+        state[0, self.arm_ids] = state.new_tensor(self.traj.joint_positions[i])
+        level = float(np.clip(self.traj.gripper_position[i], 0.0, 1.0))
+        state[0, self.grip_ids] = self.gripper_targets(level)
         self.robot.write_joint_state_to_sim(state, torch.zeros_like(state))
         self.robot.set_joint_position_target(state)
-
-    def object_poses(self) -> dict[str, NDArray[np.float64]]:
-        """Every object's pose in the robot base frame (the environment is at the
-        origin)."""
-        out = {}
-        for key, obj in self.scene.rigid_objects.items():
-            pos = obj.data.root_pos_w[0].cpu().numpy()
-            quat = obj.data.root_quat_w[0].cpu().numpy()
-            out[self.names[key]] = pos_quat_to_matrix(pos, quat)
-        return out
 
 
 def replay(
@@ -152,13 +108,8 @@ def replay(
         }
     )
     render_steps = frame_steps[:: max(1, cfg.every)]
-    session = _Session(
-        with_object_usds(spec, out_dir),
-        capture,
-        cfg.physics_dt,
-        cfg.device,
-        cameras,
-        True,
+    session = _Recorded(
+        with_object_usds(spec, out_dir), capture, cfg.device, cameras, True
     )
     log: dict[str, Any] = {
         "scene": spec.name,
@@ -179,9 +130,7 @@ def replay(
         for name, T in session.object_poses().items():
             pos, quat = matrix_to_pos_quat(T)
             log["objects"][name].append([step, *pos.tolist(), *quat.tolist()])
-        log["frames"] += _render(
-            session.sim, session.scene, capture, cameras, step, out_dir, cfg
-        )
+        log["frames"] += _render(session, capture, cameras, step, out_dir)
     return log
 
 
@@ -190,7 +139,6 @@ class SettleConfig:
     """Knobs of :func:`settle`."""
 
     seconds: float = SETTLE_SECONDS
-    physics_dt: float = 0.005
     device: str = "cuda:0"
 
 
@@ -216,7 +164,7 @@ def settle(
             for obj in spec.objects
         ],
     )
-    session = _Session(spec, capture, cfg.physics_dt, cfg.device, {}, False)
+    session = _Recorded(spec, capture, cfg.device, {}, False)
     start = capture.static_steps[0]
     session.set_state(session.index.get(start, 0))
     before = session.object_poses()
@@ -248,16 +196,15 @@ def settle(
 
 
 def _render(
-    sim: SimulationContext,
-    scene: InteractiveScene,
+    session: Session,
     capture: Capture,
     cameras: dict[str, CameraSpec],
     step: int,
     out_dir: Path,
-    cfg: ReplayConfig,
 ) -> list[dict[str, Any]]:
     """Render every camera with a frame at ``step``; moving cameras go to the frame's
     recorded pose first."""
+    scene = session.scene
     frames = {
         f.camera: f for f in capture.frames if f.step == step and f.camera in cameras
     }
@@ -271,14 +218,13 @@ def _render(
                 orientations=like.new_tensor(quat)[None],
                 convention="ros",
             )
-    for _ in range(cfg.render_passes):
-        sim.render()
-    scene.update(sim.get_physics_dt())
+    for _ in range(RENDER_PASSES):
+        session.sim.render()
+    scene.update(session.dt)
     out = []
     for serial, frame in frames.items():
         cam = cameras[serial]
-        _, _, x0, y0 = centered_render_size(cam)
-        window = (slice(y0, y0 + cam.height), slice(x0, x0 + cam.width))
+        window = crop_window(cam)
         data = scene[camera_key(cam)].data.output
         rgb = data["rgb"][0, ..., :3].cpu().numpy()[window]
         depth = data["distance_to_image_plane"][0, ..., 0].cpu().numpy()[window]

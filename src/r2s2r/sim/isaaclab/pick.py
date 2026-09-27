@@ -12,82 +12,63 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
-from isaaclab.scene import InteractiveScene
-from isaaclab.sim import SimulationCfg, SimulationContext
 from numpy.typing import NDArray
 
 from r2s2r.robots import get_robot
-from r2s2r.robots.spec import RobotSpec
-from r2s2r.sim.isaaclab.scene import (
-    build_scene_cfg,
-    camera_key,
-    centered_render_size,
-    gripper_joints,
-    make_scene,
-    with_object_usds,
-)
+from r2s2r.sim.isaaclab.scene import Session, camera_key, crop_window, with_object_usds
 from r2s2r.structs import SceneSpec
 from r2s2r.testbed.policy import (
+    CONTROL_DT,
+    VIDEO_EVERY,
     RobotInterface,
     VideoRecorder,
     find_object,
     pick_up,
     save_rollout,
     score_lift,
+    summarize,
 )
+
+REST_SECONDS = 0.5  # physics before the program starts: the objects come to rest
 
 
 class IsaacLabRobot(RobotInterface):
-    """A robot in an interactive scene (the ``robot`` entity), its arm and gripper
+    """The robot of a :class:`~r2s2r.sim.isaaclab.scene.Session`, its arm and gripper
     on joint position targets."""
 
     def __init__(
         self,
-        robot: RobotSpec,
-        sim: SimulationContext,
-        scene: InteractiveScene,
+        session: Session,
         on_step: Callable[[IsaacLabRobot], None] | None = None,
         render_every: int = 0,  # render on every n-th control step (0: never)
     ) -> None:
-        super().__init__(robot)
-        self.sim, self.scene = sim, scene
-        self.articulation = scene["robot"]
+        super().__init__(session.robot_spec)
+        self.session = session
         self.on_step = on_step
         self.render_every = render_every
-        self.arm_ids, _ = self.articulation.find_joints(
-            list(robot.isaac_arm_joints), preserve_order=True
-        )
-        self.grip_ids, self.grip_open, self.grip_closed = gripper_joints(
-            self.articulation, robot
-        )
-        driver, _ = self.articulation.find_joints([robot.gripper.isaac_driver])
-        self.driver = self.grip_ids.index(driver[0])
-        self.decimation = max(1, int(round(self.control_dt / sim.get_physics_dt())))
+        driver, _ = session.robot.find_joints([self.robot.gripper.isaac_driver])
+        self.driver = session.grip_ids.index(driver[0])
+        self.decimation = max(1, int(round(self.control_dt / session.dt)))
         self.steps = 0
 
     def joint_positions(self) -> NDArray[np.float64]:
-        data = self.articulation.data
-        return data.joint_pos[0, self.arm_ids].cpu().numpy().astype(float)
+        s = self.session
+        return s.robot.data.joint_pos[0, s.arm_ids].cpu().numpy().astype(float)
 
     def gripper_level(self) -> float:
-        q = self.articulation.data.joint_pos[0, self.grip_ids[self.driver]].item()
-        lo = self.grip_open[self.driver].item()
-        hi = self.grip_closed[self.driver].item()
+        s, k = self.session, self.driver
+        q = s.robot.data.joint_pos[0, s.grip_ids[k]].item()
+        lo, hi = s.grip_open[k].item(), s.grip_closed[k].item()
         return float(np.clip((q - lo) / (hi - lo), 0.0, 1.0))
 
     def _hold(self, q: NDArray[np.float64], level: float) -> None:
-        target = self.articulation.data.joint_pos_target.clone()
-        target[0, self.arm_ids] = target.new_tensor(q)
-        target[0, self.grip_ids] = self.grip_open + level * (
-            self.grip_closed - self.grip_open
-        )
-        self.articulation.set_joint_position_target(target)
+        s = self.session
+        target = s.robot.data.joint_pos_target.clone()
+        target[0, s.arm_ids] = target.new_tensor(q)
+        target[0, s.grip_ids] = s.gripper_targets(level)
+        s.robot.set_joint_position_target(target)
         render = self.render_every > 0 and (self.steps + 1) % self.render_every == 0
-        dt = self.sim.get_physics_dt()
-        for i in range(self.decimation):
-            self.scene.write_data_to_sim()
-            self.sim.step(render=render and i == self.decimation - 1)
-            self.scene.update(dt)
+        s.step_physics(self.decimation, render)
         self.steps += 1
         if self.on_step is not None:
             self.on_step(self)
@@ -98,14 +79,11 @@ def run_pick(
     target: str,
     out_dir: str | Path,
     video_camera: str | None = "ext1",
-    video_every: int = 2,
-    physics_dt: float = 0.005,
-    settle: float = 0.5,
     device: str = "cuda:0",
 ) -> dict[str, Any]:
     """Let the scene settle, run :func:`~r2s2r.testbed.policy.pick_up`, score by how
     far ``target`` rose; ``result.json``, ``commands.json`` and the video (from the
-    static camera ``video_camera``) go to ``out_dir``."""
+    static camera ``video_camera``) go to ``out_dir``, the verdict to stdout."""
     out_dir = Path(out_dir)
     target = find_object(spec, target).name
     video_cams = [
@@ -113,48 +91,41 @@ def run_pick(
         for c in spec.cameras.values()
         if c.role == video_camera and c.T_base_cam is not None
     ]
-    robot_spec = get_robot(spec.embodiment)
-    sim = SimulationContext(SimulationCfg(dt=physics_dt, device=device))
-    scene = make_scene(
-        build_scene_cfg(with_object_usds(spec, out_dir), robot_spec, False, video_cams),
-        robot_spec,
+    session = Session(
+        with_object_usds(spec, out_dir),
+        get_robot(spec.embodiment),
+        False,
+        device,
+        video_cams,
     )
-    sim.reset()
-    names = {f"object_{i}": obj.name for i, obj in enumerate(spec.objects)}
 
     def positions() -> dict[str, NDArray[np.float64]]:
-        return {
-            names[key]: obj.data.root_pos_w[0].cpu().numpy().astype(float)
-            for key, obj in scene.rigid_objects.items()
-        }
+        return {name: T[:3, 3] for name, T in session.object_poses().items()}
 
     # sim.reset() leaves the USD's joint state; start from the scene's instead,
     # then let the objects come to rest under physics.
-    arm = scene["robot"]
+    arm = session.robot
     arm.write_joint_state_to_sim(arm.data.default_joint_pos, arm.data.default_joint_vel)
     arm.set_joint_position_target(arm.data.default_joint_pos)
-    for _ in range(int(settle / sim.get_physics_dt())):
-        scene.write_data_to_sim()
-        sim.step(render=False)
-        scene.update(sim.get_physics_dt())
+    session.step_physics(int(REST_SECONDS / session.dt))
 
     video = None
     window: tuple[slice, slice] | None = None
     if video_cams:
         cam = video_cams[0][0]
-        _, _, x0, y0 = centered_render_size(cam)
-        window = (slice(y0, y0 + cam.height), slice(x0, x0 + cam.width))
-        fps = 1 / (IsaacLabRobot.control_dt * video_every)
-        video = VideoRecorder(out_dir / f"isaac_{cam.role}.mp4", fps)
+        window = crop_window(cam)
+        video = VideoRecorder(
+            out_dir / f"isaac_{cam.role}.mp4", 1 / (CONTROL_DT * VIDEO_EVERY)
+        )
 
     def record(robot: IsaacLabRobot) -> None:
-        if video is not None and robot.steps % video_every == 0:
-            rgb = scene[camera_key(video_cams[0][0])].data.output["rgb"][0, ..., :3]
-            video.add(rgb.cpu().numpy().astype(np.uint8)[window])
+        if video is not None and robot.steps % VIDEO_EVERY == 0:
+            output = session.scene[camera_key(video_cams[0][0])].data.output
+            video.add(output["rgb"][0, ..., :3].cpu().numpy().astype(np.uint8)[window])
 
     before = positions()
     robot = IsaacLabRobot(
-        robot_spec, sim, scene, on_step=record, render_every=video_every if video else 0
+        session, on_step=record, render_every=VIDEO_EVERY if video else 0
     )
     policy = pick_up(robot, spec, target)
     result = {
@@ -167,4 +138,5 @@ def run_pick(
     save_rollout(out_dir, result, robot.log)
     if video is not None:
         video.close()
+    print(f"{summarize(result)} -> {out_dir}", flush=True)
     return result

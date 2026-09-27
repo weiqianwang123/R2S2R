@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-import trimesh
+from conftest import box_urdf
 
 pytest.importorskip("mujoco")
 
@@ -23,16 +23,8 @@ TARGET = (0.5, 0.0, 0.03)  # where the cameras look
 
 
 def _box(tmp_path, name, extents):
-    """A URDF of a box standing on its origin."""
-    box = trimesh.creation.box(extents=extents)
-    box.apply_translation([0.0, 0.0, extents[2] / 2])
-    box.export(tmp_path / f"{name}.obj")
-    urdf = tmp_path / f"{name}.urdf"
-    urdf.write_text(
-        f'<robot name="{name}"><link name="base"><visual><geometry>'
-        f'<mesh filename="{name}.obj"/></geometry></visual></link></robot>'
-    )
-    return ObjectSpec(name, name, str(urdf), np.eye(4))
+    """A box standing on its origin."""
+    return ObjectSpec(name, name, str(box_urdf(tmp_path, extents, name)), np.eye(4))
 
 
 def _at(obj, xyz):
@@ -62,7 +54,7 @@ def _views(scene):
     views = []
     for eye in ((0.1, 0.35, 0.45), (0.5, -0.5, 0.4), (0.95, 0.25, 0.45)):
         T = look_at(eye, TARGET)
-        out = renderer.render(DepthView("cam", 0, np.zeros((240, 320)), K, T), 0)
+        out = renderer.render(DepthView("cam", 0, np.zeros((240, 320)), K, T))
         views.append(DepthView("cam", 0, out["depth"].astype(float), K, T))
     renderer.close()
     return views

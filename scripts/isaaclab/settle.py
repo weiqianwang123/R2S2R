@@ -27,7 +27,6 @@ parser.add_argument("scene_dir", type=Path)
 parser.add_argument("capture_dir", type=Path)
 parser.add_argument("--out", type=Path, required=True)
 parser.add_argument("--seconds", type=float, default=SETTLE_SECONDS)
-parser.add_argument("--physics-dt", type=float, default=0.005)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app = AppLauncher(args).app
@@ -46,9 +45,7 @@ def main() -> None:
         spec,
         capture,
         args.out,
-        SettleConfig(
-            seconds=args.seconds, physics_dt=args.physics_dt, device=args.device
-        ),
+        SettleConfig(seconds=args.seconds, device=args.device),
     )
     settled.save(args.out)
     (args.out / "settle.json").write_text(

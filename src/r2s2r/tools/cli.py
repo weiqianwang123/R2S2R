@@ -7,8 +7,8 @@ import json
 import re
 from typing import Any
 
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.sim import isaac
+from r2s2r.workspace import Workspace
 
 NUMBER_LIST = re.compile(r"\[\s*((?:-?[\d.eE+-]+,?\s*)+)\]")
 

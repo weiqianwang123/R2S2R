@@ -11,8 +11,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from r2s2r.paths import codex_bin
+from r2s2r.paths import CODEX_MODEL, codex_bin
 
+TIMEOUT_S = 600.0  # per call
+RETRIES = 3
 PROMPT_TEMPLATE = """You are serving as a vision-language model behind a program's API.
 Answer the request below using only the attached image(s) and the text.
 Do not run shell commands, read or write files, or use any tool.
@@ -29,19 +31,16 @@ output format exactly and add nothing before or after it.
 class CodexVLM:
     """``vlm(prompt, images) -> answer`` through ``codex exec``."""
 
-    model: str = "gpt-6-astra"
+    model: str = CODEX_MODEL
     reasoning: str = "medium"
-    codex_bin: str | None = None
-    timeout_s: float = 600.0
-    retries: int = 3
 
     def __call__(self, prompt: str, images: list[Path]) -> str:
         last_error = ""
-        for _ in range(self.retries):
+        for _ in range(RETRIES):
             with tempfile.TemporaryDirectory(prefix="r2s2r_vlm_") as tmp:
                 answer = Path(tmp) / "answer.txt"
                 cmd = [
-                    self.codex_bin or codex_bin(),
+                    codex_bin(),
                     "exec",
                     "--skip-git-repo-check",
                     "--ephemeral",
@@ -64,11 +63,11 @@ class CodexVLM:
                         input=PROMPT_TEMPLATE.format(prompt=prompt),
                         text=True,
                         capture_output=True,
-                        timeout=self.timeout_s,
+                        timeout=TIMEOUT_S,
                         check=False,
                     )
                 except subprocess.TimeoutExpired:
-                    last_error = f"timed out after {self.timeout_s:.0f} s"
+                    last_error = f"timed out after {TIMEOUT_S:.0f} s"
                     continue
                 text = answer.read_text() if answer.exists() else ""
                 if proc.returncode == 0 and text.strip():

@@ -18,8 +18,8 @@ from r2s2r.structs import Capture, DepthView, read_depth  # noqa: E402
 from r2s2r.testbed import worlds  # noqa: E402
 from r2s2r.testbed.record import (  # noqa: E402
     CLOSEST,
-    MAX_DEPTH,
-    MIN_DEPTH,
+    SENSOR_MAX_DEPTH,
+    SENSOR_MIN_DEPTH,
     View,
     record_capture,
 )
@@ -205,7 +205,11 @@ def test_recorded_capture(tmp_path, name, params):
     assert np.ptp(poses[:, :3, 3], axis=0).max() > 0.1
     depth = read_depth(capture.root / wrist[len(wrist) // 2].depth_image)
     seen = depth[depth > 0]
-    assert seen.size and seen.min() >= MIN_DEPTH - 1e-3 and seen.max() <= MAX_DEPTH
+    assert (
+        seen.size
+        and seen.min() >= SENSOR_MIN_DEPTH - 1e-3
+        and seen.max() <= SENSOR_MAX_DEPTH
+    )
     meta = capture.metadata
     assert set(meta) == {"depth", "world", "ground_truth", "scan"}
     assert meta["world"] == {"name": name, "params": world.params}

@@ -16,8 +16,8 @@ from r2s2r.capture.droid import (
     pose6d_to_matrix,
     static_step_range,
 )
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import Capture, read_depth
+from r2s2r.workspace import Workspace
 
 
 def test_pose6d_matches_droid_convention():

@@ -48,13 +48,12 @@ def test_budget_is_shared_between_cameras():
     assert steps[0] == 0 and steps[-1] == 19  # spread over the whole stream
 
 
-def test_cameras_by_role_or_serial_and_static_window():
-    """Cameras are named either way; frames outside the static window are skipped."""
+def test_selection_keeps_to_the_static_window():
+    """Frames outside the static window are skipped; ``keep`` filters the others."""
     capture = _capture({"a": ("ext1", 10), "b": ("wrist", 10)}, static=(2, 6))
-    picked = capture.select_frames(["wrist"])
-    assert {f.camera for f in picked} == {"b"}
-    assert [f.step for f in picked] == [2, 3, 4, 5]
-    assert capture.select_frames(["a"], max_frames=1)[0].step == 2
+    picked = capture.select_frames()
+    assert [f.step for f in picked if f.camera == "b"] == [2, 3, 4, 5]
+    assert [f.step for f in capture.select_frames(max_frames=2)] == [2, 2]
     only_even = capture.select_frames(keep=lambda f: f.step % 2 == 0)
     assert {f.step for f in only_even} == {2, 4}
 
@@ -81,7 +80,7 @@ def test_depth_png_round_trip(tmp_path):
 
 def test_scene_asset_paths_are_relative_on_disk(tmp_path):
     """A scene is saved with its asset paths relative to it, so a run moves as a whole;
-    in memory they are absolute, and old scenes' absolute paths still load."""
+    in memory they are absolute."""
     urdf = tmp_path / "run/s4_scene/scene/objects/box/box.urdf"
     urdf.parent.mkdir(parents=True)
     urdf.write_text("<robot/>")
@@ -111,10 +110,6 @@ def test_scene_asset_paths_are_relative_on_disk(tmp_path):
     assert loaded.objects[0].usd == str(
         (tmp_path / "moved/s5_settle/scene/objects/box/box.usd").resolve()
     )
-    saved["objects"][0]["asset_path"] = str(moved)  # as older scenes have it
-    (tmp_path / "moved/s5_settle/scene/scene.json").write_text(json.dumps(saved))
-    old = SceneSpec.load(tmp_path / "moved/s5_settle/scene")
-    assert old.objects[0].asset_path == str(moved.resolve())
 
 
 def test_a_static_cameras_pose_is_given_once(tmp_path):

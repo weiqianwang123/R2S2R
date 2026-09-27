@@ -17,9 +17,9 @@ from r2s2r.pipeline import run as run_module
 from r2s2r.pipeline.agentic import method as agentic
 from r2s2r.pipeline.run import StageFailed, is_done, run
 from r2s2r.pipeline.stages import VALIDATORS
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import ObjectSpec, SceneSpec
 from r2s2r.transforms import look_at
+from r2s2r.workspace import Workspace
 
 TARGET = (0.5, 0.05, 0.04)  # where the cameras look
 CAMERAS = {
@@ -162,7 +162,7 @@ def test_agentic_checks_more_at_stage_2(tmp_path):
     list the objects."""
     ws = Workspace.create(_capture(tmp_path), tmp_path / "run", "agentic")
     s2 = ws.root / "s2_frames"
-    method = agentic.AgentMethod(agentic.AgentConfig(codex_bin="codex"))
+    method = agentic.AgenticMethod(agentic.AgenticConfig(codex_bin="codex"))
     _frames_product(s2, support={"T_base_support": np.eye(4).tolist()})
     assert method.check(ws, "2", s2) == [
         "choose 4 to 8 frames, not 2",
@@ -224,7 +224,7 @@ def test_redoing_a_stage_makes_every_later_one_stale(tmp_path):
 def test_run_refuses_what_does_not_fit(tmp_path):
     """Another method's run, a method's missing stage, other cameras, a second --out."""
     run(_capture(tmp_path).root, tmp_path / "run", FakeMethod(), ("2",))
-    other = agentic.AgentMethod(agentic.AgentConfig(codex_bin="codex"))
+    other = agentic.AgenticMethod(agentic.AgenticConfig(codex_bin="codex"))
     with pytest.raises(ValueError, match="fake method"):
         run(tmp_path / "run", None, other)
     with pytest.raises(ValueError, match="stages"):
@@ -326,7 +326,7 @@ def test_agent_is_resumed_until_the_stage_output_is_valid(tmp_path, monkeypatch)
     codex.write_text(f"#!{sys.executable}\n{FAKE_CODEX}")
     codex.chmod(0o755)
     monkeypatch.setattr(agentic, "repo_state", lambda: {})
-    method = agentic.AgentMethod(agentic.AgentConfig(codex_bin=str(codex)))
+    method = agentic.AgenticMethod(agentic.AgenticConfig(codex_bin=str(codex)))
     log = run(_capture(tmp_path).root, tmp_path / "run", method, ("2",))
     entry = log["stages"]["2"]
     assert entry["session"] == "fake-session" and entry["resumptions"] == 1

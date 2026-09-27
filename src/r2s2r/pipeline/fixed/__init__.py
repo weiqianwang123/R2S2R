@@ -14,7 +14,8 @@ Every stage starts from an empty directory. Besides the products
                                which one SimFoundry rebuilt from (selected,
                                decided_by, frame_notes) and which gave no objects
                                (retried)
-                 parsed/       SimFoundry's scene as it made it (stage-11 URDFs)
+                 parsed/       SimFoundry's scene as it made it (its stage 11
+                               URDFs)
                  simfoundry/   SimFoundry's own directory; simfoundry.log its output
     s3_objects/  <object>/     its mesh, texture, collision hulls and preview.png
                  refinement.json  what the existence and orientation checks and
@@ -30,8 +31,6 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from r2s2r.pipeline.fixed.existence import drop_unseen
 from r2s2r.pipeline.fixed.orientation import check_orientations
 from r2s2r.pipeline.fixed.refine import refine_scene
@@ -44,9 +43,10 @@ from r2s2r.pipeline.fixed.simfoundry import (
 )
 from r2s2r.pipeline.fixed.vlm import CodexVLM
 from r2s2r.pipeline.stages import STAGE_DIRS, read_json
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import SceneSpec
 from r2s2r.tools.objects import DEFAULT_DENSITY, assemble, render_preview
+from r2s2r.transforms import tilt_deg
+from r2s2r.workspace import Workspace
 
 WHY = "SimFoundry stage 11 estimate"
 NO_MASS = f"no estimate: {DEFAULT_DENSITY:.0f} kg/m^3 of its convex hull"
@@ -158,7 +158,7 @@ def write_frames(
     T = scene.T_base_support
     support = {
         "T_base_support": T.tolist(),
-        "tilt_deg": round(float(np.degrees(np.arccos(np.clip(T[2, 2], -1, 1)))), 2),
+        "tilt_deg": round(tilt_deg(T[:3, 2]), 2),
     }
     (d / "support.json").write_text(json.dumps(support, indent=1), encoding="utf-8")
     scene.save(d / "parsed")

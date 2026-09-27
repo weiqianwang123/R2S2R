@@ -38,6 +38,7 @@ from scipy.spatial.transform import Rotation
 from r2s2r.assets import urdf_visual_points
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
 from r2s2r.tools.geometry import (
+    MAX_DEPTH,
     cluster,
     fit_plane,
     fit_support_outline,
@@ -45,14 +46,14 @@ from r2s2r.tools.geometry import (
     register_footprint,
     view_points,
 )
-from r2s2r.transforms import invert, make_transform, transform_points
+from r2s2r.transforms import invert, make_transform, tilt_deg, transform_points
 
 
 @dataclass
 class RefineConfig:
     """Tuning knobs (metres unless noted)."""
 
-    max_depth: float = 2.5
+    max_depth: float = MAX_DEPTH
     plane_band: float = 0.03  # points this close to a plane, in its outline, refit it
     # Points per view for the plane fits; a view with fewer there has no say in the
     # support's plane and is not levelled onto it.
@@ -290,6 +291,6 @@ def _tilt_lift(T_plane: NDArray[np.float64]) -> dict[str, float]:
     """How a plane (a frame, z along its normal) lies against the frame it is given in:
     its tilt, and its height above the origin."""
     return {
-        "tilt_deg": float(np.rad2deg(np.arccos(np.clip(T_plane[2, 2], -1.0, 1.0)))),
+        "tilt_deg": tilt_deg(T_plane[:3, 2]),
         "lift_m": float(T_plane[2, 3]),
     }

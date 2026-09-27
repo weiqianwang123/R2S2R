@@ -203,79 +203,26 @@ def load_droid_episode(
 
     for role in roles:
         serial = serials[role]
-        is_static = role != "wrist"
         video = episode_dir / "recordings" / "MP4" / f"{serial}-stereo.mp4"
-        cap = cv2.VideoCapture(str(video))
-        video_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) // 2
-        video_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        cap.release()
-
-        intr = calib.intrinsics[serial]
-        fx, cx, fy, cy = intr["cameraMatrix"]
-        K = intrinsics_matrix(fx, fy, cx, cy)
-        if (intr["width"], intr["height"]) != (video_w, video_h):
-            logger.warning(
-                "camera %s: intrinsics are for %sx%s but video is %sx%s; rescaling K",
-                serial,
-                intr["width"],
-                intr["height"],
-                video_w,
-                video_h,
-            )
-            K[0] *= video_w / intr["width"]
-            K[1] *= video_h / intr["height"]
-
-        if is_static and serial in calib.cam2base:
-            T_static = pose6d_to_matrix(calib.cam2base[serial])
-            calib_source[serial] = "improved"
-        else:
-            T_static = pose6d_to_matrix(left_poses[serial][static[0]])
-            calib_source[serial] = "trajectory.h5"
-        baseline = float(
-            np.linalg.norm(left_poses[serial][0][:3] - right_poses[serial][0][:3])
+        cameras[serial], calib_source[serial] = _camera(
+            video,
+            role,
+            serial,
+            calib,
+            left_poses[serial],
+            right_poses[serial],
+            static[0],
         )
-        cameras[serial] = CameraSpec(
-            serial=serial,
-            role=role,
-            width=video_w,
-            height=video_h,
-            K=K,
-            stereo_baseline=baseline,
-            is_static=is_static,
-            T_base_cam=T_static if is_static else None,
+        frames += _frames(
+            video,
+            out_dir,
+            cameras[serial],
+            step_times[serial],
+            steps,
+            left_poses[serial],
+            joints,
+            gripper,
         )
-
-        timestamps_path = video.with_name(f"{serial}_timestamps.json")
-        if timestamps_path.exists():
-            video_times = np.asarray(json.loads(timestamps_path.read_text()))
-            step_to_frame = align_steps_to_video(step_times[serial], video_times)
-        else:
-            step_to_frame = np.arange(len(gripper))
-        decoded = read_video_frames(video, {int(step_to_frame[s]) for s in steps})
-
-        frame_dir = out_dir / "frames" / serial
-        frame_dir.mkdir(parents=True, exist_ok=True)
-        for step in steps:
-            stereo = decoded[int(step_to_frame[step])]
-            left_rel = f"frames/{serial}/{step:04d}_left.png"
-            right_rel = f"frames/{serial}/{step:04d}_right.png"
-            cv2.imwrite(str(out_dir / left_rel), stereo[:, :video_w])
-            cv2.imwrite(str(out_dir / right_rel), stereo[:, video_w:])
-            frames.append(
-                FrameRecord(
-                    step=step,
-                    camera=serial,
-                    left_image=left_rel,
-                    right_image=right_rel,
-                    T_base_cam=(
-                        T_static
-                        if is_static
-                        else pose6d_to_matrix(left_poses[serial][step])
-                    ),
-                    joint_positions=joints[step].astype(np.float64),
-                    gripper_position=float(gripper[step]),
-                )
-            )
 
     capture = Capture(
         name=uuid.replace("+", "_"),
@@ -301,3 +248,102 @@ def load_droid_episode(
     )
     capture.save()
     return capture
+
+
+def _camera(
+    video: Path,
+    role: str,
+    serial: str,
+    calib: DroidCalibration,
+    left_poses: NDArray,
+    right_poses: NDArray,
+    first_static: int,
+) -> tuple[CameraSpec, str]:
+    """A camera's calibration (its image size from its ``video``), and where its pose
+    comes from: the improved extrinsics of a static camera, else the trajectory's (at
+    ``first_static``)."""
+    cap = cv2.VideoCapture(str(video))
+    video_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) // 2
+    video_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+
+    intr = calib.intrinsics[serial]
+    fx, cx, fy, cy = intr["cameraMatrix"]
+    K = intrinsics_matrix(fx, fy, cx, cy)
+    if (intr["width"], intr["height"]) != (video_w, video_h):
+        logger.warning(
+            "camera %s: intrinsics are for %sx%s but video is %sx%s; rescaling K",
+            serial,
+            intr["width"],
+            intr["height"],
+            video_w,
+            video_h,
+        )
+        K[0] *= video_w / intr["width"]
+        K[1] *= video_h / intr["height"]
+
+    is_static = role != "wrist"
+    if is_static and serial in calib.cam2base:
+        T_static, source = pose6d_to_matrix(calib.cam2base[serial]), "improved"
+    else:
+        T_static, source = pose6d_to_matrix(left_poses[first_static]), "trajectory.h5"
+    baseline = float(np.linalg.norm(left_poses[0][:3] - right_poses[0][:3]))
+    camera = CameraSpec(
+        serial=serial,
+        role=role,
+        width=video_w,
+        height=video_h,
+        K=K,
+        stereo_baseline=baseline,
+        is_static=is_static,
+        T_base_cam=T_static if is_static else None,
+    )
+    return camera, source
+
+
+def _frames(
+    video: Path,
+    out_dir: Path,
+    cam: CameraSpec,
+    step_times: NDArray,
+    steps: list[int],
+    left_poses: NDArray,
+    joints: NDArray,
+    gripper: NDArray,
+) -> list[FrameRecord]:
+    """The camera's frames at ``steps`` from its ``video``, their left and right images
+    written to ``out_dir/frames/<serial>/``."""
+    serial = cam.serial
+    timestamps_path = video.with_name(f"{serial}_timestamps.json")
+    if timestamps_path.exists():
+        video_times = np.asarray(json.loads(timestamps_path.read_text()))
+        step_to_frame = align_steps_to_video(step_times, video_times)
+    else:
+        step_to_frame = np.arange(len(gripper))
+    decoded = read_video_frames(video, {int(step_to_frame[s]) for s in steps})
+
+    frame_dir = out_dir / "frames" / serial
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for step in steps:
+        stereo = decoded[int(step_to_frame[step])]
+        left_rel = f"frames/{serial}/{step:04d}_left.png"
+        right_rel = f"frames/{serial}/{step:04d}_right.png"
+        cv2.imwrite(str(out_dir / left_rel), stereo[:, : cam.width])
+        cv2.imwrite(str(out_dir / right_rel), stereo[:, cam.width :])
+        frames.append(
+            FrameRecord(
+                step=step,
+                camera=serial,
+                left_image=left_rel,
+                right_image=right_rel,
+                T_base_cam=(
+                    cam.T_base_cam
+                    if cam.T_base_cam is not None
+                    else pose6d_to_matrix(left_poses[step])
+                ),
+                joint_positions=joints[step].astype(np.float64),
+                gripper_position=float(gripper[step]),
+            )
+        )
+    return frames

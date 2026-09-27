@@ -1,9 +1,9 @@
 #!/bin/bash
 # Install r2s2r with Isaac Sim 5.1 and a pinned Isaac Lab 2.3.x into ./.venv.
 #
-# The core package (capture loading, reconstruction adapters, scene specs) needs
-# none of this; only the Isaac Lab scene builder does. SimFoundry keeps its own
-# conda envs (see scripts/setup/link_simfoundry_resources.sh).
+# Captures, the methods' stages 2-4 and the MuJoCo testbed need none of this; stage 5
+# (settle), the final replay, `r2s2r tool settle|replay` and the Isaac pick do.
+# SimFoundry keeps its own conda envs (see scripts/setup/link_simfoundry_resources.sh).
 #
 # Usage: bash scripts/setup/install.sh           # R2S2R_ISAACLAB_REF overrides the tag
 set -euo pipefail

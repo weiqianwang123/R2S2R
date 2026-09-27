@@ -29,7 +29,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from r2s2r.assets import urdf_visual_points
-from r2s2r.mjrender import SceneRenderer
+from r2s2r.mjrender import MAX_SIZE, SceneRenderer
 from r2s2r.pipeline.fixed.refine import Observation, RefineConfig, observe
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
 from r2s2r.transforms import invert, transform_points
@@ -47,7 +47,7 @@ class ExistenceConfig:
     # footprint (grown by footprint_margin) counts as that object's own points.
     min_share_under: float = 0.5
     footprint_margin: float = 0.02
-    max_size: tuple[int, int] = (2560, 1600)
+    max_size: tuple[int, int] = MAX_SIZE
     refine: RefineConfig = field(default_factory=RefineConfig)
 
 
@@ -142,9 +142,9 @@ def _see_through(
         for k, obj in enumerate(scene.objects):
             renderer.pose(k, obj.T_base_obj)
         for view in views:
+            out = renderer.render(view)
             for i in indices:
-                out = renderer.render(view, i)
-                visible = out["mask"] & (view.depth > 0)
+                visible = (out["object"] == i) & (view.depth > 0)
                 behind = view.depth[visible] - out["depth"][visible] > cfg.see_through
                 counts[i][0] += int(visible.sum())
                 counts[i][1] += int(behind.sum())

@@ -20,7 +20,6 @@ from r2s2r.pipeline.fixed import FixedMethod
 from r2s2r.pipeline.fixed import simfoundry as sf
 from r2s2r.pipeline.fixed.simfoundry import SimFoundryConfig
 from r2s2r.pipeline.run import run
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import SceneSpec
 from r2s2r.transforms import (
     invert,
@@ -29,6 +28,7 @@ from r2s2r.transforms import (
     matrix_to_pos_quat,
     quat_wxyz_to_xyzw,
 )
+from r2s2r.workspace import Workspace
 
 TARGET = (0.5, 0.05, 0.0)
 CAMERAS = {
@@ -346,7 +346,7 @@ def test_an_empty_scene_is_rebuilt_from_another_frame(
 
 # -------------------------------------------------------------------------- CLI
 def test_cli_makes_the_fixed_method(tmp_path, monkeypatch):
-    """``r2s2r run --method fixed`` with its options; the old verbs are gone."""
+    """``r2s2r run --method fixed`` with its options."""
     made = []
     monkeypatch.setattr(cli, "run", lambda *args: made.append(args) or {})
     cli.main(
@@ -379,6 +379,3 @@ def test_cli_makes_the_fixed_method(tmp_path, monkeypatch):
     assert isinstance(method, FixedMethod) and stages == ("2", "3")
     assert (source, out, force, cameras) == (tmp_path, tmp_path / "run", False, None)
     assert method.config == SimFoundryConfig("hybrid", 6, 0, "low", ["a=b", "c=d"])
-    for verb in ("reconstruct", "refine", "stereo-depth"):
-        with pytest.raises(SystemExit):
-            cli.main([verb, str(tmp_path)])

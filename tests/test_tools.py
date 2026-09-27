@@ -11,11 +11,11 @@ import trimesh
 from conftest import RGBD_K, RGBD_SIZE, box_urdf, rgbd_capture
 from scipy.spatial.transform import Rotation
 
-from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
 from r2s2r.tools.geometry import fit_plane, parse_masks, pattern_search, view_points
 from r2s2r.tools.objects import assemble
 from r2s2r.transforms import look_at, make_transform
+from r2s2r.workspace import Workspace
 
 BOX = (0.06, 0.04, 0.08)  # the true object
 TARGET = (0.5, 0.05, 0.04)  # where the cameras look
@@ -155,9 +155,9 @@ def test_fit_recovers_scale_yaw_and_position(tmp_path):
     images, depths, masks = {}, {}, {}
     for serial, (_, T) in CAMERAS.items():
         blank = np.zeros(RGBD_SIZE[::-1])
-        out = renderer.render(DepthView(serial, 0, blank, RGBD_K, T), 0)
+        out = renderer.render(DepthView(serial, 0, blank, RGBD_K, T))
         images[serial], depths[serial] = out["rgb"], out["depth"].astype(float)
-        masks[serial] = out["mask"]
+        masks[serial] = out["object"] == 0
     renderer.close()
     capture = rgbd_capture(tmp_path / "capture", CAMERAS, 5, images, depths)
     ws = Workspace.create(capture, tmp_path / "run", "agentic")
