@@ -181,7 +181,7 @@ def rgbd_capture(
             )
     trajectory = RobotTrajectory(
         np.arange(steps),
-        np.arange(steps) * 0.1,
+        np.arange(steps, dtype=np.float64) * 0.1,
         np.tile(HOME_Q, (steps, 1)),
         np.zeros(steps),
     )

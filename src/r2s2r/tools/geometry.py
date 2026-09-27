@@ -35,7 +35,8 @@ from r2s2r.transforms import (
 logger = logging.getLogger(__name__)
 
 MAX_DEPTH = 2.5
-# Generated meshes (Hunyuan3D, glTF) are y-up; this turns them z-up.
+# A mesh file's up axis (its objects-file ``up``) -> the rotation that turns it z-up.
+# Generated meshes (Hunyuan3D, glTF) are y-up.
 UP_ROTATIONS = {
     "y": Rotation.from_euler("x", 90, degrees=True).as_matrix(),
     "z": np.eye(3),

@@ -10,8 +10,9 @@ what each leaves); it is anything with
 - ``check(ws, key, stage_dir)``: problems with a stage's product beyond the shared
   checks (its own stricter rules; none for most stages).
 
-A stage is skipped when it is done: its product passes both checks and is newer than
-the previous stage's. ``run.json``, rewritten whole at every change::
+A stage is skipped when it is done: its product passes both checks, and it and every
+product before it are newer than the one before. ``run.json``, rewritten whole at every
+change::
 
     {"method": "agentic", "capture": "inputs/capture",
      "stages": {"2": {"status": "running" | "done" | "failed", "started": epoch,
@@ -31,10 +32,12 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from r2s2r.pipeline.stages import (
+    PRODUCTS,
     SETTLE,
     STAGE_DIRS,
     STAGES,
     VALIDATORS,
+    fresh,
     newer_than_previous,
 )
 from r2s2r.pipeline.workspace import RUN_FILENAME, Workspace
@@ -42,8 +45,6 @@ from r2s2r.sim import isaac
 from r2s2r.structs import CAPTURE_FILENAME, Capture
 
 logger = logging.getLogger(__name__)
-
-SETTLE_SECONDS = 2.0  # simulated time for the objects to come to rest
 
 
 class Method(Protocol):
@@ -71,14 +72,22 @@ def run_stages(method: Method) -> tuple[str, ...]:
 
 def problems(ws: Workspace, method: Method, key: str) -> list[str]:
     """What is wrong with stage ``key``'s product: the shared checks, then the
-    method's."""
+    method's; when it passes both, whether it is older than the previous stage's."""
     d = ws.root / STAGE_DIRS[key]
-    return VALIDATORS[key](ws, d) + method.check(ws, key, d)
+    found = VALIDATORS[key](ws, d) + method.check(ws, key, d)
+    if not found and not newer_than_previous(ws.root, key):
+        previous = STAGES[STAGES.index(key) - 1]
+        found.append(
+            f"stage {previous}'s product changed after this one was written: write "
+            f"{' and '.join(PRODUCTS[key])} again"
+        )
+    return found
 
 
 def is_done(ws: Workspace, method: Method, key: str) -> bool:
-    """Whether stage ``key``'s product is valid and newer than the previous stage's."""
-    return newer_than_previous(ws.root, key) and not problems(ws, method, key)
+    """Whether stage ``key``'s product is valid, and it and every product before it
+    newer than the one before."""
+    return fresh(ws.root, key) and not problems(ws, method, key)
 
 
 def open_run(
@@ -228,10 +237,7 @@ def _run_stage(ws: Workspace, method: Method, key: str) -> None:
 def _settle(ws: Workspace, stage_dir: Path) -> dict[str, Any]:
     """Stage 5: stage 4's scene settles in Isaac Lab, the robot held."""
     report = isaac.settle(
-        ws.root / STAGE_DIRS["4"] / "scene",
-        ws.capture.root,
-        stage_dir / "scene",
-        SETTLE_SECONDS,
+        ws.root / STAGE_DIRS["4"] / "scene", ws.capture.root, stage_dir / "scene"
     )
     report["scene"] = "scene/scene.json"
     (stage_dir / "output.json").write_text(

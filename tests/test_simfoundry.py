@@ -142,9 +142,7 @@ def test_parse_reanchors_to_robot_base(capture, tmp_path):
     )
 
     scene = backend.parse(capture, tmp_path)
-    ref = next(
-        f for f in capture.frames_of(scene.reference_camera) if f.step == ref_step
-    )
+    ref = capture.frame(scene.reference_camera, ref_step)
     T_base_world = ref.T_base_cam @ np.linalg.inv(T_world_cam)
     assert scene.reference_step == ref_step
     assert np.allclose(scene.T_base_support, T_base_world)

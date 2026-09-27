@@ -15,8 +15,8 @@ from conftest import rgbd_capture
 
 from r2s2r.pipeline import run as run_module
 from r2s2r.pipeline.agentic import method as agentic
-from r2s2r.pipeline.run import StageFailed, run
-from r2s2r.pipeline.stages import VALIDATORS, newer_than_previous
+from r2s2r.pipeline.run import StageFailed, is_done, run
+from r2s2r.pipeline.stages import VALIDATORS
 from r2s2r.pipeline.workspace import Workspace
 from r2s2r.structs import ObjectSpec, SceneSpec
 from r2s2r.transforms import look_at
@@ -189,11 +189,36 @@ def test_run_records_every_stage_and_redoes_stale_ones(tmp_path):
     assert method.calls == ["2", "3"]
     time.sleep(0.01)
     (tmp_path / "run/s2_frames/output.json").touch()  # stage 2 redone...
-    assert not newer_than_previous(tmp_path / "run", "3")  # ...so stage 3 is stale
+    ws = Workspace.load(tmp_path / "run")
+    assert not is_done(ws, method, "3")  # ...so stage 3 is stale
     run(tmp_path / "run", None, method, ("2", "3"))
     assert method.calls == ["2", "3", "3"]
     run(tmp_path / "run", None, method, ("3",), force=True)
     assert method.calls == ["2", "3", "3", "3"]
+
+
+def test_redoing_a_stage_makes_every_later_one_stale(tmp_path):
+    """Not only the next one; and a stage that leaves its old product in place has not
+    done its work."""
+
+    class Lazy(FakeMethod):
+        """Stage 3 keeps the objects file it finds."""
+
+        def run_stage(self, ws, key, stage_dir):
+            return {} if key == "3" else super().run_stage(ws, key, stage_dir)
+
+    method = FakeMethod()
+    run(_capture(tmp_path).root, tmp_path / "run", method, ("2", "3", "4"))
+    time.sleep(0.01)
+    run(tmp_path / "run", None, method, ("2",), force=True)
+    ws = Workspace.load(tmp_path / "run")
+    assert [is_done(ws, method, k) for k in "234"] == [True, False, False]
+    with pytest.raises(StageFailed, match="stage 2's product changed after"):
+        run(tmp_path / "run", None, Lazy(), ("3",))
+    assert ws.read_run()["stages"]["3"]["status"] == "failed"
+    method.calls.clear()
+    run(tmp_path / "run", None, method, ("2", "3", "4"))
+    assert method.calls == ["3", "4"]
 
 
 def test_run_refuses_what_does_not_fit(tmp_path):
@@ -246,8 +271,8 @@ def test_settling_and_final_replay_are_shared(tmp_path, monkeypatch):
     scene is replayed once, and again only when it changes."""
     replays = []
 
-    def settle(scene_dir, capture_dir, out_dir, seconds):
-        assert capture_dir == tmp_path.resolve() / "run/inputs/capture" and seconds > 0
+    def settle(scene_dir, capture_dir, out_dir):
+        assert capture_dir == tmp_path.resolve() / "run/inputs/capture"
         SceneSpec.load(scene_dir).save(out_dir)
         return {"scene": str(out_dir / "scene.json"), "objects": {"box": {}}}
 

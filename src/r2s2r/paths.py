@@ -15,18 +15,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SIMFOUNDRY_DIR = REPO_ROOT / "third_party" / "SimFoundry"
 # Downloaded models (MuJoCo Menagerie robots, GSO objects).
 CACHE_DIR = Path(os.environ.get("R2S2R_CACHE", Path.home() / ".cache" / "r2s2r"))
-# physcoder's assets (``mujoco/``, ``isaaclab/``), used by path and never copied: they
-# are git-ignored there and not ours to redistribute. physcoder's own override,
-# PHYSCODER_ASSETS_DIR, names the ``isaaclab`` directory in it.
-PHYSCODER_ASSETS_DIR = (
+# The root of physcoder's assets (holding ``mujoco/`` and ``isaaclab/``), used by path
+# and never copied: they are git-ignored there and not ours to redistribute. physcoder's
+# own override, PHYSCODER_ASSETS_DIR, names the ``isaaclab`` directory in it.
+PHYSCODER_ASSETS = (
     Path(os.environ["PHYSCODER_ASSETS_DIR"]).expanduser().parent
     if os.environ.get("PHYSCODER_ASSETS_DIR")
     else Path(os.environ.get("PHYSCODER_ROOT", Path.home() / "physcoder")).expanduser()
     / "assets"
 )
 
-# Conda environments: SimFoundry's (its stages, SAM3, CoACD, FoundationStereo) and
-# Hunyuan3D-2.1's.
+# Conda environments: SimFoundry's (its stages, SAM3, CoACD, FoundationStereo),
+# Hunyuan3D-2.1's, and the nerfstudio one SimFoundry's reconstruction runs its
+# background splat in.
 ENV_SIMFOUNDRY = "simfoundry"
 ENV_MESH = "hunyuan"
 ENV_NERFSTUDIO = "nerfstudio_simfoundry"

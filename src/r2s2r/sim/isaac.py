@@ -19,6 +19,7 @@ import numpy as np
 from r2s2r.paths import REPO_ROOT
 
 ISAAC_SCRIPTS = REPO_ROOT / "scripts" / "isaaclab"
+SETTLE_SECONDS = 2.0  # simulated time for the objects to come to rest
 
 
 def _run_isaac(script: str, args: list[str], log_path: Path) -> None:
@@ -40,7 +41,7 @@ def settle(
     scene_dir: str | Path,
     capture_dir: str | Path,
     out_dir: str | Path,
-    seconds: float = 2.0,
+    seconds: float = SETTLE_SECONDS,
 ) -> dict[str, Any]:
     """The scene with its objects where they come to rest (``out_dir/scene.json``; the
     robot held as the capture has it at the start of the static period), and how far

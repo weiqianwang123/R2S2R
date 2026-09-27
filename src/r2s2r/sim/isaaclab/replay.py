@@ -31,6 +31,7 @@ from isaaclab.sim import SimulationCfg, SimulationContext
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
+from r2s2r.sim.isaac import SETTLE_SECONDS
 from r2s2r.sim.isaaclab.scene import (
     PANDA_JOINTS,
     build_scene_cfg,
@@ -152,12 +153,11 @@ def replay(
         raise ValueError(f"unknown replay mode {cfg.mode!r} (geometry, physics)")
     geometry = cfg.mode == "geometry"
     cameras = {s: capture.cameras[s] for s in capture.resolve_cameras(cfg.cameras)}
-    first, end = capture.static_steps
     frame_steps = sorted(
         {
             f.step
             for f in capture.frames
-            if f.camera in cameras and (not geometry or first <= f.step < end)
+            if f.camera in cameras and (not geometry or capture.in_static(f.step))
         }
     )
     render_steps = set(frame_steps[:: max(1, cfg.every)])
@@ -210,7 +210,7 @@ def replay(
 class SettleConfig:
     """Knobs of :func:`settle`."""
 
-    seconds: float = 2.0
+    seconds: float = SETTLE_SECONDS
     physics_dt: float = 0.005
     device: str = "cuda:0"
 

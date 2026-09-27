@@ -18,11 +18,13 @@ from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
+from r2s2r.sim.isaac import SETTLE_SECONDS
+
 parser = argparse.ArgumentParser()
 parser.add_argument("scene_dir", type=Path)
 parser.add_argument("capture_dir", type=Path)
 parser.add_argument("--out", type=Path, required=True)
-parser.add_argument("--seconds", type=float, default=2.0)
+parser.add_argument("--seconds", type=float, default=SETTLE_SECONDS)
 parser.add_argument("--physics-dt", type=float, default=0.005)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()

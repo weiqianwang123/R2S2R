@@ -162,12 +162,6 @@ def render_preview(
 
 
 # ----------------------------------------------------------------------- assemble
-def load_objects(path: str | Path) -> tuple[dict[str, Any], Path]:
-    """An objects file and the directory its relative paths start from."""
-    path = Path(path).resolve()
-    return json.loads(path.read_text(encoding="utf-8")), path.parent
-
-
 def assemble(
     ws: Workspace,
     objects_path: str | Path,
@@ -185,7 +179,9 @@ def assemble(
     """
     if collision not in ("coacd", "hull", "none"):
         raise ValueError(f"unknown collision {collision!r} (coacd, hull, none)")
-    spec, base = load_objects(objects_path)
+    objects_path = Path(objects_path).resolve()
+    spec = json.loads(objects_path.read_text(encoding="utf-8"))
+    base = objects_path.parent  # what the relative paths in it start from
     out_dir = Path(out_dir).resolve()
     support_src = spec["support"]
     if isinstance(support_src, str):
@@ -259,7 +255,7 @@ def assemble(
         joint_positions=frame.joint_positions,
         provenance={
             "backend": "agentic",
-            "objects_file": str(Path(objects_path).resolve()),
+            "objects_file": str(objects_path),
             "collision": collision,
         },
         support_extent=extent,

@@ -18,10 +18,10 @@ stage  directory       product
 6      ``s6_refine``   ``scene/`` and ``report.md`` (a method may leave it out)
 =====  ==============  ==============================================================
 
-A stage is done when its product passes the checks and is newer than the product of the
-stage before, so redoing a stage makes the ones after it stale. After the last stage,
-the final scene (stage 6's, else stage 5's) is replayed against the recording, into
-``<its stage dir>/final_replay``.
+A stage is done when its product passes the checks and each product up to it is newer
+than the one before, so redoing a stage makes every later one stale. After the last
+stage, the final scene (stage 6's, else stage 5's) is replayed against the recording,
+into ``<its stage dir>/final_replay``.
 """
 
 from __future__ import annotations
@@ -38,13 +38,6 @@ from r2s2r.tools.geometry import UP_ROTATIONS, load_support
 from r2s2r.transforms import is_rigid
 
 STAGES = ("2", "3", "4", "5", "6")
-STAGE_NAMES = {
-    "2": "frames",
-    "3": "objects",
-    "4": "scene",
-    "5": "settle",
-    "6": "refine",
-}
 STAGE_DIRS = {
     "2": "s2_frames",
     "3": "s3_objects",
@@ -183,9 +176,7 @@ def check_scene(extra: str) -> Callable[[Workspace, Path], list[str]]:
 VALIDATORS: dict[str, Callable[[Workspace, Path], list[str]]] = {
     "2": check_frames,
     "3": check_objects,
-    "4": check_scene("output.json"),
-    "5": check_scene("output.json"),
-    "6": check_scene("report.md"),
+    **{k: check_scene(PRODUCTS[k][1]) for k in ("4", "5", "6")},
 }
 
 
@@ -216,3 +207,8 @@ def newer_than_previous(root: Path, key: str) -> bool:
     return min(p.stat().st_mtime for p in ours) >= max(
         p.stat().st_mtime for p in theirs
     )
+
+
+def fresh(root: Path, key: str) -> bool:
+    """Whether every stage up to ``key`` was written after the one before it."""
+    return all(newer_than_previous(root, k) for k in STAGES[1 : STAGES.index(key) + 1])

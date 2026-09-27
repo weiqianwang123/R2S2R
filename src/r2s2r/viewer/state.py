@@ -18,13 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from r2s2r.pipeline.stages import (
-    STAGE_DIRS,
-    STAGES,
-    VALIDATORS,
-    newer_than_previous,
-    read_json,
-)
+from r2s2r.pipeline.stages import STAGE_DIRS, STAGES, VALIDATORS, fresh, read_json
 from r2s2r.pipeline.workspace import RUN_FILENAME, Workspace
 
 ACTIVE_S = 15 * 60  # a running stage that wrote nothing for longer has stopped
@@ -115,7 +109,7 @@ def _stage(ws: Workspace, key: str, entry: dict[str, Any]) -> dict[str, Any]:
             out["activity"] = _first_sentence(message)
     elif status == "done":
         try:
-            valid = newer_than_previous(ws.root, key) and not VALIDATORS[key](ws, d)
+            valid = fresh(ws.root, key) and not VALIDATORS[key](ws, d)
         except Exception:  # pylint: disable=broad-except
             valid = False
         if not valid:

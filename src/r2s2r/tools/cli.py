@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from r2s2r.pipeline.workspace import Workspace
+from r2s2r.sim import isaac
 
 NUMBER_LIST = re.compile(r"\[\s*((?:-?[\d.eE+-]+,?\s*)+)\]")
 
@@ -138,18 +139,12 @@ def _assemble(args: argparse.Namespace) -> None:
 
 
 def _settle(args: argparse.Namespace) -> None:
-    # pylint: disable=import-outside-toplevel
-    from r2s2r.sim.isaac import settle
-
-    print_json(settle(args.scene, _ws(args).capture.root, args.out, args.seconds))
+    print_json(isaac.settle(args.scene, _ws(args).capture.root, args.out, args.seconds))
 
 
 def _replay(args: argparse.Namespace) -> None:
-    # pylint: disable=import-outside-toplevel
-    from r2s2r.sim.isaac import replay
-
     capture = _ws(args).capture.root
-    print_json(replay(args.scene, capture, args.out, args.cameras, args.every))
+    print_json(isaac.replay(args.scene, capture, args.out, args.cameras, args.every))
 
 
 def add_tool_parser(sub: Any) -> None:
@@ -228,7 +223,7 @@ def add_tool_parser(sub: Any) -> None:
 
     p = add("settle", _settle, "let the objects come to rest (Isaac Lab)")
     p.add_argument("scene")
-    p.add_argument("--seconds", type=float, default=2.0)
+    p.add_argument("--seconds", type=float, default=isaac.SETTLE_SECONDS)
     p.add_argument("--out", required=True)
 
     p = add("replay", _replay, "replay the recording in the scene and compare (Isaac)")

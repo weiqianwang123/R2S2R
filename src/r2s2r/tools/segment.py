@@ -73,7 +73,7 @@ def segment(
     result = run_env_job(
         "sam3_job.py",
         {"threshold": threshold, "requests": requests},
-        out_dir,
+        ws.root / "cache" / "jobs",
         ENV_SIMFOUNDRY,
     )
     summary: dict[str, Any] = {}
