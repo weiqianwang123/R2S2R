@@ -2,7 +2,7 @@
 
 import cv2
 import numpy as np
-from conftest import CLOSE_STEP, SERIALS, SIZE
+from conftest import CLOSE_STEP, NUM_STEPS, SERIALS, SIZE
 
 from r2s2r.io.droid import (
     ROLES,
@@ -43,7 +43,13 @@ def test_load_droid_episode(droid_episode, tmp_path):
     assert capture.instruction == "put the block in the bowl"
     assert capture.static_steps == (0, CLOSE_STEP)
     assert set(capture.cameras) == {SERIALS["ext1"], SERIALS["wrist"]}
-    assert len(capture.frames) == 2 * len(range(0, CLOSE_STEP, 2))
+    # Frames over the whole episode; the static period is the part reconstruction uses.
+    assert len(capture.frames) == 2 * len(range(0, NUM_STEPS, 2))
+    traj = capture.trajectory
+    assert traj is not None and list(traj.steps) == list(range(NUM_STEPS))
+    assert np.allclose(np.diff(traj.times), 1 / 15)  # no robot timestamps: 15 Hz
+    assert np.allclose(traj.joint_positions[3], np.arange(7.0))
+    assert traj.gripper_position[CLOSE_STEP] == 0.5
 
     ext1 = capture.camera_by_role("ext1")
     assert ext1.is_static and ext1.T_base_cam is not None
@@ -66,4 +72,6 @@ def test_load_droid_episode(droid_episode, tmp_path):
 
     reloaded = Capture.load(out)
     assert reloaded.name == capture.name
+    assert reloaded.trajectory is not None
+    assert np.allclose(reloaded.trajectory.times, traj.times)
     assert np.allclose(reloaded.cameras[ext1.serial].K, ext1.K)

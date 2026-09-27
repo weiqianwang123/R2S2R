@@ -10,13 +10,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from isaaclab.scene import InteractiveScene
 from isaaclab.sim import SimulationCfg, SimulationContext
 
 from r2s2r.policy.pick import find_object, pick_up
 from r2s2r.policy.scoring import save_rollout, score_lift
 from r2s2r.sim.isaaclab.robot import IsaacLabRobot
-from r2s2r.sim.isaaclab.scene import build_scene_cfg, centered_render_size
+from r2s2r.sim.isaaclab.scene import build_scene_cfg, centered_render_size, make_scene
 from r2s2r.structs import SceneSpec
 from r2s2r.video import VideoRecorder
 
@@ -36,8 +35,9 @@ def run_pick(
     target = find_object(spec, target).name
     roles = [video_camera] if video_camera else []
     sim = SimulationContext(SimulationCfg(dt=physics_dt, device=device))
-    scene = InteractiveScene(
-        build_scene_cfg(spec, with_cameras=bool(roles), camera_roles=roles)
+    scene = make_scene(
+        build_scene_cfg(spec, with_cameras=bool(roles), camera_roles=roles),
+        spec.embodiment,
     )
     sim.reset()
     names = {f"object_{i}": obj.name for i, obj in enumerate(spec.objects)}

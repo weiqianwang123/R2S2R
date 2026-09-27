@@ -29,12 +29,12 @@ app = AppLauncher(args).app
 # pylint: disable=wrong-import-position
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
-from isaaclab.scene import InteractiveScene  # noqa: E402
 from isaaclab.sim import SimulationCfg, SimulationContext  # noqa: E402
 
 from r2s2r.sim.isaaclab.scene import (  # noqa: E402
     build_scene_cfg,
     centered_render_size,
+    make_scene,
 )
 from r2s2r.structs import Capture, SceneSpec  # noqa: E402
 
@@ -44,7 +44,7 @@ def main() -> None:
     spec = SceneSpec.load(args.scene_dir)
     capture = Capture.load(args.capture_dir)
     sim = SimulationContext(SimulationCfg(dt=1 / 60, device=args.device))
-    scene = InteractiveScene(build_scene_cfg(spec))
+    scene = make_scene(build_scene_cfg(spec), spec.embodiment)
     sim.reset()
 
     robot = scene["robot"]

@@ -41,7 +41,7 @@ class SceneRenderer:
         for i, obj in enumerate(scene.objects):
             body = spec.worldbody.add_body(name=f"obj{i}", mocap=True)
             for j, visual in enumerate(urdf_visual_meshes(obj.asset_path)):
-                _add_mesh(spec, body, f"obj{i}/{j}", visual)
+                add_mesh(spec, body, f"obj{i}/{j}", visual)
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
         self.camera = CameraRenderer(self.model, self.data, max_size)
@@ -70,7 +70,9 @@ class SceneRenderer:
         self.camera.close()
 
 
-def _add_mesh(spec: Any, body: Any, name: str, visual: VisualMesh) -> None:
+def add_mesh(spec: Any, body: Any, name: str, visual: VisualMesh) -> None:
+    """Add ``visual`` to ``body`` of an ``MjSpec`` as a mesh geom, textured if it has a
+    texture and UVs."""
     mesh = visual.mesh
     uv = getattr(mesh.visual, "uv", None)
     kwargs: dict[str, Any] = {}

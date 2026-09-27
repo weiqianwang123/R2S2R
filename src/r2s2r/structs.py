@@ -19,6 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 CAPTURE_FILENAME = "capture.json"
+TRAJECTORY_FILENAME = "trajectory.npz"
 SCENE_FILENAME = "scene.json"
 DEPTH_PNG_SCALE = 0.001  # meters per unit of uint16 depth PNGs
 
@@ -99,6 +100,38 @@ class FrameRecord:
 
 
 @dataclass
+class RobotTrajectory:
+    """The robot's state at every control step of the recording (the frames keep only
+    some steps), for replaying it."""
+
+    steps: NDArray[np.int64]  # the capture's step indices
+    times: NDArray[np.float64]  # seconds since the first step
+    joint_positions: NDArray[np.float64]  # (N, 7) arm joints
+    gripper_position: NDArray[np.float64]  # (N,) 0 open, 1 closed
+
+    def save(self, path: str | Path) -> None:
+        """Write the arrays to ``path`` (``.npz``)."""
+        np.savez(
+            path,
+            steps=self.steps,
+            times=self.times,
+            joint_positions=self.joint_positions,
+            gripper_position=self.gripper_position,
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> RobotTrajectory:
+        """Inverse of :meth:`save`."""
+        with np.load(path) as data:
+            return cls(
+                steps=np.asarray(data["steps"], np.int64),
+                times=np.asarray(data["times"], np.float64),
+                joint_positions=np.asarray(data["joint_positions"], np.float64),
+                gripper_position=np.asarray(data["gripper_position"], np.float64),
+            )
+
+
+@dataclass
 class Capture:
     """Everything recorded for one scene, saved under ``root``."""
 
@@ -111,6 +144,8 @@ class Capture:
     static_steps: tuple[int, int]  # [start, end): objects assumed not to move
     root: Path
     metadata: dict[str, Any] = field(default_factory=dict)
+    # The robot's state at every step, when recorded (``trajectory.npz``).
+    trajectory: RobotTrajectory | None = None
 
     def frames_of(self, camera: str) -> list[FrameRecord]:
         """Frames of one camera, in step order."""
@@ -195,6 +230,8 @@ class Capture:
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / CAPTURE_FILENAME
         path.write_text(json.dumps(_to_jsonable(payload), indent=2), encoding="utf-8")
+        if self.trajectory is not None:
+            self.trajectory.save(self.root / TRAJECTORY_FILENAME)
         return path
 
     @classmethod
@@ -215,6 +252,11 @@ class Capture:
             static_steps=(int(d["static_steps"][0]), int(d["static_steps"][1])),
             root=root,
             metadata=d.get("metadata", {}),
+            trajectory=(
+                RobotTrajectory.load(root / TRAJECTORY_FILENAME)
+                if (root / TRAJECTORY_FILENAME).exists()
+                else None
+            ),
         )
 
 

@@ -103,3 +103,6 @@ def test_capture_records_the_requested_cameras(tmp_path):
     poses = np.stack([f.T_base_cam for f in capture.frames])
     assert len(capture.frames) > 3 and np.ptp(poses[:, :3, 3], axis=0).max() > 0.1
     assert all(f.depth_image for f in capture.frames)
+    traj = capture.trajectory  # every control step, for replaying the recording
+    assert traj is not None and np.array_equal(traj.steps, np.arange(len(traj.steps)))
+    assert len(traj.steps) > len(capture.frames) and np.allclose(traj.times[1], 0.02)

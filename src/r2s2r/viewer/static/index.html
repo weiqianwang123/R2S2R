@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R2S2R Run Viewer</title>
+<link rel="stylesheet" href="/static/viewer.css">
+<script type="importmap">
+{"imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<header>
+  <span class="brand">R2S2R</span>
+  <select id="workspace-select" title="run"></select>
+  <span id="capture-name" class="muted"></span>
+  <span id="instruction" class="instruction"></span>
+</header>
+
+<main>
+  <section class="progress">
+    <div id="axis" class="axis"></div>
+    <div id="activity" class="activity"></div>
+  </section>
+
+  <section id="panel" class="panel hidden">
+    <div class="panel-head">
+      <span id="panel-title"></span>
+      <button id="panel-close" title="close">✕</button>
+    </div>
+
+    <div id="capture-view" class="hidden">
+      <div class="rec-top">
+        <div id="cameras" class="cameras"></div>
+        <div class="view3d-wrap">
+          <div id="view3d" class="view3d"></div>
+          <div class="view3d-controls">
+            <select id="scene-select" title="scene shown"><option value="">(no scene yet)</option></select>
+            <label><input type="checkbox" id="show-objects" checked> objects</label>
+            <label><input type="checkbox" id="show-cameras" checked> cameras</label>
+            <label><input type="checkbox" id="show-robot" checked> robot</label>
+          </div>
+        </div>
+      </div>
+      <div class="timeline">
+        <button id="play" title="play / pause (space)">▶</button>
+        <select id="speed" title="speed">
+          <option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option>
+        </select>
+        <div class="slider-wrap">
+          <canvas id="ticks"></canvas>
+          <input type="range" id="slider" min="0" max="0" value="0">
+        </div>
+        <span id="readout" class="readout"></span>
+        <label id="replay-toggle" class="hidden" title="the latest replay's panels: real | sim | blend | depth residual">
+          <input type="checkbox" id="show-replay"> replay
+        </label>
+      </div>
+    </div>
+
+    <div id="panel-body"></div>
+  </section>
+</main>
+
+<div id="lightbox" class="lightbox hidden">
+  <div class="lb-bar"><span id="lb-caption"></span><button id="lb-close">✕</button></div>
+  <img id="lb-img" alt="">
+  <div id="lb-model" class="lb-model hidden"></div>
+</div>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

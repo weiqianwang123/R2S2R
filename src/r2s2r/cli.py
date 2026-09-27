@@ -5,6 +5,14 @@ Captures: the robot's calibrated cameras, poses in its base frame, with joint st
     r2s2r droid-capture EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
     r2s2r mujoco-capture --out CAPTURE_DIR [--cameras ext1 wrist]
 
+Depth for a stereo capture's frames (FoundationStereo), for comparisons::
+
+    r2s2r stereo-depth CAPTURE_DIR --out CAPTURE_DIR [--all-steps]
+
+A scene replayed in Isaac Lab (``scripts/isaaclab/replay.py``), compared again::
+
+    r2s2r compare-replay REPLAY_DIR --scene SCENE_DIR --capture CAPTURE_DIR
+
 Reconstruction and refinement::
 
     r2s2r reconstruct CAPTURE_DIR --workdir WORKDIR [--cameras ...] [--stages 2,3]
@@ -17,6 +25,13 @@ MuJoCo as the real world::
     r2s2r mujoco-deploy (SCENE_DIR | --oracle) --capture CAPTURE_DIR --target NAME
         --out OUT_DIR
 
+Agentic reconstruction (a Codex agent with tools; see :mod:`r2s2r.agentic`)::
+
+    r2s2r agent CAPTURE_DIR --out WORKSPACE [--stages 2 3 4 5 6]
+    r2s2r tool <frames|segment|crop|points|support|generate|fit|check|assemble|settle|
+                replay> ...
+    r2s2r viewer outputs/agentic [--port 8765]   # live progress in the browser
+
 The Isaac Lab side runs as scripts, since the Omniverse app must start first:
 ``scripts/isaaclab/run_pick.py`` and ``scripts/isaaclab/render_overlay.py``.
 """
@@ -28,6 +43,9 @@ import logging
 import shutil
 from pathlib import Path
 
+import numpy as np
+
+from r2s2r.agentic.cli import add_agent_parser, add_tool_parser
 from r2s2r.io.droid import DEFAULT_ROLES, load_droid_episode
 from r2s2r.io.rgbd import capture_depth_views
 from r2s2r.policy.scoring import summarize
@@ -166,6 +184,45 @@ def _refine(args: argparse.Namespace) -> None:
     print(f"support {w:.2f} x {h:.2f} m from {len(views)} views -> {path}")
 
 
+def _stereo_depth(args: argparse.Namespace) -> None:
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.io.stereo import add_stereo_depth
+
+    mamba = args.mamba or shutil.which("mamba") or "mamba"
+    capture = add_stereo_depth(
+        Capture.load(args.capture_dir),
+        args.out,
+        SimFoundryConfig(mamba_exe=mamba),
+        static_only=not args.all_steps,
+    )
+    with_depth = sum(f.depth_image is not None for f in capture.frames)
+    print(f"{with_depth} of {len(capture.frames)} frames have depth -> {args.out}")
+
+
+def _compare_replay(args: argparse.Namespace) -> None:
+    # MuJoCo renders the object outlines; imported only when used.
+    # pylint: disable=import-outside-toplevel
+    import json
+
+    from r2s2r.sim.compare import compare_replay
+
+    log = json.loads((args.replay_dir / "replay.json").read_text(encoding="utf-8"))
+    out = args.out or args.replay_dir / "compare"
+    summary = compare_replay(
+        log,
+        SceneSpec.load(args.scene),
+        Capture.load(args.capture),
+        out,
+        args.replay_dir,
+    )
+    residuals = [
+        f["depth_residual_m"] for f in summary["frames"] if f.get("depth_residual_m")
+    ]
+    median = f"{np.median(residuals) * 100:.1f} cm" if residuals else "no depth"
+    frames = len(summary["frames"])
+    print(f"{frames} frames compared; depth residual median {median} -> {out}")
+
+
 def _mujoco_capture(args: argparse.Namespace) -> None:
     # Imported here so the other subcommands work without MuJoCo and a GL driver.
     # pylint: disable=import-outside-toplevel
@@ -195,6 +252,13 @@ def _print_scene_errors(scene: SceneSpec, capture: Capture) -> None:
             f"{err['center_error_m'] * 100:.1f} cm, size {err['size_m']} "
             f"(true {err['ground_truth_size_m']})"
         )
+
+
+def _viewer(args: argparse.Namespace) -> None:
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.viewer.server import serve
+
+    serve(args.paths, args.host, args.port)
 
 
 def _mujoco_eval(args: argparse.Namespace) -> None:
@@ -315,6 +379,27 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_refine)
 
+    p = sub.add_parser(
+        "stereo-depth",
+        help="a capture with FoundationStereo depth on its stereo frames",
+    )
+    p.add_argument("capture_dir", type=Path)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument(
+        "--all-steps", action="store_true", help="every frame, not only the static ones"
+    )
+    p.add_argument("--mamba", help="path to the mamba executable")
+    p.set_defaults(func=_stereo_depth)
+
+    p = sub.add_parser(
+        "compare-replay", help="compare an Isaac Lab replay with a capture, again"
+    )
+    p.add_argument("replay_dir", type=Path, help="scripts/isaaclab/replay.py's --out")
+    p.add_argument("--scene", type=Path, required=True)
+    p.add_argument("--capture", type=Path, required=True)
+    p.add_argument("--out", type=Path, help="default: REPLAY_DIR/compare")
+    p.set_defaults(func=_compare_replay)
+
     p = sub.add_parser("mujoco-capture", help="record a capture in the MuJoCo world")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--name", default="mujoco_pick")
@@ -348,6 +433,15 @@ def main(argv: list[str] | None = None) -> None:
         "--oracle", action="store_true", help="use ground-truth objects, not SCENE_DIR"
     )
     p.set_defaults(func=_mujoco_deploy)
+
+    add_agent_parser(sub)
+    add_tool_parser(sub)
+
+    p = sub.add_parser("viewer", help="live web viewer of agentic runs")
+    p.add_argument("paths", type=Path, nargs="+", help="workspaces, or their parents")
+    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8765)
+    p.set_defaults(func=_viewer)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)

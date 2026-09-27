@@ -84,7 +84,7 @@ def urdf_visual_meshes(urdf_path: str | Path) -> list[VisualMesh]:
             assert isinstance(mesh, trimesh.Trimesh), f"{path} is not a single mesh"
             mesh.apply_transform(np.diag([*_vector(mesh_el, "scale", "1 1 1"), 1.0]))
             mesh.apply_transform(poses[link.attrib["name"]] @ _origin(visual))
-            out.append(VisualMesh(mesh, _base_color_texture(path)))
+            out.append(VisualMesh(mesh, base_color_texture(path)))
     if not out:
         raise ValueError(f"no visual meshes in {urdf_path}")
     return out
@@ -167,7 +167,7 @@ def _add_resting_base(
 
 
 # ---------------------------------------------------------------------- helpers
-def _base_color_texture(mesh_path: Path) -> Path | None:
+def base_color_texture(mesh_path: Path) -> Path | None:
     """The ``map_Kd`` image of an OBJ's first material, if any."""
     if mesh_path.suffix.lower() != ".obj":
         return None

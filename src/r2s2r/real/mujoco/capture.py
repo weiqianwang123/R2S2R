@@ -20,7 +20,7 @@ from r2s2r.real.mujoco.world import (
     look_at,
 )
 from r2s2r.robots.franka import FRANKA_HAND_MAX_WIDTH, Q_READY
-from r2s2r.structs import DEPTH_PNG_SCALE, Capture, FrameRecord
+from r2s2r.structs import DEPTH_PNG_SCALE, Capture, FrameRecord, RobotTrajectory
 from r2s2r.transforms import invert
 
 # The depth sensor's range in metres; outside it there is no return (0). The near
@@ -61,7 +61,8 @@ def record_capture(
     cameras: list[str] | None = None,
 ) -> Capture:
     """Run the capture motion and save RGB-D frames of ``cameras`` (default: all) with
-    the robot's joint state every ``every`` control steps."""
+    the robot's joint state every ``every`` control steps, and the robot's state at
+    every step (for replaying it)."""
     out_dir = Path(out_dir)
     world = MujocoWorld(cfg)
     world.reset()
@@ -73,11 +74,13 @@ def record_capture(
         )
     cameras_ = {n: world.camera_spec(n) for n in names}
     frames: list[FrameRecord] = []
+    states: list[tuple[int, np.ndarray, float]] = []
 
     def grab(robot: MujocoRobot) -> None:
+        q, width = world.arm_q(), world.finger_width()
+        states.append((robot.steps, q, 1.0 - width / FRANKA_HAND_MAX_WIDTH))
         if robot.steps % every:
             return
-        q, width = world.arm_q(), world.finger_width()
         for cam_name, spec in cameras_.items():
             rgb, depth = world.render(cam_name)
             rel = Path("frames") / spec.serial
@@ -119,6 +122,12 @@ def record_capture(
                 o.name: world.object_pose(o.name).tolist() for o in world.cfg.objects
             },
         },
+        trajectory=RobotTrajectory(
+            steps=np.array([s for s, _, _ in states], np.int64),
+            times=np.array([s for s, _, _ in states], np.float64) * robot.control_dt,
+            joint_positions=np.array([q for _, q, _ in states], np.float64),
+            gripper_position=np.array([g for _, _, g in states], np.float64),
+        ),
     )
     capture.save()
     world.close()

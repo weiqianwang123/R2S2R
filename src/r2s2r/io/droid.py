@@ -28,12 +28,13 @@ import h5py
 import numpy as np
 from numpy.typing import NDArray
 
-from r2s2r.structs import CameraSpec, Capture, FrameRecord
+from r2s2r.structs import CameraSpec, Capture, FrameRecord, RobotTrajectory
 from r2s2r.transforms import intrinsics_matrix, pose6d_to_matrix
 
 logger = logging.getLogger(__name__)
 
 ROLES = ("ext1", "ext2", "wrist")  # the cameras a DROID episode has
+DROID_HZ = 15.0  # control rate, for episodes without robot timestamps
 DEFAULT_ROLES = (
     "ext2",
     "wrist",
@@ -154,10 +155,13 @@ def load_droid_episode(
     stride: int = 5,
     gripper_threshold: float = 0.05,
 ) -> Capture:
-    """Extract calibrated stereo frames of the static part of an episode.
+    """Extract calibrated stereo frames of an episode, every ``stride`` steps over the
+    whole of it, and the robot's state at every step (for replaying it).
 
-    Frames are written to ``out_dir/frames/<serial>/<step>_{left,right}.png`` and
-    the capture to ``out_dir/capture.json``.
+    ``static_steps`` is the part before the gripper first closes, which reconstruction
+    uses; the later frames show the interaction. Frames are written to
+    ``out_dir/frames/<serial>/<step>_{left,right}.png`` and the capture to
+    ``out_dir/capture.json``.
     """
     episode_dir, out_dir = Path(episode_dir), Path(out_dir)
     metadata_files = sorted(episode_dir.glob("metadata_*.json"))
@@ -171,6 +175,12 @@ def load_droid_episode(
     with h5py.File(episode_dir / "trajectory.h5", "r") as traj:
         joints = traj["observation/robot_state/joint_positions"][:]
         gripper = traj["observation/robot_state/gripper_position"][:]
+        stamps = "observation/timestamp/robot_state/robot_timestamp_"
+        if f"{stamps}seconds" in traj:
+            robot_times = traj[f"{stamps}seconds"][:] + 1e-9 * traj[f"{stamps}nanos"][:]
+            robot_times = robot_times - robot_times[0]
+        else:
+            robot_times = np.arange(len(gripper)) / DROID_HZ
         extrinsics = traj["observation/camera_extrinsics"]
         step_times = {
             s: traj[f"observation/timestamp/cameras/{s}_estimated_capture"][:]
@@ -180,7 +190,7 @@ def load_droid_episode(
         right_poses = {s: extrinsics[f"{s}_right"][:] for s in serials.values()}
 
     static = static_step_range(gripper, gripper_threshold)
-    steps = list(range(static[0], static[1], stride))
+    steps = list(range(0, len(gripper), stride))
     cameras: dict[str, CameraSpec] = {}
     frames: list[FrameRecord] = []
     calib_source: dict[str, str] = {}
@@ -276,6 +286,12 @@ def load_droid_episode(
             "calibration_source": calib_source,
             "num_steps": int(len(gripper)),
         },
+        trajectory=RobotTrajectory(
+            steps=np.arange(len(gripper), dtype=np.int64),
+            times=np.asarray(robot_times, np.float64),
+            joint_positions=np.asarray(joints, np.float64),
+            gripper_position=np.asarray(gripper, np.float64),
+        ),
     )
     capture.save()
     return capture

@@ -7,6 +7,12 @@ The environment origin is the robot base frame, so every SceneSpec pose is used 
 the robot sits at the origin, objects and the support surface at their ``T_base_*``, and
 each static camera at its calibrated ``T_base_cam`` with the real intrinsics (OpenCV
 convention == Isaac Lab's "ros" camera convention).
+
+Build the scene with :func:`make_scene`: Isaac Sim's Franka + Robotiq asset mounts the
+gripper like the Franka Hand (10.7 cm out, turned -45 deg about the flange), and DROID's
+sits 1.1 cm further out, turned +45 deg from that, as the MuJoCo model fitted to its
+wrist-camera images has it (``r2s2r.robots.mujoco_models``). Left as it is, the fingers
+show up 45 degrees off in every wrist-camera render.
 """
 
 from __future__ import annotations
@@ -14,18 +20,26 @@ from __future__ import annotations
 import isaaclab.sim as sim_utils
 import numpy as np
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
-from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
 from isaaclab_assets.robots.franka import (
     FRANKA_PANDA_HIGH_PD_CFG,
     FRANKA_ROBOTIQ_GRIPPER_CFG,
 )
+from pxr import Gf, UsdPhysics
+from scipy.spatial.transform import Rotation
 
+from r2s2r.mjrender import mujoco
+from r2s2r.robots.mujoco_models import ROBOTIQ_PREFIX, robot_spec
 from r2s2r.structs import CameraSpec, ObjectSpec, SceneSpec
-from r2s2r.transforms import make_transform, matrix_to_pos_quat
+from r2s2r.transforms import invert, make_transform, matrix_to_pos_quat
 
 PANDA_JOINTS = [f"panda_joint{i}" for i in range(1, 8)]
 SUPPORT_THICKNESS = 0.02
+# Joints of Isaac Sim's franka.usd (Robotiq variant), under the robot prim: link7 to the
+# hand frame, and the hand frame to the Robotiq base.
+HAND_JOINT = "panda_link7/panda_hand_joint"
+ROBOTIQ_MOUNT_JOINT = "Robotiq_2F_85_edit/Robotiq_2F_85/base_link/AssemblerFixedJoint"
 
 
 def _pose(T: np.ndarray) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -71,8 +85,9 @@ def support_cfg(scene: SceneSpec, extent: tuple[float, float]) -> AssetBaseCfg:
     )
 
 
-def object_cfg(obj: ObjectSpec, index: int) -> RigidObjectCfg:
-    """A reconstructed object, spawned from the backend's URDF."""
+def object_cfg(obj: ObjectSpec, index: int, kinematic: bool = False) -> RigidObjectCfg:
+    """A reconstructed object, spawned from the backend's URDF; ``kinematic`` holds it
+    where it is placed (for comparing geometry, not physics)."""
     pos, rot = _pose(obj.T_base_obj)
     return RigidObjectCfg(
         prim_path=f"{{ENV_REGEX_NS}}/Object_{index}",
@@ -87,7 +102,7 @@ def object_cfg(obj: ObjectSpec, index: int) -> RigidObjectCfg:
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 articulation_enabled=False
             ),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic),
             mass_props=(
                 sim_utils.MassPropertiesCfg(mass=obj.mass) if obj.mass else None
             ),
@@ -140,6 +155,60 @@ def camera_cfg(cam: CameraSpec, T_base_cam: np.ndarray) -> CameraCfg:
     )
 
 
+def make_scene(cfg: InteractiveSceneCfg, embodiment: str) -> InteractiveScene:
+    """The interactive scene, with the gripper mounted as on the real robot (call before
+    ``sim.reset()``)."""
+    scene = InteractiveScene(cfg)
+    if embodiment == "droid_franka":
+        for env in scene.env_prim_paths:
+            mount_robotiq(f"{env}/Robot")
+    return scene
+
+
+def mount_robotiq(robot_prim: str) -> None:
+    """Re-mount the Robotiq base where the fitted MuJoCo model has it on link7."""
+    stage = sim_utils.get_current_stage()
+    hand = UsdPhysics.Joint(stage.GetPrimAtPath(f"{robot_prim}/{HAND_JOINT}"))
+    mount = UsdPhysics.Joint(stage.GetPrimAtPath(f"{robot_prim}/{ROBOTIQ_MOUNT_JOINT}"))
+    if not (hand and mount):
+        raise ValueError(f"{robot_prim} is not Isaac's Franka + Robotiq asset")
+    T_hand_base = invert(_joint_transform(hand)) @ droid_robotiq_mount()
+    x, y, z, w = Rotation.from_matrix(T_hand_base[:3, :3]).as_quat()
+    mount.GetLocalPos0Attr().Set(Gf.Vec3f(*(float(v) for v in T_hand_base[:3, 3])))
+    mount.GetLocalRot0Attr().Set(Gf.Quatf(float(w), float(x), float(y), float(z)))
+    mount.GetLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    mount.GetLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+
+def droid_robotiq_mount() -> np.ndarray:
+    """``T_link7_base`` of the Robotiq base on DROID (the MuJoCo model's)."""
+    model = robot_spec("droid_franka").compile()
+    data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+
+    def pose(name: str) -> np.ndarray:
+        b = model.body(name).id
+        w, x, y, z = data.xquat[b]
+        return make_transform(
+            Rotation.from_quat([x, y, z, w]).as_matrix(), data.xpos[b]
+        )
+
+    return invert(pose("link7")) @ pose(f"{ROBOTIQ_PREFIX}base")
+
+
+def _joint_transform(joint: UsdPhysics.Joint) -> np.ndarray:
+    """Body0 -> body1 of a fixed joint, from its two local frames."""
+
+    def frame(pos: Gf.Vec3f, rot: Gf.Quatf) -> np.ndarray:
+        x, y, z = rot.GetImaginary()
+        R = Rotation.from_quat([x, y, z, rot.GetReal()]).as_matrix()
+        return make_transform(R, np.array(pos, float))
+
+    return frame(
+        joint.GetLocalPos0Attr().Get(), joint.GetLocalRot0Attr().Get()
+    ) @ invert(frame(joint.GetLocalPos1Attr().Get(), joint.GetLocalRot1Attr().Get()))
+
+
 def build_scene_cfg(
     scene: SceneSpec,
     num_envs: int = 1,
@@ -147,6 +216,7 @@ def build_scene_cfg(
     support_extent: tuple[float, float] = (0.6, 0.6),  # when the scene has none
     with_cameras: bool = True,
     camera_roles: list[str] | None = None,  # None: every static camera
+    kinematic_objects: bool = False,  # objects held where placed
 ) -> InteractiveSceneCfg:
     """The full interactive scene: robot, support, objects, lights, cameras."""
     cfg = InteractiveSceneCfg(num_envs=num_envs, env_spacing=env_spacing)
@@ -154,7 +224,7 @@ def build_scene_cfg(
     setattr(cfg, "robot", robot_cfg(scene))
     setattr(cfg, "support", support_cfg(scene, scene.support_extent or support_extent))
     for i, obj in enumerate(scene.objects):
-        setattr(cfg, f"object_{i}", object_cfg(obj, i))
+        setattr(cfg, f"object_{i}", object_cfg(obj, i, kinematic_objects))
     # A dim dome keeps the background dark so renders overlay cleanly on real frames;
     # a distant light gives the geometry readable shading.
     setattr(
