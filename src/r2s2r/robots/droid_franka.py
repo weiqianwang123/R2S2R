@@ -16,6 +16,12 @@ import numpy as np
 
 from r2s2r.robots.franka_panda import ARM_JOINTS, HOME_Q, ISAAC_ARM_JOINTS
 from r2s2r.robots.spec import MENAGERIE_DIR, GripperSpec, RobotSpec
+from r2s2r.transforms import (
+    invert,
+    make_transform,
+    matrix_to_pos_quat,
+    pos_quat_to_matrix,
+)
 
 FLANGE_OFFSET = 0.107  # link7 -> flange, along z
 ROBOTIQ_YAW = np.pi / 2  # the Robotiq's mount about the flange z axis
@@ -62,9 +68,6 @@ def mount_robotiq(robot_prim: str) -> None:
     # pylint: disable=import-outside-toplevel
     import isaaclab.sim as sim_utils
     from pxr import Gf, UsdPhysics
-    from scipy.spatial.transform import Rotation
-
-    from r2s2r.transforms import invert, make_transform
 
     stage = sim_utils.get_current_stage()
     hand = UsdPhysics.Joint(stage.GetPrimAtPath(f"{robot_prim}/{ISAAC_HAND_JOINT}"))
@@ -73,9 +76,9 @@ def mount_robotiq(robot_prim: str) -> None:
         raise ValueError(f"{robot_prim} is not Isaac's Franka + Robotiq asset")
 
     def frame(pos: Any, rot: Any) -> np.ndarray:
-        x, y, z = rot.GetImaginary()
-        R = Rotation.from_quat([x, y, z, rot.GetReal()]).as_matrix()
-        return make_transform(R, np.array(pos, float))
+        return pos_quat_to_matrix(
+            np.array(pos, float), [rot.GetReal(), *rot.GetImaginary()]
+        )
 
     # The hand joint's body0 -> body1 (link7 -> hand), from its two local frames.
     T_link7_hand = frame(
@@ -84,8 +87,8 @@ def mount_robotiq(robot_prim: str) -> None:
     T_hand_base = invert(T_link7_hand) @ make_transform(
         np.eye(3), [0.0, 0.0, ROBOTIQ_BASE_Z]
     )
-    x, y, z, w = Rotation.from_matrix(T_hand_base[:3, :3]).as_quat()
-    mount.GetLocalPos0Attr().Set(Gf.Vec3f(*(float(v) for v in T_hand_base[:3, 3])))
+    pos, (w, x, y, z) = matrix_to_pos_quat(T_hand_base)
+    mount.GetLocalPos0Attr().Set(Gf.Vec3f(*(float(v) for v in pos)))
     mount.GetLocalRot0Attr().Set(Gf.Quatf(float(w), float(x), float(y), float(z)))
     mount.GetLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
     mount.GetLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))

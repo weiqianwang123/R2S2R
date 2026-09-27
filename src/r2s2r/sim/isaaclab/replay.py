@@ -73,22 +73,23 @@ class _Session:
                 "(its trajectory.npz)"
             )
         self.traj = traj
-        self.spec = get_robot(capture.embodiment)
+        self.robot_spec = get_robot(capture.embodiment)
         self.sim = SimulationContext(SimulationCfg(dt=physics_dt, device=device))
         poses = [
             (cam, next(f for f in capture.frames if f.camera == s).T_base_cam)
             for s, cam in cameras.items()
         ]
         self.scene = make_scene(
-            build_scene_cfg(spec, kinematic_objects, poses), self.spec
+            build_scene_cfg(spec, self.robot_spec, kinematic_objects, poses),
+            self.robot_spec,
         )
         self.sim.reset()
         self.dt = self.sim.get_physics_dt()
         self.robot = self.scene["robot"]
         self.arm_ids, _ = self.robot.find_joints(
-            list(self.spec.isaac_arm_joints), preserve_order=True
+            list(self.robot_spec.isaac_arm_joints), preserve_order=True
         )
-        gripper = self.spec.gripper
+        gripper = self.robot_spec.gripper
         if gripper.isaac_joints is None:
             # The driver alone, open at its lower soft limit.
             self.grip_ids, _ = self.robot.find_joints([gripper.isaac_driver])

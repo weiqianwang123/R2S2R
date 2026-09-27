@@ -39,8 +39,9 @@ class GripperPoser:
 
     ``equality`` followers come from the MJCF's joint equalities on the driver
     (joint1 = polynomial of joint2, about their reference positions). ``simulate``
-    solves every joint that is not an arm joint by simulating the gripper's actuator at
-    a few openings (gravity off, arm held), once, and interpolates.
+    solves every joint in the gripper (the subtree of the driver's parent body, so a
+    world's other joints are left alone) by simulating the gripper's actuator at a few
+    openings (gravity off, arm held), once, and interpolates.
     """
 
     LEVELS = np.linspace(0.0, 1.0, 9)
@@ -66,11 +67,11 @@ class GripperPoser:
                     )
                 )
             return
-        arm = set(robot.arm_joints)
+        base = int(model.body_parentid[model.jnt_bodyid[driver]])
         self.joints = [
             model.joint(j).name
             for j in range(model.njnt)
-            if model.joint(j).name not in arm
+            if _in_subtree(model, int(model.jnt_bodyid[j]), base)
         ]
         self._table = np.stack([self._solve(model, robot, lv) for lv in self.LEVELS])
 
@@ -120,6 +121,15 @@ class GripperPoser:
         return np.array([data.qpos[model.joint(j).qposadr[0]] for j in self.joints])
 
 
+def _in_subtree(model: Any, body: int, root: int) -> bool:
+    """Whether ``body`` is ``root`` or hangs below it."""
+    while body != root:
+        if body == 0:
+            return False
+        body = int(model.body_parentid[body])
+    return True
+
+
 class RobotModel:
     """A compiled robot, posed with :meth:`set`.
 
@@ -154,11 +164,6 @@ class RobotModel:
         mujoco.mj_kinematics(self.model, self.data)
         mujoco.mj_comPos(self.model, self.data)
         mujoco.mj_camlight(self.model, self.data)
-
-    @property
-    def q(self) -> NDArray[np.float64]:
-        """The arm joints as set."""
-        return self.data.qpos[self.arm_qadr].copy()
 
     def pose(self, name: str, kind: str = "body") -> NDArray[np.float64]:
         """``T_base_frame`` of a body, site or camera (cameras in the OpenCV convention:

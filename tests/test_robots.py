@@ -142,6 +142,32 @@ def test_ik_on_a_camera_frame_uses_the_opencv_convention():
     assert np.allclose(model.pose("wrist", "camera"), target, atol=1e-3)
 
 
+@pytest.mark.parametrize("joint_name", ["", "obj_free"])
+def test_simulated_gripper_leaves_a_worlds_other_joints_alone(joint_name):
+    """In a world with a free object, the 2F-85's table covers the gripper only, and
+    posing the robot does not move the object."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.mjrender import mujoco
+
+    robot = _robot("droid_franka")
+    mjspec = robot.mjcf()
+    body = mjspec.worldbody.add_body(name="obj", pos=[0.5, 0.0, 0.1])
+    body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.02, 0.02, 0.02])
+    body.add_freejoint().name = joint_name
+    model = RobotModel(robot, mjspec)
+    assert model.gripper.joints == [
+        model.model.joint(j).name
+        for j in range(model.model.njnt)
+        if model.model.joint(j).name.startswith(droid_franka.PREFIX)
+    ]
+    adr = model.model.body("obj").jntadr[0]
+    qadr = model.model.jnt_qposadr[adr]
+    moved = np.array([0.3, -0.2, 0.4, 0.0, 1.0, 0.0, 0.0])
+    model.data.qpos[qadr : qadr + 7] = moved
+    model.set(np.asarray(robot.home_q), 1.0)
+    assert np.array_equal(model.data.qpos[qadr : qadr + 7], moved)
+
+
 def test_droid_robotiq_mount_matches_the_mjcf():
     """Isaac's re-mount constant is where the MuJoCo model has the Robotiq base."""
     model = RobotModel(_robot("droid_franka"))

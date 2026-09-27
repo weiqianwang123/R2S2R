@@ -34,7 +34,6 @@ from numpy.typing import NDArray
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from r2s2r.assets import bottom_offset
-from r2s2r.robots import get_robot
 from r2s2r.robots.spec import RobotSpec
 from r2s2r.structs import CameraSpec, ObjectSpec, SceneSpec
 from r2s2r.transforms import make_transform, matrix_to_pos_quat
@@ -305,13 +304,18 @@ def camera_cfg(cam: CameraSpec, T_base_cam: NDArray, near: float) -> CameraCfg:
 
 def build_scene_cfg(
     scene: SceneSpec,
+    robot: RobotSpec,
     kinematic_objects: bool,
     cameras: Iterable[tuple[CameraSpec, NDArray]] = (),
 ) -> InteractiveSceneCfg:
-    """The full interactive scene: robot, support, objects (with their USDs), lights,
-    and ``cameras`` (each at its pose)."""
+    """The full interactive scene: ``robot`` (the scene's embodiment; pass the same
+    spec to :func:`make_scene`), support, objects (with their USDs), lights, and
+    ``cameras`` (each at its pose)."""
+    if robot.name != scene.embodiment:
+        raise ValueError(
+            f"scene {scene.name} is for {scene.embodiment}, not {robot.name}"
+        )
     cfg = InteractiveSceneCfg(num_envs=1, env_spacing=0.0)
-    robot = get_robot(scene.embodiment)
     # InteractiveScene reads entities from the cfg instance's attributes.
     setattr(cfg, "robot", robot_cfg(robot, scene.joint_positions))
     setattr(cfg, "support", support_cfg(scene))

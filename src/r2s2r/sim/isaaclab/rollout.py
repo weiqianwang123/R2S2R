@@ -46,10 +46,11 @@ def run_pick(
         if c.role == video_camera and c.T_base_cam is not None
     ]
     cams = [c for c, _ in video_cams]
+    robot_spec = get_robot(spec.embodiment)
     sim = SimulationContext(SimulationCfg(dt=physics_dt, device=device))
     scene = make_scene(
-        build_scene_cfg(with_object_usds(spec, out_dir), False, video_cams),
-        get_robot(spec.embodiment),
+        build_scene_cfg(with_object_usds(spec, out_dir), robot_spec, False, video_cams),
+        robot_spec,
     )
     sim.reset()
     names = {f"object_{i}": obj.name for i, obj in enumerate(spec.objects)}
