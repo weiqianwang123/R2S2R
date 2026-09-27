@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import cv2
 
 from r2s2r.pipeline.workspace import RUN_FILENAME, Workspace
+from r2s2r.robots import get_robot
 from r2s2r.viewer.robot import robot_glb, robot_poses
 from r2s2r.viewer.scenes import mesh_glb, mesh_preview, scene_glb
 from r2s2r.viewer.state import recording, run_state
@@ -68,18 +69,19 @@ class Viewer:
 
     def robot(self) -> tuple[Path, Path]:
         """The robot's GLB and its poses along the trajectory."""
-        emb = self.ws.capture.embodiment
-        glb_path = self.cache / f"robot_{emb}.glb"
-        names_path = self.cache / f"robot_{emb}.json"
-        poses_path = self.cache / f"robot_{emb}_poses.json"
+        robot = get_robot(self.ws.capture.embodiment)
+        glb_path = self.cache / f"robot_{robot.name}.glb"
+        names_path = self.cache / f"robot_{robot.name}.json"
+        poses_path = self.cache / f"robot_{robot.name}_poses.json"
         with self.lock:
             if not glb_path.exists():
-                glb, names = robot_glb(emb)
+                glb, names = robot_glb(robot)
                 glb_path.write_bytes(glb)
                 names_path.write_text(json.dumps(names))
             if not poses_path.exists():
                 names = json.loads(names_path.read_text())
-                poses_path.write_text(json.dumps(robot_poses(self.ws.capture, names)))
+                poses = robot_poses(robot, self.ws.capture, names)
+                poses_path.write_text(json.dumps(poses))
         return glb_path, poses_path
 
 

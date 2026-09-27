@@ -202,7 +202,7 @@ def test_viewer_robot_draws_primitive_geoms():
     pad = m.geom("gripper_left_inner_finger_pad_legacy_0")
     box = geom_mesh(m, pad.id)
     assert box is not None and np.allclose(sorted(box.extents), sorted(2 * pad.size))
-    glb, bodies = robot_glb(robot.name)
+    glb, bodies = robot_glb(robot)
     assert glb[:4] == b"glTF" and "left_inner_finger" in bodies
     capture = Capture(
         "c", "mujoco", robot.name, "", {}, [], (0, 2), Path("."),
@@ -211,7 +211,7 @@ def test_viewer_robot_draws_primitive_geoms():
             np.array([0.0, 1.0]),
         ),
     )  # fmt: skip
-    poses = robot_poses(capture, bodies)
+    poses = robot_poses(robot, capture, bodies)
     finger = bodies.index("left_inner_finger")
     assert poses["poses"][0][finger] != poses["poses"][1][finger]
 

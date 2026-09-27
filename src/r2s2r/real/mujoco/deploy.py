@@ -62,7 +62,7 @@ def oracle_scene(capture: Capture, out_dir: str | Path) -> SceneSpec:
         reference_camera=next(iter(capture.cameras)),
         reference_step=0,
         joint_positions=np.asarray(world.cfg.q_start),
-        provenance={"backend": "oracle"},
+        provenance={"method": "oracle"},
         support_extent=(float(world.cfg.table_size[0]), float(world.cfg.table_size[1])),
     )
     world.close()
@@ -148,7 +148,7 @@ def run_pick(
     result = {
         "deployment": "mujoco",
         "scene": scene.name,
-        "scene_backend": scene.provenance.get("backend"),
+        "scene_method": scene.provenance.get("method"),
         "policy": policy,
         "ground_truth_target": world.cfg.target,
         **score_lift(before, positions(), world.cfg.target),

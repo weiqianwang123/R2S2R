@@ -31,6 +31,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from r2s2r.capture.stereo import add_stereo_depth
+from r2s2r.robots import get_robot
 from r2s2r.structs import Capture, DepthView, FrameRecord, read_depth
 
 if TYPE_CHECKING:  # MuJoCo is imported only when the robot is cut out
@@ -256,9 +257,9 @@ class Workspace:
         """The capture's robot, for cutting it out of depth."""
         if self._masker is None:
             # pylint: disable=import-outside-toplevel
-            from r2s2r.robots.mask import robot_masker
+            from r2s2r.robots.mask import RobotMasker
 
-            self._masker = robot_masker(self.capture.embodiment)
+            self._masker = RobotMasker(get_robot(self.capture.embodiment))
         return self._masker
 
     def close(self) -> None:

@@ -92,7 +92,7 @@ def run_pick(
     result = {
         "deployment": "isaaclab",
         "scene": spec.name,
-        "scene_backend": spec.provenance.get("backend"),
+        "scene_method": spec.provenance.get("method"),
         "policy": policy,
         **score_lift(before, positions(), target),
     }

@@ -13,18 +13,18 @@ import numpy as np
 import trimesh
 
 from r2s2r.mjrender import geom_mesh
-from r2s2r.robots import get_robot
 from r2s2r.robots.model import RobotModel
+from r2s2r.robots.spec import RobotSpec
 from r2s2r.structs import Capture
 from r2s2r.transforms import quat_wxyz_to_xyzw
 
 VISUAL_GROUP = 2  # every robot spec's visual geoms
 
 
-def robot_glb(embodiment: str) -> tuple[bytes, list[str]]:
+def robot_glb(robot: RobotSpec) -> tuple[bytes, list[str]]:
     """The robot's visual meshes as a GLB, one node per body (``b<k>`` for the k-th of
     the bodies' names returned)."""
-    model = get_robot(embodiment).mjcf().compile()
+    model = robot.mjcf().compile()
     parts: dict[int, list[trimesh.Trimesh]] = {}
     for g in range(model.ngeom):
         if model.geom_group[g] != VISUAL_GROUP:
@@ -43,11 +43,14 @@ def robot_glb(embodiment: str) -> tuple[bytes, list[str]]:
     return scene.export(file_type="glb"), names
 
 
-def robot_poses(capture: Capture, bodies: list[str]) -> dict[str, Any]:
+def robot_poses(
+    robot: RobotSpec, capture: Capture, bodies: list[str]
+) -> dict[str, Any]:
     """Every body's pose (x, y, z, qx, qy, qz, qw; base frame) at every step of the
-    capture's trajectory (or of its frames, without one)."""
-    robot = RobotModel(get_robot(capture.embodiment))
-    ids = [robot.model.body(name).id for name in bodies]
+    capture's trajectory (or of its frames, without one), ``robot`` being the
+    capture's."""
+    model = RobotModel(robot)
+    ids = [model.model.body(name).id for name in bodies]
     traj = capture.trajectory
     if traj is not None:
         steps = traj.steps.tolist()
@@ -63,8 +66,8 @@ def robot_poses(capture: Capture, bodies: list[str]) -> dict[str, Any]:
         grips = np.array([f.gripper_position for f in frames])
     poses = []
     for q, g in zip(joints, grips):
-        robot.set(q, float(g))
-        xpos, xquat = robot.data.xpos, robot.data.xquat
+        model.set(q, float(g))
+        xpos, xquat = model.data.xpos, model.data.xquat
         poses.append(
             [
                 [

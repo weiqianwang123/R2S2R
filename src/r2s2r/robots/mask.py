@@ -17,7 +17,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from r2s2r.mjrender import CameraRenderer, add_camera
-from r2s2r.robots import get_robot
 from r2s2r.robots.model import RobotModel
 from r2s2r.robots.spec import RobotSpec
 
@@ -90,8 +89,3 @@ class RobotMasker:
     def close(self) -> None:
         """Free the GL contexts."""
         self.renderer.close()
-
-
-def robot_masker(embodiment: str) -> RobotMasker:
-    """A masker for ``embodiment`` (a registered robot)."""
-    return RobotMasker(get_robot(embodiment))
