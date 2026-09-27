@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fetch what the MuJoCo "real" world needs into ~/.cache/r2s2r (R2S2R_CACHE):
+# Fetch what the MuJoCo testbed needs into ~/.cache/r2s2r (R2S2R_CACHE):
 # the Franka Panda and DROID's Robotiq 2F-85 from mujoco_menagerie, and a few Google
 # Scanned Objects (kevinzakka/mujoco_scanned_objects). Sparse, shallow clones.
 #
@@ -9,7 +9,7 @@ set -euo pipefail
 CACHE="${R2S2R_CACHE:-$HOME/.cache/r2s2r}"
 MODELS=("$@")
 if [ ${#MODELS[@]} -eq 0 ]; then
-    # The objects of r2s2r.real.mujoco.world.default_objects().
+    # The objects of the panda_table world (r2s2r.testbed.worlds.PANDA_OBJECTS).
     MODELS=(Crayola_Crayons_24_count Cole_Hardware_Mug_Classic_Blue Android_Figure_Orange)
 fi
 mkdir -p "${CACHE}"

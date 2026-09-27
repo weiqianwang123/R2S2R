@@ -1,17 +1,20 @@
-"""Run the pick program policy on a SceneSpec in Isaac Lab and score it.
+"""Run the pick program on a scene in Isaac Lab and score it.
 
-    OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/run_pick.py SCENE_DIR \
-        --target crayon --out outputs/mujoco_pick/isaac --headless
+    OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/pick.py SCENE_DIR \
+        --target crayon_box --out OUT_DIR --headless [--video-camera ext1]
 
-Writes ``result.json`` (success = the target rose more than 5 cm), ``commands.json``
-(every joint/gripper command, the same stream a deployment receives) and, with
-``--video-camera``, ``isaac_<role>.mp4`` from that calibrated camera.
+Writes ``OUT_DIR/result.json`` (success: the target rose more than 5 cm),
+``OUT_DIR/commands.json`` (every joint and gripper command, the same stream a
+deployment receives) and, with a video camera, ``OUT_DIR/isaac_<role>.mp4`` from that
+calibrated camera. ``r2s2r pick`` runs this beside the MuJoCo pick
+(:func:`r2s2r.sim.isaac.pick`).
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
@@ -29,9 +32,9 @@ args.enable_cameras = bool(args.video_camera)
 app = AppLauncher(args).app
 
 # pylint: disable=wrong-import-position
-from r2s2r.policy.scoring import summarize  # noqa: E402
-from r2s2r.sim.isaaclab.rollout import run_pick  # noqa: E402
+from r2s2r.sim.isaaclab.pick import run_pick  # noqa: E402
 from r2s2r.structs import SceneSpec  # noqa: E402
+from r2s2r.testbed.policy import summarize  # noqa: E402
 
 if __name__ == "__main__":
     result = run_pick(
@@ -44,5 +47,6 @@ if __name__ == "__main__":
         device=args.device,
     )
     print(f"{summarize(result)} -> {args.out}", flush=True)
-    # SimulationApp.close() can hang after headless camera rendering.
+    # Everything is written; SimulationApp.close() can hang after headless rendering.
+    sys.stdout.flush()
     os._exit(0)  # pylint: disable=protected-access

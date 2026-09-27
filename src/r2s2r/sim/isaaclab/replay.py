@@ -34,6 +34,7 @@ from r2s2r.sim.isaaclab.scene import (
     build_scene_cfg,
     camera_key,
     centered_render_size,
+    gripper_joints,
     make_scene,
     object_usd,
     with_object_usds,
@@ -89,19 +90,9 @@ class _Session:
         self.arm_ids, _ = self.robot.find_joints(
             list(self.robot_spec.isaac_arm_joints), preserve_order=True
         )
-        gripper = self.robot_spec.gripper
-        if gripper.isaac_joints is None:
-            # The driver alone, open at its lower soft limit.
-            self.grip_ids, _ = self.robot.find_joints([gripper.isaac_driver])
-            limits = self.robot.data.soft_joint_pos_limits[0, self.grip_ids]
-            self.grip_open, self.grip_closed = limits[:, 0], limits[:, 1]
-        else:
-            names = list(gripper.isaac_joints)
-            self.grip_ids, _ = self.robot.find_joints(names, preserve_order=True)
-            ends = self.robot.data.joint_pos.new_tensor(
-                [gripper.isaac_joints[n] for n in names]
-            )
-            self.grip_open, self.grip_closed = ends[:, 0], ends[:, 1]
+        self.grip_ids, self.grip_open, self.grip_closed = gripper_joints(
+            self.robot, self.robot_spec
+        )
         self.names = {f"object_{i}": obj.name for i, obj in enumerate(spec.objects)}
         self.index = {int(s): i for i, s in enumerate(traj.steps.tolist())}
 

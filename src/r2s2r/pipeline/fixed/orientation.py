@@ -32,10 +32,10 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-from r2s2r.assets import urdf_visual_points
+from r2s2r.assets import object_points
 from r2s2r.mjrender import SceneRenderer
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
-from r2s2r.transforms import make_transform, transform_points
+from r2s2r.transforms import make_transform
 
 VLM = Callable[[str, list[Path]], str]
 
@@ -63,7 +63,7 @@ class OrientationConfig:
 
 def turned(obj: ObjectSpec, T_base_support: NDArray, degrees: float) -> NDArray:
     """``T_base_obj`` turned about the support normal through the footprint centre."""
-    pts = transform_points(obj.T_base_obj, urdf_visual_points(obj.asset_path, 500))
+    pts = object_points(obj, 500)
     centre = (pts.min(axis=0) + pts.max(axis=0)) / 2
     normal = T_base_support[:3, 2]
     R = Rotation.from_rotvec(np.deg2rad(degrees) * normal).as_matrix()

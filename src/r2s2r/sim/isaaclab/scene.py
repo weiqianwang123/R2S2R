@@ -25,8 +25,9 @@ from typing import Iterable
 
 import isaaclab.sim as sim_utils
 import numpy as np
+import torch
 import yaml
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
 from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
@@ -60,6 +61,24 @@ def robot_cfg(robot: RobotSpec, joint_positions: NDArray) -> ArticulationCfg:
         pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0), joint_pos=joint_pos
     )
     return cfg
+
+
+def gripper_joints(
+    articulation: Articulation, robot: RobotSpec
+) -> tuple[list[int], torch.Tensor, torch.Tensor]:
+    """The gripper's articulation joints, and their open and closed positions: the
+    spec's table, else the driver alone between its soft limits."""
+    gripper = robot.gripper
+    if gripper.isaac_joints is None:
+        ids, _ = articulation.find_joints([gripper.isaac_driver])
+        limits = articulation.data.soft_joint_pos_limits[0, ids]
+        return ids, limits[:, 0], limits[:, 1]
+    names = list(gripper.isaac_joints)
+    ids, _ = articulation.find_joints(names, preserve_order=True)
+    ends = articulation.data.joint_pos.new_tensor(
+        [gripper.isaac_joints[n] for n in names]
+    )
+    return ids, ends[:, 0], ends[:, 1]
 
 
 def make_scene(cfg: InteractiveSceneCfg, robot: RobotSpec) -> InteractiveScene:

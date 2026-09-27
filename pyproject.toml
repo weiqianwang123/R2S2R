@@ -41,6 +41,11 @@ where = ["src"]
 [tool.setuptools.package-data]
 r2s2r = ["py.typed", "pipeline/agentic/briefs/*.md", "viewer/static/*"]
 
+[tool.pytest.ini_options]
+# Only our tests: third_party/ and _isaaclab/ hold test files whose imports start
+# Isaac Sim (and its licence prompt).
+testpaths = ["tests"]
+
 [tool.black]
 line-length = 88
 target-version = ["py311"]

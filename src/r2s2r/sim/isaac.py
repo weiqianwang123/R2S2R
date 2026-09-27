@@ -1,8 +1,8 @@
 """Isaac Lab, run in its own process (the Omniverse app must start first): settling a
-scene, and replaying a capture's recording in it to compare every view.
+scene, replaying a capture's recording in it to compare every view, and the pick test.
 
-Both take paths (a scene directory, a capture directory), so anything can call them: the
-runs' shared stage 5 and final replay, and the agent's tools.
+All take paths (a scene directory, a capture directory), so anything can call them: the
+runs' shared stage 5 and final replay, the agent's tools, and ``r2s2r pick``.
 """
 
 from __future__ import annotations
@@ -109,3 +109,30 @@ def replay(
             for name, cams in per_object.items()
         },
     }
+
+
+def pick(
+    scene_dir: str | Path,
+    target: str,
+    out_dir: str | Path,
+    video_camera: str | None = "ext1",
+) -> dict[str, Any]:
+    """Run the pick program on the scene for ``target`` (one of its objects) and
+    score it (``out_dir/result.json``; the commands and a video from the static camera
+    ``video_camera`` beside it)."""
+    out_dir = Path(out_dir).resolve()
+    _run_isaac(
+        "pick.py",
+        [
+            str(Path(scene_dir).resolve()),
+            "--target",
+            target,
+            "--out",
+            str(out_dir),
+            "--video-camera",
+            video_camera or "",
+        ],
+        out_dir / "pick.log",
+    )
+    result: dict[str, Any] = json.loads((out_dir / "result.json").read_text())
+    return result

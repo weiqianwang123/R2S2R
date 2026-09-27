@@ -3,7 +3,8 @@
 Captures: the robot's calibrated cameras, poses in its base frame, with joint states::
 
     r2s2r capture droid EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
-    r2s2r mujoco-capture --out CAPTURE_DIR [--cameras ext1 wrist]
+    r2s2r capture mujoco --world panda_table|physcoder_box_block --out CAPTURE_DIR
+        [--seed 0] [--block corner|beside] [--every 5]
 
 Reconstruction, a run of a method on a capture (see :mod:`r2s2r.pipeline`), and the
 tools a method (or anyone) can use on a run::
@@ -18,11 +19,11 @@ tools a method (or anyone) can use on a run::
                 replay> ...
     r2s2r viewer outputs/agentic [--port 8765]   # live progress in the browser
 
-MuJoCo as the real world::
+The MuJoCo testbed (:mod:`r2s2r.testbed`), scoring against a MuJoCo capture's ground
+truth and running the pick test in MuJoCo and Isaac Lab::
 
-    r2s2r mujoco-eval SCENE_DIR --capture CAPTURE_DIR
-    r2s2r mujoco-deploy (SCENE_DIR | --oracle) --capture CAPTURE_DIR --target NAME
-        --out OUT_DIR
+    r2s2r eval RUN_DIR|SCENE_DIR --capture CAPTURE_DIR
+    r2s2r pick (SCENE_DIR | --oracle) --capture CAPTURE_DIR --out OUT_DIR
 
 The Isaac Lab side runs as scripts, since the Omniverse app must start first
 (``scripts/isaaclab/``).
@@ -31,6 +32,7 @@ The Isaac Lab side runs as scripts, since the Omniverse app must start first
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 from typing import Callable
@@ -41,7 +43,6 @@ from r2s2r.pipeline.fixed import FixedMethod
 from r2s2r.pipeline.fixed.simfoundry import FRAME_SELECTIONS, SimFoundryConfig
 from r2s2r.pipeline.run import Method, run
 from r2s2r.pipeline.stages import STAGES
-from r2s2r.policy.scoring import summarize
 from r2s2r.structs import Capture, SceneSpec
 from r2s2r.tools.cli import add_tool_parser, print_json
 
@@ -93,32 +94,21 @@ def _run(args: argparse.Namespace) -> None:
 def _mujoco_capture(args: argparse.Namespace) -> None:
     # Imported here so the other subcommands work without MuJoCo and a GL driver.
     # pylint: disable=import-outside-toplevel
-    from r2s2r.real.mujoco.capture import record_capture
-    from r2s2r.real.mujoco.world import MujocoWorldConfig
+    from r2s2r.testbed.record import record_capture
+    from r2s2r.testbed.worlds import build_world
 
-    capture = record_capture(
-        args.out,
-        MujocoWorldConfig.preset(args.world),
-        name=args.name,
-        every=args.every,
-        cameras=args.cameras,
-    )
+    params = {
+        k: getattr(args, k) for k in ("seed", "block") if getattr(args, k) is not None
+    }
+    world = build_world(args.world, **params)
+    capture = record_capture(world, args.out, args.every)
+    world.close()
+    views = [v["view"] for v in capture.metadata["scan"] if "step" in v]
     print(
         f"capture {capture.name}: {len(capture.frames)} RGB-D frames from "
-        f"{len(capture.cameras)} cameras -> {capture.root}"
+        f"{len(capture.cameras)} cameras, wrist views {', '.join(views)}, "
+        f"'{capture.instruction}' -> {capture.root}"
     )
-
-
-def _print_scene_errors(scene: SceneSpec, capture: Capture) -> None:
-    # pylint: disable=import-outside-toplevel
-    from r2s2r.real.mujoco.deploy import scene_errors
-
-    for name, err in scene_errors(scene, capture).items():
-        print(
-            f"{name} ~ {err['ground_truth']}: centre off by "
-            f"{err['center_error_m'] * 100:.1f} cm, size {err['size_m']} "
-            f"(true {err['ground_truth_size_m']})"
-        )
 
 
 def _viewer(args: argparse.Namespace) -> None:
@@ -128,34 +118,58 @@ def _viewer(args: argparse.Namespace) -> None:
     serve(args.paths, args.host, args.port)
 
 
-def _mujoco_eval(args: argparse.Namespace) -> None:
-    scene, capture = SceneSpec.load(args.scene_dir), Capture.load(args.capture)
-    if args.match_target:
-        # pylint: disable=import-outside-toplevel
-        from r2s2r.real.mujoco.deploy import match_target
-
-        print(match_target(scene, capture))
-        return
-    _print_scene_errors(scene, capture)
-
-
-def _mujoco_deploy(args: argparse.Namespace) -> None:
-    from r2s2r.real.mujoco.deploy import (  # pylint: disable=import-outside-toplevel
-        match_target,
-        oracle_scene,
-        run_pick,
+def _eval(args: argparse.Namespace) -> None:
+    from r2s2r.testbed.evaluate import (  # pylint: disable=import-outside-toplevel
+        evaluate,
+        scenes_to_score,
+        summary,
     )
 
     capture = Capture.load(args.capture)
+    for scene_dir in scenes_to_score(args.path):
+        print(f"{scene_dir}:")
+        print("\n".join(summary(evaluate(SceneSpec.load(scene_dir), capture))))
+
+
+def _pick(args: argparse.Namespace) -> None:
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.sim import isaac
+    from r2s2r.testbed.evaluate import evaluate, summary
+    from r2s2r.testbed.pick import match_target, oracle_scene, run_pick
+    from r2s2r.testbed.policy import summarize
+    from r2s2r.testbed.worlds import world_from_capture
+
+    capture = Capture.load(args.capture)
     if args.oracle:
-        scene = oracle_scene(capture, args.out)
-        scene.save(args.out / "oracle_scene")
+        world = world_from_capture(capture)
+        scene_dir = oracle_scene(world, capture, args.out / "oracle_scene")
+        world.close()
+    elif args.scene_dir is not None:
+        scene_dir = args.scene_dir
     else:
-        scene = SceneSpec.load(args.scene_dir)
-        _print_scene_errors(scene, capture)
-    target = args.target or match_target(scene, capture)
-    result = run_pick(capture, scene, target, args.out, args.video_camera)
-    print(f"{summarize(result)} -> {args.out}")
+        raise SystemExit("pick: give a SCENE_DIR or --oracle")
+    scene = SceneSpec.load(scene_dir)
+    print("\n".join(summary(evaluate(scene, capture))))
+    target = match_target(scene, capture)
+    rollouts = {
+        "mujoco": run_pick(
+            capture, scene, target, args.out / "mujoco", args.video_camera
+        ),
+        "isaaclab": isaac.pick(
+            scene_dir, target, args.out / "isaaclab", args.video_camera
+        ),
+    }
+    result = {
+        "scene": str(Path(scene_dir).resolve()),
+        "scene_method": scene.provenance.get("method"),
+        "target": target,
+        **rollouts,
+    }
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "result.json").write_text(json.dumps(result, indent=2))
+    for sim, rollout in rollouts.items():
+        print(f"{sim}: {summarize(rollout)}")
+    print(f"-> {args.out / 'result.json'}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -174,6 +188,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--stride", type=int, default=5)
     p.add_argument("--gripper-threshold", type=float, default=0.05)
     p.set_defaults(func=_droid_capture)
+    p = sources.add_parser("mujoco", help="record a capture in a MuJoCo world")
+    p.add_argument("--world", required=True, help="panda_table, physcoder_box_block")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--seed", type=int, help="the layout's seed (physcoder_box_block)")
+    p.add_argument("--block", help="corner or beside the box (physcoder_box_block)")
+    p.add_argument("--every", type=int, default=5, help="frames every n steps")
+    p.set_defaults(func=_mujoco_capture)
 
     p = sub.add_parser("run", help="a method's run on a capture (new, or resumed)")
     p.add_argument("source", type=Path, help="a capture (a new run), or a run")
@@ -222,39 +243,26 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--port", type=int, default=8765)
     p.set_defaults(func=_viewer)
 
-    p = sub.add_parser("mujoco-capture", help="record a capture in the MuJoCo world")
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--name", default="mujoco_pick")
-    p.add_argument("--every", type=int, default=5, help="save every n control steps")
+    p = sub.add_parser("eval", help="score scenes against a MuJoCo capture's truth")
+    p.add_argument("path", type=Path, help="a scene, or a run (its stage 4-6 scenes)")
     p.add_argument(
-        "--cameras", nargs="+", help="cameras to record (default: ext1 wrist)"
+        "--capture", type=Path, required=True, help="the original MuJoCo capture"
     )
-    p.add_argument("--world", default="pick", help="world preset (pick)")
-    p.set_defaults(func=_mujoco_capture)
+    p.set_defaults(func=_eval)
 
-    p = sub.add_parser("mujoco-eval", help="score a scene against MuJoCo ground truth")
-    p.add_argument("scene_dir", type=Path)
-    p.add_argument("--capture", type=Path, required=True, help="MuJoCo capture dir")
-    p.add_argument(
-        "--match-target",
-        action="store_true",
-        help="only print the scene object that is the world's task target",
+    p = sub.add_parser(
+        "pick", help="the pick test on a scene, in MuJoCo and in Isaac Lab"
     )
-    p.set_defaults(func=_mujoco_eval)
-
-    p = sub.add_parser("mujoco-deploy", help="run the pick policy in the MuJoCo world")
     p.add_argument("scene_dir", type=Path, nargs="?")
-    p.add_argument("--capture", type=Path, required=True, help="MuJoCo capture dir")
     p.add_argument(
-        "--target",
-        help="object name or unique substring (default: the world's task target)",
+        "--capture", type=Path, required=True, help="the original MuJoCo capture"
     )
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--video-camera", default="ext1")
     p.add_argument(
-        "--oracle", action="store_true", help="use ground-truth objects, not SCENE_DIR"
+        "--oracle", action="store_true", help="pick in the ground truth's own scene"
     )
-    p.set_defaults(func=_mujoco_deploy)
+    p.add_argument("--video-camera", default="ext1", help="a static camera, '' none")
+    p.set_defaults(func=_pick)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)

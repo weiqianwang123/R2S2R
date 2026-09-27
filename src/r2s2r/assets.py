@@ -25,7 +25,8 @@ import trimesh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-from r2s2r.transforms import make_transform, rotation_to_quat
+from r2s2r.structs import ObjectSpec
+from r2s2r.transforms import make_transform, rotation_to_quat, transform_points
 
 SIM_READY_SUFFIX = "_r2s2r"
 RESTING_BASE = "r2s2r_resting_base"
@@ -101,6 +102,12 @@ def urdf_visual_points(
             for v in urdf_visual_meshes(urdf_path)
         ]
     )
+
+
+def object_points(obj: ObjectSpec, n: int = 3000) -> NDArray[np.float64]:
+    """``n`` surface samples per visual mesh of a scene object, in the robot base
+    frame."""
+    return transform_points(obj.T_base_obj, urdf_visual_points(obj.asset_path, n))
 
 
 # ------------------------------------------------------------------ preparation
