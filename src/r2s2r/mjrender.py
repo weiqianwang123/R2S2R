@@ -7,6 +7,7 @@ included.
 
 from __future__ import annotations
 
+import ctypes.util
 import os
 from typing import Any
 
@@ -14,7 +15,10 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-os.environ.setdefault("MUJOCO_GL", "egl")
+# Headless rendering through EGL, where there is an EGL library. Without one (e.g. CI),
+# MuJoCo imports with its default backend, and only rendering fails.
+if "MUJOCO_GL" not in os.environ and ctypes.util.find_library("EGL"):
+    os.environ["MUJOCO_GL"] = "egl"
 import mujoco  # noqa: E402  pylint: disable=wrong-import-position,wrong-import-order
 
 # OpenCV camera axes -> MuJoCo camera axes (x right, y up, looking along -z).
