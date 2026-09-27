@@ -1,6 +1,8 @@
 """Tests for the fixed method's refinement (pipeline/fixed/refine.py) and the footprint
 and outline fits it shares (tools/geometry.py), on synthetic geometry."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 import trimesh
@@ -118,6 +120,52 @@ def test_refine_scene_moves_misplaced_object(tmp_path):
     assert refined.support_extent == pytest.approx(TABLE, abs=0.03) or (
         refined.support_extent == pytest.approx(TABLE[::-1], abs=0.03)
     )
+
+
+def test_refine_scene_levels_the_support_and_the_views(tmp_path):
+    """SimFoundry's plane 2 degrees and 3 mm off, and one view's calibration 3 degrees
+    and 1 cm off: both lift part of the table above the objects' height threshold
+    (on real depth it merges with the objects there). The plane is refit to the views
+    and each view levelled onto it: only the box stands above the support, and it is
+    put back on the true table."""
+    urdf = _write_box_urdf(tmp_path)
+    truth = _yaw(np.deg2rad(30.0), [0.52, 0.03, 0.0])
+    K = intrinsics_matrix(240.0, 240.0, 160.0, 120.0)
+    views = []
+    for cam_z in (1.0, 0.9, 0.95):
+        depth, T_base_cam = _overhead_depth(truth, K, (320, 240), cam_z)
+        views.append(DepthView("0", len(views), depth, K, T_base_cam))
+    # The last view's pose: tilted 3 degrees about the table centre and 1 cm up.
+    turn = Rotation.from_euler("y", 3.0, degrees=True).as_matrix()
+    centre = np.array([0.5, 0.0, 0.0])
+    error = make_transform(turn, centre + [0.0, 0.0, 0.01] - turn @ centre)
+    views[-1] = replace(views[-1], T_base_cam=error @ views[-1].T_base_cam)
+    sf_plane = Rotation.from_euler("x", 2.0, degrees=True).as_matrix()
+    scene = SceneSpec(
+        name="synthetic",
+        embodiment="droid_franka",
+        objects=[
+            ObjectSpec(
+                "box", "box", str(urdf), _yaw(np.deg2rad(42.0), [0.55, 0.0, 0.0])
+            )
+        ],
+        T_base_support=make_transform(sf_plane, [0.45, 0.0, 0.003]),
+        cameras={"0": CameraSpec("0", "ext1", 320, 240, K, T_base_cam=np.eye(4))},
+        reference_camera="0",
+        reference_step=0,
+        joint_positions=np.zeros(7),
+    )
+    refined, report = refine_scene(scene, views)
+    assert report["objects"]["box"]["matched"] and len(report["clusters"]) == 1
+    assert refined.T_base_support[2, 2] > np.cos(np.deg2rad(0.3))
+    assert abs(refined.T_base_support[2, 3]) < 0.002
+    assert report["support"]["tilt_deg"] == pytest.approx(2.0, abs=0.3)
+    assert report["views"][2]["tilt_deg"] == pytest.approx(3.0, abs=0.3)
+    assert report["views"][2]["lift_m"] == pytest.approx(0.01, abs=0.003)
+    assert all(v["tilt_deg"] < 0.3 for v in report["views"][:2])
+    T = refined.objects[0].T_base_obj
+    assert np.linalg.norm(T[:2, 3] - truth[:2, 3]) < 0.01
+    assert abs(T[2, 3]) < 0.003  # resting on the table
 
 
 def test_matching_gates_before_assigning():

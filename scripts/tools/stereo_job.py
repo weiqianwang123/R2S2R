@@ -16,10 +16,14 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+# pylint: disable=import-error
 from hydra import compose, initialize_config_dir
 from simfoundry import CFG_DIR
 from simfoundry.pipeline.depth_backends import create_backend
 from simfoundry.pipeline.stage_utils import bootstrap_hydra_workdir
+
+# pylint: enable=import-error
 
 SCENE = "stereo"
 

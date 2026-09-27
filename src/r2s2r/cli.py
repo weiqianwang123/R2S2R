@@ -24,7 +24,7 @@ truth and running the pick test in MuJoCo and Isaac Lab::
 
     r2s2r eval RUN_DIR|SCENE_DIR --capture CAPTURE_DIR
     r2s2r pick (SCENE_DIR | --oracle) --capture CAPTURE_DIR --out OUT_DIR
-        [--video-camera ext1]
+        [--video-camera ext1] [--sims mujoco isaaclab]
 
 The Isaac Lab side runs as scripts, since the Omniverse app must start first
 (``scripts/isaaclab/``).
@@ -68,6 +68,7 @@ METHODS: dict[str, Callable[[argparse.Namespace], Method]] = {
     "fixed": _fixed,
     "agentic": _agentic,
 }
+SIMS = ("mujoco", "isaaclab")  # where the pick test runs
 
 
 def _droid_capture(args: argparse.Namespace) -> None:
@@ -165,14 +166,11 @@ def _pick(args: argparse.Namespace) -> None:
     scene = SceneSpec.load(scene_dir)
     print("\n".join(summary(evaluate(scene, capture))))
     target = match_target(scene, capture)
-    rollouts = {
-        "mujoco": run_pick(
-            capture, scene, target, args.out / "mujoco", args.video_camera
-        ),
-        "isaaclab": isaac.pick(
-            scene_dir, target, args.out / "isaaclab", args.video_camera
-        ),
+    sims = {
+        "mujoco": lambda out: run_pick(capture, scene, target, out, args.video_camera),
+        "isaaclab": lambda out: isaac.pick(scene_dir, target, out, args.video_camera),
     }
+    rollouts = {sim: sims[sim](args.out / sim) for sim in args.sims}
     result = {
         "scene": str(Path(scene_dir).resolve()),
         "scene_method": scene.provenance.get("method"),
@@ -276,6 +274,13 @@ def main(argv: list[str] | None = None) -> None:
         "--oracle", action="store_true", help="pick in the ground truth's own scene"
     )
     p.add_argument("--video-camera", default="ext1", help="a static camera, '' none")
+    p.add_argument(
+        "--sims",
+        nargs="+",
+        choices=SIMS,
+        default=list(SIMS),
+        help="where to run it (Isaac Lab needs its install)",
+    )
     p.set_defaults(func=_pick)
 
     args = parser.parse_args(argv)

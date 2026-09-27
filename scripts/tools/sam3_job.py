@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
-from simfoundry.models.sam_v3_gmask import SAM3
+from simfoundry.models.sam_v3_gmask import SAM3  # pylint: disable=import-error
 
 
 def _instances(masks, scores, prefix):

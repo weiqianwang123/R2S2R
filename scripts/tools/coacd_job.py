@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-import coacd
+import coacd  # pylint: disable=import-error
 import numpy as np
 import trimesh
 

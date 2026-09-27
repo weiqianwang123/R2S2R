@@ -2,8 +2,8 @@
 :mod:`~r2s2r.pipeline.fixed.simfoundry`); the depth of every candidate frame then says
 which objects exist (:mod:`~r2s2r.pipeline.fixed.existence`), how they are turned about
 the support normal (:mod:`~r2s2r.pipeline.fixed.orientation`, a Codex VLM on ties,
-:mod:`~r2s2r.pipeline.fixed.vlm`) and where they and the support's outline are
-(:mod:`~r2s2r.pipeline.fixed.refine`) (stage 3); the shared assembly makes them
+:mod:`~r2s2r.pipeline.fixed.vlm`) and where they and the support's plane and outline
+are (:mod:`~r2s2r.pipeline.fixed.refine`) (stage 3); the shared assembly makes them
 simulation-ready with SimFoundry's collision hulls, masses and frictions (stage 4,
 :func:`r2s2r.tools.objects.assemble`).
 
