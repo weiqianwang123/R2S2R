@@ -46,27 +46,27 @@ class IsaacLabRobot(RobotInterface):
         self.session = session
         self.on_step = on_step
         self.render_every = render_every
-        driver, _ = session.robot.find_joints([self.robot.gripper.isaac_driver])
+        driver, _ = session.articulation.find_joints([self.robot.gripper.isaac_driver])
         self.driver = session.grip_ids.index(driver[0])
-        self.decimation = max(1, int(round(self.control_dt / session.dt)))
+        self.decimation = max(1, int(round(CONTROL_DT / session.dt)))
         self.steps = 0
 
     def joint_positions(self) -> NDArray[np.float64]:
         s = self.session
-        return s.robot.data.joint_pos[0, s.arm_ids].cpu().numpy().astype(float)
+        return s.articulation.data.joint_pos[0, s.arm_ids].cpu().numpy().astype(float)
 
     def gripper_level(self) -> float:
         s, k = self.session, self.driver
-        q = s.robot.data.joint_pos[0, s.grip_ids[k]].item()
+        q = s.articulation.data.joint_pos[0, s.grip_ids[k]].item()
         lo, hi = s.grip_open[k].item(), s.grip_closed[k].item()
         return float(np.clip((q - lo) / (hi - lo), 0.0, 1.0))
 
     def _hold(self, q: NDArray[np.float64], level: float) -> None:
         s = self.session
-        target = s.robot.data.joint_pos_target.clone()
+        target = s.articulation.data.joint_pos_target.clone()
         target[0, s.arm_ids] = target.new_tensor(q)
         target[0, s.grip_ids] = s.gripper_targets(level)
-        s.robot.set_joint_position_target(target)
+        s.articulation.set_joint_position_target(target)
         render = self.render_every > 0 and (self.steps + 1) % self.render_every == 0
         s.step_physics(self.decimation, render)
         self.steps += 1
@@ -104,7 +104,7 @@ def run_pick(
 
     # sim.reset() leaves the USD's joint state; start from the scene's instead,
     # then let the objects come to rest under physics.
-    arm = session.robot
+    arm = session.articulation
     arm.write_joint_state_to_sim(arm.data.default_joint_pos, arm.data.default_joint_vel)
     arm.set_joint_position_target(arm.data.default_joint_pos)
     session.step_physics(int(REST_SECONDS / session.dt))
@@ -114,9 +114,7 @@ def run_pick(
     if video_cams:
         cam = video_cams[0][0]
         window = crop_window(cam)
-        video = VideoRecorder(
-            out_dir / f"isaac_{cam.role}.mp4", 1 / (CONTROL_DT * VIDEO_EVERY)
-        )
+        video = VideoRecorder(out_dir / f"isaac_{cam.role}.mp4")
 
     def record(robot: IsaacLabRobot) -> None:
         if video is not None and robot.steps % VIDEO_EVERY == 0:

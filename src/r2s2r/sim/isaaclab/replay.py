@@ -78,12 +78,12 @@ class _Recorded(Session):
 
     def set_state(self, i: int) -> None:
         """The robot at trajectory row ``i``, and held there."""
-        state = self.robot.data.default_joint_pos.clone()
+        state = self.articulation.data.default_joint_pos.clone()
         state[0, self.arm_ids] = state.new_tensor(self.traj.joint_positions[i])
         level = float(np.clip(self.traj.gripper_position[i], 0.0, 1.0))
         state[0, self.grip_ids] = self.gripper_targets(level)
-        self.robot.write_joint_state_to_sim(state, torch.zeros_like(state))
-        self.robot.set_joint_position_target(state)
+        self.articulation.write_joint_state_to_sim(state, torch.zeros_like(state))
+        self.articulation.set_joint_position_target(state)
 
 
 def replay(
@@ -123,7 +123,7 @@ def replay(
         i = session.index[step]
         session.set_state(i)
         session.step_physics(1)
-        measured = session.robot.data.joint_pos[0, session.arm_ids].cpu().numpy()
+        measured = session.articulation.data.joint_pos[0, session.arm_ids].cpu().numpy()
         log["arm_error_rad"].append(
             [step, float(np.abs(measured - session.traj.joint_positions[i]).max())]
         )

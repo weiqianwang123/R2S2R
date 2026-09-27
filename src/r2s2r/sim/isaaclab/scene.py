@@ -391,31 +391,31 @@ class Session:
     """A scene running in Isaac Lab (:func:`build_scene_cfg`): the simulation, the
     interactive scene, the robot's arm and gripper joints, the objects by name.
 
-    ``robot`` is the scene's embodiment; ``kinematic_objects`` holds the objects where
-    they are placed; ``cameras`` as for :func:`build_scene_cfg`.
+    ``robot_spec`` is the scene's embodiment; ``kinematic_objects`` holds the objects
+    where they are placed; ``cameras`` as for :func:`build_scene_cfg`.
     """
 
     def __init__(
         self,
         spec: SceneSpec,
-        robot: RobotSpec,
+        robot_spec: RobotSpec,
         kinematic_objects: bool,
         device: str,
         cameras: Iterable[tuple[CameraSpec, NDArray]] = (),
     ) -> None:
-        self.robot_spec = robot
+        self.robot_spec = robot_spec
         self.sim = SimulationContext(SimulationCfg(dt=PHYSICS_DT, device=device))
         self.scene = make_scene(
-            build_scene_cfg(spec, robot, kinematic_objects, cameras), robot
+            build_scene_cfg(spec, robot_spec, kinematic_objects, cameras), robot_spec
         )
         self.sim.reset()
         self.dt = self.sim.get_physics_dt()
-        self.robot: Articulation = self.scene["robot"]
-        self.arm_ids, _ = self.robot.find_joints(
-            list(robot.isaac_arm_joints), preserve_order=True
+        self.articulation: Articulation = self.scene["robot"]
+        self.arm_ids, _ = self.articulation.find_joints(
+            list(robot_spec.isaac_arm_joints), preserve_order=True
         )
         self.grip_ids, self.grip_open, self.grip_closed = gripper_joints(
-            self.robot, robot
+            self.articulation, robot_spec
         )
         self.names = {object_key(i): obj.name for i, obj in enumerate(spec.objects)}
 

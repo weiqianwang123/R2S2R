@@ -25,6 +25,7 @@ from r2s2r.pipeline.stages import (
     read_json,
     support_file,
 )
+from r2s2r.tools.geometry import load_support
 from r2s2r.workspace import RUN_FILENAME, Workspace
 
 ACTIVE_S = 15 * 60  # a running stage that wrote nothing for longer has stopped
@@ -287,7 +288,8 @@ def _replay_panels(ws: Workspace, d: Path) -> list[str]:
 
 def _scenes(ws: Workspace, dirs: dict[str, Path]) -> list[dict[str, Any]]:
     """What the 3D view can show, newest first: the stages' scenes and objects files,
-    and the support alone."""
+    and the support alone (when its file has an extent: a fixed run's holds only the
+    plane)."""
     found = []
     for key, d in dirs.items():
         if not d.exists():
@@ -296,8 +298,9 @@ def _scenes(ws: Workspace, dirs: dict[str, Path]) -> list[dict[str, Any]]:
             if (d / name).exists():
                 found.append((key, d / name))
     support_name = support_file(_json(dirs["2"] / "output.json"))
-    if support_name and (dirs["2"] / support_name).exists():
-        found.append(("2", dirs["2"] / support_name))
+    path = dirs["2"] / support_name if support_name else None
+    if path is not None and path.exists() and load_support(path)[1] is not None:
+        found.append(("2", path))
     out: list[dict[str, Any]] = [
         {
             "label": f"stage {key}: {p.relative_to(ws.root)}",

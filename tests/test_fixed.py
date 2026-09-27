@@ -71,7 +71,8 @@ def fixture_capture(tmp_path, monkeypatch):
 
 
 def _write_object(urdf_dir, model):
-    """A stage-11 object: one link, a textured visual mesh, a scaled collision hull."""
+    """A SimFoundry stage 11 object: one link, a textured visual mesh, a scaled
+    collision hull."""
     visual = urdf_dir / "shape" / "visual" / f"{model}.obj"
     for d in (visual.parent, urdf_dir / "shape" / "collision", urdf_dir / "material"):
         d.mkdir(parents=True, exist_ok=True)

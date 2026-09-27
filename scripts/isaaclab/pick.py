@@ -4,8 +4,8 @@
         --target crayon_box --out OUT_DIR --headless [--video-camera ext1]
 
 Writes ``OUT_DIR/result.json`` (success: the target rose more than 5 cm),
-``OUT_DIR/commands.json`` (every joint and gripper command, the same stream a
-deployment receives) and, with a video camera, ``OUT_DIR/isaac_<role>.mp4`` from that
+``OUT_DIR/commands.json`` (every joint and gripper command, the same stream the
+MuJoCo pick sends) and, with a video camera, ``OUT_DIR/isaac_<role>.mp4`` from that
 calibrated camera. ``r2s2r pick`` runs this beside the MuJoCo pick
 (:func:`r2s2r.sim.isaac.pick`).
 """

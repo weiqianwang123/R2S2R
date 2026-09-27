@@ -39,12 +39,13 @@ LIFT_SUCCESS_M = 0.05  # the target must rise this much to count as picked
 HOLDING_MARGIN = 0.05
 CONTROL_DT = 0.02  # seconds per command (and per step of a MuJoCo recording)
 VIDEO_EVERY = 2  # control steps per video frame
+VIDEO_FPS = 1 / (CONTROL_DT * VIDEO_EVERY)
 SHEET_FRAMES, SHEET_WIDTH = 6, 1920  # a video's contact sheet
 
 
 @dataclass
 class CommandLog:
-    """Every command sent, for comparing deployments."""
+    """Every command sent, for comparing the simulators."""
 
     t: list[float] = field(default_factory=list)
     q: list[list[float]] = field(default_factory=list)
@@ -57,8 +58,6 @@ class CommandLog:
 
 class RobotInterface(ABC):
     """A robot arm with a gripper, driven by joint position targets."""
-
-    control_dt: float = CONTROL_DT
 
     def __init__(self, robot: RobotSpec) -> None:
         self.robot = robot
@@ -79,7 +78,7 @@ class RobotInterface(ABC):
 
     @abstractmethod
     def _hold(self, q: NDArray[np.float64], level: float) -> None:
-        """Track these targets for one ``control_dt``."""
+        """Track these targets for one :data:`CONTROL_DT`."""
 
     # ---------------------------------------------------------------- commands
     @property
@@ -94,7 +93,7 @@ class RobotInterface(ABC):
         control period."""
         self._q_cmd = np.asarray(q, dtype=float).copy()
         self._hold(self._q_cmd, self._level)
-        self._t += self.control_dt
+        self._t += CONTROL_DT
         self.log.t.append(round(self._t, 6))
         self.log.q.append([float(v) for v in self._q_cmd])
         self.log.gripper.append(self._level)
@@ -106,7 +105,7 @@ class RobotInterface(ABC):
 
     def wait(self, seconds: float) -> None:
         """Hold the current command."""
-        for _ in range(max(1, int(round(seconds / self.control_dt)))):
+        for _ in range(max(1, int(round(seconds / CONTROL_DT)))):
             self.step(self.q_command)
 
     def set_gripper(self, level: float, seconds: float = 0.8) -> None:
@@ -121,8 +120,8 @@ class RobotInterface(ABC):
         moves most."""
         q_start = self.q_command
         q_goal = np.asarray(q_goal, dtype=float)
-        duration = max(float(np.max(np.abs(q_goal - q_start))) / speed, self.control_dt)
-        n = int(np.ceil(duration / self.control_dt))
+        duration = max(float(np.max(np.abs(q_goal - q_start))) / speed, CONTROL_DT)
+        n = int(np.ceil(duration / CONTROL_DT))
         for i in range(1, n + 1):
             s = i / n
             s = s * s * (3 - 2 * s)
@@ -147,8 +146,8 @@ class RobotInterface(ABC):
                 Rotation.from_matrix(T_goal[:3, :3] @ T_start[:3, :3].T).as_rotvec()
             )
         )
-        duration = max(dist / speed, angle / angular_speed, self.control_dt)
-        n = int(np.ceil(duration / self.control_dt))
+        duration = max(dist / speed, angle / angular_speed, CONTROL_DT)
+        n = int(np.ceil(duration / CONTROL_DT))
         slerp = Slerp(
             [0.0, 1.0],
             Rotation.from_matrix(np.stack([T_start[:3, :3], T_goal[:3, :3]])),
@@ -385,9 +384,8 @@ def save_rollout(out_dir: Path, result: dict[str, Any], log: CommandLog) -> None
 class VideoRecorder:
     """Collect RGB frames; write an mp4 and a contact sheet of evenly spaced frames."""
 
-    def __init__(self, path: str | Path, fps: float = 25.0) -> None:
+    def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self.fps = fps
         self.frames: list[NDArray[np.uint8]] = []
 
     def add(self, rgb: NDArray[np.uint8]) -> None:
@@ -401,7 +399,7 @@ class VideoRecorder:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         h, w = self.frames[0].shape[:2]
         writer = cv2.VideoWriter(
-            str(self.path), cv2.VideoWriter.fourcc(*"mp4v"), self.fps, (w, h)
+            str(self.path), cv2.VideoWriter.fourcc(*"mp4v"), VIDEO_FPS, (w, h)
         )
         for frame in self.frames:
             writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
@@ -418,7 +416,7 @@ class VideoRecorder:
             )
             cv2.putText(
                 tile,
-                f"t={i / self.fps:.1f}s",
+                f"t={i / VIDEO_FPS:.1f}s",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.9,

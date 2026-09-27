@@ -58,7 +58,7 @@ class MujocoRobot(RobotInterface):
 
     def _hold(self, q: NDArray[np.float64], level: float) -> None:
         self.world.hold(q, level)
-        self.world.step(self.control_dt)
+        self.world.step(CONTROL_DT)
         self.steps += 1
         if self.on_step is not None:
             self.on_step(self)
@@ -163,8 +163,7 @@ def run_pick(
     world = world_from_capture(capture)
     video = None
     if video_camera:
-        fps = 1 / (CONTROL_DT * VIDEO_EVERY)
-        video = VideoRecorder(out_dir / f"mujoco_{video_camera}.mp4", fps)
+        video = VideoRecorder(out_dir / f"mujoco_{video_camera}.mp4")
 
     def record(robot: MujocoRobot) -> None:
         if video is not None and robot.steps % VIDEO_EVERY == 0:
