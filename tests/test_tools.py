@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import pytest
 import trimesh
-from conftest import RGBD_K, RGBD_SIZE, rgbd_capture
+from conftest import RGBD_K, RGBD_SIZE, box_urdf, rgbd_capture
 from scipy.spatial.transform import Rotation
 
 from r2s2r.pipeline.workspace import Workspace
@@ -26,17 +26,6 @@ CAMERAS = {
 TRUE_POSE = make_transform(
     Rotation.from_euler("z", 30, degrees=True).as_matrix(), [0.5, 0.05, 0.0]
 )
-
-
-def _box_urdf(tmp_path, extents, name="box"):
-    box = trimesh.creation.box(extents=extents)
-    box.apply_translation([0, 0, extents[2] / 2])
-    box.export(tmp_path / f"{name}.obj")
-    (tmp_path / f"{name}.urdf").write_text(
-        f'<robot name="{name}"><link name="base"><visual><geometry>'
-        f'<mesh filename="{name}.obj"/></geometry></visual></link></robot>'
-    )
-    return tmp_path / f"{name}.urdf"
 
 
 def test_view_points_keep_the_masked_strided_pixels():
@@ -154,7 +143,7 @@ def test_fit_recovers_scale_yaw_and_position(tmp_path):
     truth = SceneSpec(
         "t",
         "franka_panda",
-        [ObjectSpec("box", "box", str(_box_urdf(tmp_path, BOX)), TRUE_POSE)],
+        [ObjectSpec("box", "box", str(box_urdf(tmp_path, BOX)), TRUE_POSE)],
         np.eye(4),
         {},
         "c1",

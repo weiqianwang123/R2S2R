@@ -40,6 +40,7 @@ from r2s2r.transforms import (
     look_at,
     make_transform,
     rotation_to_quat,
+    transform_points,
 )
 
 GSO_DIR = CACHE_DIR / "gso" / "models"
@@ -49,15 +50,15 @@ BOX_BLOCK_XML = (
 BLOCK_LAYOUTS = ("corner", "beside")
 SETTLE_SECONDS = 1.0  # physics before ground truth is read: free objects come to rest
 MOUNT_GAP = 0.05  # robot-scene pairs this near at the home pose are the arm's mount
+SUPPORT_TOLERANCE = 0.003  # m: the support's visible top is this near its collision top
 
 
 @dataclass(frozen=True)
 class WorldObject:
-    """A ground-truth object: its body, and what it rests on (an object or the
-    support's body)."""
+    """A ground-truth object (the body of that name), and what it rests on (an object
+    or the support's body)."""
 
     name: str
-    body: str
     rests_on: str
 
 
@@ -66,9 +67,10 @@ class MujocoWorld:
     (``cameras``: roles of the MJCF cameras recorded, static ones first) and ground
     truth.
 
-    ``name`` and ``params`` rebuild it (:func:`build_world`); ``layout`` is what the
-    builder placed where, ``target`` the object a pick test should lift, and
-    ``support`` the box geom whose top face the objects stand on.
+    ``robot`` is the robot's spec and ``kinematics`` poses it in the world's model and
+    data. ``name`` and ``params`` rebuild the world (:func:`build_world`); ``layout``
+    is what the builder placed where, ``target`` the object a pick test should lift,
+    and ``support`` the box geom whose top face the objects stand on.
     """
 
     def __init__(
@@ -90,18 +92,24 @@ class MujocoWorld:
         self.objects, self.support, self.cameras = objects, support, cameras
         self.target, self.instruction = target, instruction
         self.layout, self.source = layout, source
+        self.robot = robot
         robot.position_control(mjspec)
+        # A real arm's controller compensates gravity; the objects feel it. (Set before
+        # compiling: MuJoCo counts the compensated bodies then.)
+        base = mjspec.joint(robot.arm_joints[0]).parent
+        while base.parent.name != mjspec.worldbody.name:
+            base = base.parent
+        for body in (base, *base.find_all(mujoco.mjtObj.mjOBJ_BODY)):
+            body.gravcomp = 1.0
         sizes = np.array([mjspec.camera(c).resolution for c in cameras])
         max_size = (int(sizes[:, 0].max()), int(sizes[:, 1].max()))
         add_camera(mjspec, max_size)
-        self.robot = RobotModel(robot, mjspec)
-        self.model, self.data = self.robot.model, self.robot.data
+        self.kinematics = RobotModel(robot, mjspec)
+        self.model, self.data = self.kinematics.model, self.kinematics.data
         self.renderer = CameraRenderer(self.model, self.data, max_size)
         m = self.model
         first = m.jnt_bodyid[m.joint(robot.arm_joints[0]).id]
         robot_bodies = np.flatnonzero(m.body_rootid == m.body_rootid[first])
-        # A real arm's controller compensates gravity; the objects feel it.
-        m.body_gravcomp[robot_bodies] = 1.0
         by_joint = {
             int(m.actuator_trnid[a, 0]): a
             for a in range(m.nu)
@@ -123,18 +131,13 @@ class MujocoWorld:
         )
         self._mount = {pair for pair, _ in self._near_pairs(MOUNT_GAP)}
 
-    @property
-    def spec(self) -> RobotSpec:
-        """The robot's spec."""
-        return self.robot.robot
-
     # ----------------------------------------------------------------- state
     def reset(self, settle: float = SETTLE_SECONDS) -> None:
         """The robot at its home pose, gripper open and held there, the objects where
         the builder put them; then ``settle`` seconds of physics."""
         mujoco.mj_resetData(self.model, self.data)
-        home = np.asarray(self.spec.home_q)
-        self.robot.set(home, 0.0)
+        home = np.asarray(self.robot.home_q)
+        self.kinematics.set(home, 0.0)
         self.hold(home, 0.0)
         mujoco.mj_forward(self.model, self.data)
         self.step(settle)
@@ -143,7 +146,7 @@ class MujocoWorld:
         """Arm joint targets and gripper opening (0 open, 1 closed) for the
         actuators."""
         self.data.ctrl[self.arm_actuators] = q
-        lo, hi = self.spec.gripper.ctrl
+        lo, hi = self.robot.gripper.ctrl
         self.data.ctrl[self.gripper_actuator] = lo + float(level) * (hi - lo)
 
     def step(self, seconds: float) -> None:
@@ -153,22 +156,21 @@ class MujocoWorld:
 
     def arm_q(self) -> NDArray[np.float64]:
         """Arm joints."""
-        return self.data.qpos[self.robot.arm_qadr].copy()
+        return self.data.qpos[self.kinematics.arm_qadr].copy()
 
     def gripper_level(self) -> float:
         """The gripper's opening from its driver joint, 0 open to 1 closed."""
-        g = self.spec.gripper
+        g = self.robot.gripper
         x = (self.data.qpos[self.driver_qadr] - g.open) / (g.closed - g.open)
         return float(np.clip(x, 0.0, 1.0))
 
     def body_pose(self, name: str) -> NDArray[np.float64]:
         """``T_base_body``."""
-        body = self.data.body(name)
-        return make_transform(body.xmat.reshape(3, 3), body.xpos)
+        return self.kinematics.pose(name)
 
     def object_positions(self) -> dict[str, NDArray[np.float64]]:
         """Every ground-truth object's position."""
-        return {o.name: self.body_pose(o.body)[:3, 3].copy() for o in self.objects}
+        return {o.name: self.body_pose(o.name)[:3, 3].copy() for o in self.objects}
 
     def clearance(self, limit: float) -> float:
         """The moving robot's distance to the scene, its mount aside, as posed
@@ -217,7 +219,7 @@ class MujocoWorld:
 
     def camera_pose(self, role: str) -> NDArray[np.float64]:
         """A camera's current OpenCV ``T_base_cam``."""
-        return self.robot.pose(role, "camera")
+        return self.kinematics.pose(role, "camera")
 
     def render(self, role: str) -> dict[str, NDArray]:
         """``rgb`` (H, W, 3), planar ``depth`` in metres and ``body`` ids (-1: none)
@@ -256,9 +258,9 @@ class MujocoWorld:
 
     def _object_truth(self, obj: WorldObject) -> dict[str, Any]:
         m = self.model
-        body = m.body(obj.body).id
-        T = self.body_pose(obj.body)
-        visual, colliding = self.geoms(obj.body)
+        body = m.body(obj.name).id
+        T = self.body_pose(obj.name)
+        visual, colliding = self.geoms(obj.name)
         points = np.concatenate([_vertices(m, g) for g in visual])
         points = points @ T[:3, :3].T + T[:3, 3]
         lo, hi = points.min(axis=0), points.max(axis=0)
@@ -285,6 +287,10 @@ class MujocoWorld:
         }
 
     def _support_truth(self) -> dict[str, Any]:
+        """The support's collision top (its height, where the objects stand), centred
+        and sized by what the cameras see there: its body's upward visual faces within
+        :data:`SUPPORT_TOLERANCE` of that top. (physcoder's table box is turned 90
+        degrees from the table it draws.)"""
         m, d = self.model, self.data
         g = m.geom(self.support).id
         if m.geom_type[g] != mujoco.mjtGeom.mjGEOM_BOX:
@@ -292,13 +298,27 @@ class MujocoWorld:
         R = d.geom_xmat[g].reshape(3, 3)
         if R[2, 2] < 0.999:
             raise ValueError(f"support geom {self.support} is not level")
-        size = m.geom_size[g]
-        T = make_transform(R, d.geom_xpos[g] + R[:, 2] * size[2])
+        top = d.geom_xpos[g] + R[:, 2] * m.geom_size[g][2]
+        body = m.body(m.geom_bodyid[g]).name
+        T_base_body = self.body_pose(body)
+        seen = [np.empty((0, 3))]
+        for v in self.geoms(body)[0]:
+            mesh = geom_mesh(m, v)
+            if mesh is None:
+                continue
+            faces = transform_points(T_base_body, mesh.vertices)[mesh.faces]
+            up = mesh.face_normals @ T_base_body[:3, :3].T
+            level = np.all(np.abs(faces[..., 2] - top[2]) < SUPPORT_TOLERANCE, axis=1)
+            seen.append(faces[(up[:, 2] > 0.9) & level].reshape(-1, 3))
+        local = (np.concatenate(seen) - top) @ R  # in the support's frame
+        if not len(local):
+            raise ValueError(f"nothing of {body} is seen at its collision top")
+        lo, hi = local[:, :2].min(axis=0), local[:, :2].max(axis=0)
         return {
-            "T_base_support": T,
-            "height": float(T[2, 3]),
-            "size": 2 * size[:2],
-            "body": m.body(m.geom_bodyid[g]).name,
+            "T_base_support": make_transform(R, top + R[:, :2] @ ((lo + hi) / 2)),
+            "height": float(top[2]),
+            "size": hi - lo,
+            "body": body,
         }
 
 
@@ -369,7 +389,7 @@ def panda_table() -> MujocoWorld:
         {},
         robot,
         spec,
-        objects=[WorldObject(o.name, o.name, "table") for o in PANDA_OBJECTS],
+        objects=[WorldObject(o.name, "table") for o in PANDA_OBJECTS],
         support="table_top",
         cameras=("ext1", "wrist"),
         target="crayon_box",
@@ -570,11 +590,10 @@ def physcoder_box_block(seed: int = 0, block: str = "corner") -> MujocoWorld:
     blk.pos = layout["block_pos"]
     yaw = layout["box_yaw"] + layout["block_yaw"]
     blk.quat = [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)]
-    front = FRONT_CAMERA
     spec.worldbody.add_camera(
         name="ext1",
-        pos=front[:3, 3].tolist(),
-        quat=rotation_to_quat(front[:3, :3]).tolist(),
+        pos=FRONT_CAMERA[:3, 3].tolist(),
+        quat=rotation_to_quat(FRONT_CAMERA[:3, :3]).tolist(),
         **_intrinsics(*FRONT_SIZE, FRONT_FOCAL),
     )
     where = "in a corner of" if block == "corner" else "beside"
@@ -584,8 +603,8 @@ def physcoder_box_block(seed: int = 0, block: str = "corner") -> MujocoWorld:
         robot,
         spec,
         objects=[
-            WorldObject("box", "box", "table"),
-            WorldObject("block", "block", "box" if block == "corner" else "table"),
+            WorldObject("box", "table"),
+            WorldObject("block", "box" if block == "corner" else "table"),
         ],
         support="table_mesh_0",
         cameras=("ext1", "wrist"),

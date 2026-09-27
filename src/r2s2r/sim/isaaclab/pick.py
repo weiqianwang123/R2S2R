@@ -41,8 +41,6 @@ class IsaacLabRobot(RobotInterface):
     """A robot in an interactive scene (the ``robot`` entity), its arm and gripper
     on joint position targets."""
 
-    control_dt = 0.02
-
     def __init__(
         self,
         robot: RobotSpec,

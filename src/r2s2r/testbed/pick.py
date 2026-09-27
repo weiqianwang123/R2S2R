@@ -37,14 +37,12 @@ STATIC_MASS = 2.0
 class MujocoRobot(RobotInterface):
     """The world's robot behind the policy interface."""
 
-    control_dt = 0.02
-
     def __init__(
         self,
         world: MujocoWorld,
         on_step: Callable[[MujocoRobot], None] | None = None,
     ) -> None:
-        super().__init__(world.spec)
+        super().__init__(world.robot)
         self.world = world
         self.on_step = on_step
         self.steps = 0
@@ -84,16 +82,16 @@ def oracle_scene(world: MujocoWorld, capture: Capture, out_dir: str | Path) -> P
     truth = ground_truth(capture)
     objects = []
     for obj in world.objects:
-        spec = truth["objects"][obj.name]
-        urdf = _object_urdf(world, obj.body, out_dir / "objects" / obj.name)
+        gt = truth["objects"][obj.name]
+        urdf = _object_urdf(world, obj.name, out_dir / "objects" / obj.name)
         objects.append(
             ObjectSpec(
                 name=obj.name,
                 category=obj.name,
                 asset_path=str(urdf),
-                T_base_obj=spec["T_base_obj"],
-                mass=STATIC_MASS if spec["static"] else spec["mass"],
-                friction=spec["friction"],
+                T_base_obj=gt["T_base_obj"],
+                mass=STATIC_MASS if gt["static"] else gt["mass"],
+                friction=gt["friction"],
             )
         )
     support = truth["support"]
@@ -105,7 +103,7 @@ def oracle_scene(world: MujocoWorld, capture: Capture, out_dir: str | Path) -> P
         cameras=capture.cameras,
         reference_camera=next(iter(capture.cameras)),
         reference_step=0,
-        joint_positions=np.asarray(world.spec.home_q, float),
+        joint_positions=np.asarray(world.robot.home_q, float),
         provenance={"method": "oracle"},
         support_extent=(float(support["size"][0]), float(support["size"][1])),
     )

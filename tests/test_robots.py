@@ -6,32 +6,20 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+from conftest import robot_or_skip
 
 pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
 from r2s2r.robots import ROBOTS, droid_franka, get_robot, ur5e_2f140  # noqa: E402
 from r2s2r.robots.model import RobotModel  # noqa: E402
-from r2s2r.robots.spec import MENAGERIE_DIR  # noqa: E402
 from r2s2r.transforms import intrinsics_matrix, invert, look_at  # noqa: E402
-
-ASSETS = {
-    "franka_panda": MENAGERIE_DIR / "franka_emika_panda",
-    "droid_franka": MENAGERIE_DIR / "robotiq_2f85",
-    "ur5e_2f140": ur5e_2f140.MJCF_PATH,
-}
-
-
-def _robot(name: str):
-    if not Path(ASSETS[name]).exists():
-        pytest.skip(f"{name}'s MJCF is not here ({ASSETS[name]})")
-    return get_robot(name)
 
 
 @pytest.fixture(name="model", scope="module", params=sorted(ROBOTS))
 def fixture_model(request):
     """Each robot's model."""
-    return RobotModel(_robot(request.param))
+    return RobotModel(robot_or_skip(request.param))
 
 
 def test_registry_names_the_known_robots():
@@ -77,7 +65,7 @@ def test_gripper_opens_and_closes(model):
 @pytest.mark.parametrize("name", ["droid_franka", "ur5e_2f140"])
 def test_robotiq_tcp_is_between_the_closed_pads(name):
     """Closed, the Robotiq's pads meet at the TCP."""
-    model = RobotModel(_robot(name))
+    model = RobotModel(robot_or_skip(name))
     model.set(np.asarray(model.robot.home_q), 1.0)
     m, d = model.model, model.data
     pads = [
@@ -90,7 +78,7 @@ def test_robotiq_tcp_is_between_the_closed_pads(name):
 
 def test_ur5e_followers_follow_the_mjcf_equalities():
     """The 2F-140's followers are the MJCF's linear equalities of finger_joint."""
-    model = RobotModel(_robot("ur5e_2f140"))
+    model = RobotModel(robot_or_skip("ur5e_2f140"))
     closed = dict(zip(model.gripper.joints, model.gripper.positions(1.0)))
     q = ur5e_2f140.FINGER_CLOSED
     assert closed["finger_joint"] == pytest.approx(q)
@@ -132,7 +120,7 @@ def test_ik_stays_within_joint_limits_and_reports_failure(model):
 
 def test_ik_on_a_camera_frame_uses_the_opencv_convention():
     """The UR5e's wrist camera can be pointed at a target (OpenCV camera frame)."""
-    model = RobotModel(_robot("ur5e_2f140"))
+    model = RobotModel(robot_or_skip("ur5e_2f140"))
     home = np.asarray(model.robot.home_q)
     T_cam = model.pose("wrist", "camera")
     assert T_cam[2, 2] < -0.9  # at home the wrist camera looks down
@@ -149,7 +137,7 @@ def test_simulated_gripper_leaves_a_worlds_other_joints_alone(joint_name):
     # pylint: disable=import-outside-toplevel
     from r2s2r.mjrender import mujoco
 
-    robot = _robot("droid_franka")
+    robot = robot_or_skip("droid_franka")
     mjspec = robot.mjcf()
     body = mjspec.worldbody.add_body(name="obj", pos=[0.5, 0.0, 0.1])
     body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.02, 0.02, 0.02])
@@ -170,7 +158,7 @@ def test_simulated_gripper_leaves_a_worlds_other_joints_alone(joint_name):
 
 def test_droid_robotiq_mount_matches_the_mjcf():
     """Isaac's re-mount constant is where the MuJoCo model has the Robotiq base."""
-    model = RobotModel(_robot("droid_franka"))
+    model = RobotModel(robot_or_skip("droid_franka"))
     T = invert(model.pose("link7")) @ model.pose(f"{droid_franka.PREFIX}base")
     expected = np.eye(4)
     expected[2, 3] = droid_franka.ROBOTIQ_BASE_Z
@@ -179,7 +167,7 @@ def test_droid_robotiq_mount_matches_the_mjcf():
 
 def test_ur5e_position_control_holds_the_arm():
     """The hook turns the torque motors into position servos from the MJCF defaults."""
-    robot = _robot("ur5e_2f140")
+    robot = robot_or_skip("ur5e_2f140")
     mjspec = robot.mjcf()
     robot.position_control(mjspec)
     m = mjspec.compile()
@@ -197,7 +185,7 @@ def test_viewer_robot_draws_primitive_geoms():
     from r2s2r.structs import Capture, RobotTrajectory
     from r2s2r.viewer.robot import robot_glb, robot_poses
 
-    robot = _robot("ur5e_2f140")
+    robot = robot_or_skip("ur5e_2f140")
     m = robot.mjcf().compile()
     pad = m.geom("gripper_left_inner_finger_pad_legacy_0")
     box = geom_mesh(m, pad.id)
@@ -223,7 +211,7 @@ def test_ur5e_mask_covers_the_robot_not_the_table():
     # pylint: disable=import-outside-toplevel
     from r2s2r.robots.mask import NO_ROBOT, RobotMasker
 
-    robot = _robot("ur5e_2f140")
+    robot = robot_or_skip("ur5e_2f140")
     masker = RobotMasker(robot, max_size=(320, 240))
     K = intrinsics_matrix(250.0, 250.0, 159.5, 119.5)
     T_base_cam = look_at(np.array([-1.2, 0.6, 0.8]), np.array([-0.3, 0.1, 0.2]))

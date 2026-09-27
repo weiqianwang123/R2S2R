@@ -24,6 +24,7 @@ truth and running the pick test in MuJoCo and Isaac Lab::
 
     r2s2r eval RUN_DIR|SCENE_DIR --capture CAPTURE_DIR
     r2s2r pick (SCENE_DIR | --oracle) --capture CAPTURE_DIR --out OUT_DIR
+        [--video-camera ext1]
 
 The Isaac Lab side runs as scripts, since the Omniverse app must start first
 (``scripts/isaaclab/``).
@@ -42,8 +43,8 @@ from r2s2r.pipeline.agentic.method import AgentConfig, AgentMethod
 from r2s2r.pipeline.fixed import FixedMethod
 from r2s2r.pipeline.fixed.simfoundry import FRAME_SELECTIONS, SimFoundryConfig
 from r2s2r.pipeline.run import Method, run
-from r2s2r.pipeline.stages import STAGES
-from r2s2r.structs import Capture, SceneSpec
+from r2s2r.pipeline.stages import PRODUCTS, STAGE_DIRS, STAGES
+from r2s2r.structs import SCENE_FILENAME, Capture, SceneSpec
 from r2s2r.tools.cli import add_tool_parser, print_json
 
 
@@ -92,7 +93,7 @@ def _run(args: argparse.Namespace) -> None:
 
 
 def _mujoco_capture(args: argparse.Namespace) -> None:
-    # Imported here so the other subcommands work without MuJoCo and a GL driver.
+    # The testbed is for local tests only; imported when used.
     # pylint: disable=import-outside-toplevel
     from r2s2r.testbed.record import record_capture
     from r2s2r.testbed.worlds import build_world
@@ -118,15 +119,28 @@ def _viewer(args: argparse.Namespace) -> None:
     serve(args.paths, args.host, args.port)
 
 
+def _scenes_to_score(path: Path) -> list[Path]:
+    """A scene directory, or the scenes a run's stages left."""
+    if (path / SCENE_FILENAME).exists():
+        return [path]
+    scenes = [
+        (path / STAGE_DIRS[key] / name).parent
+        for key, files in PRODUCTS.items()
+        for name in files
+        if Path(name).name == SCENE_FILENAME
+    ]
+    found = [s for s in scenes if (s / SCENE_FILENAME).exists()]
+    if not found:
+        raise SystemExit(f"eval: {path} is neither a scene nor a run with scenes")
+    return found
+
+
 def _eval(args: argparse.Namespace) -> None:
-    from r2s2r.testbed.evaluate import (  # pylint: disable=import-outside-toplevel
-        evaluate,
-        scenes_to_score,
-        summary,
-    )
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.testbed.evaluate import evaluate, summary
 
     capture = Capture.load(args.capture)
-    for scene_dir in scenes_to_score(args.path):
+    for scene_dir in _scenes_to_score(args.path):
         print(f"{scene_dir}:")
         print("\n".join(summary(evaluate(SceneSpec.load(scene_dir), capture))))
 
@@ -139,15 +153,15 @@ def _pick(args: argparse.Namespace) -> None:
     from r2s2r.testbed.policy import summarize
     from r2s2r.testbed.worlds import world_from_capture
 
+    if args.oracle == (args.scene_dir is not None):
+        raise SystemExit("pick: give a SCENE_DIR or --oracle, not both")
     capture = Capture.load(args.capture)
     if args.oracle:
         world = world_from_capture(capture)
         scene_dir = oracle_scene(world, capture, args.out / "oracle_scene")
         world.close()
-    elif args.scene_dir is not None:
-        scene_dir = args.scene_dir
     else:
-        raise SystemExit("pick: give a SCENE_DIR or --oracle")
+        scene_dir = args.scene_dir
     scene = SceneSpec.load(scene_dir)
     print("\n".join(summary(evaluate(scene, capture))))
     target = match_target(scene, capture)

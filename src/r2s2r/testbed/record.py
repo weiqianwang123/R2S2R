@@ -7,8 +7,9 @@ kinematic, and all of it is the static period: the wrist camera is pointed at th
 objects from a ring of views, from above, and from wide views off to the sides where
 the support fills much of the image (the plane a method fits must be the support, not
 the top of a large object). Each view is solved by the robot model's IK from the
-previous solution, joint paths are interpolated between views, and a view is dropped
-when its path would bring the arm within a few centimetres of the scene.
+previous solution and joint paths are interpolated between views. A view out of reach,
+or whose path would bring the arm within a few centimetres of the scene, is tried
+closer to the objects, and dropped when that does not help either.
 
 Every step gets a trajectory row; every ``every``-th step, and each view, gets RGB and
 metric depth from every camera, the depth zeroed outside the sensor's range.
@@ -46,17 +47,31 @@ RING_AZIMUTHS = (-45.0, -25.0, 0.0, 25.0, 45.0)
 RING_ELEVATION, TOP_ELEVATION, WIDE_ELEVATION = 50.0, 80.0, 60.0
 WIDE_OFFSET = 0.12  # m beyond the objects' reach, sideways
 WIDE_DISTANCE = 1.3  # times the ring's distance
-RING_DISTANCE = (0.35, 0.6)  # m, the ring's distance bounds
+RING_DISTANCE = (0.35, 0.8)  # m, the ring's distance bounds
 RING_MARGIN = 1.6  # the image's width over the objects'
+# A view that cannot be taken is tried this much closer each time, down to CLOSEST m.
+CLOSER, CLOSEST = 0.85, 0.6
 
 
 @dataclass
 class View:
-    """A wrist-camera viewpoint: ``eye`` looking at ``target``."""
+    """A wrist-camera viewpoint: looking at ``target`` from ``distance`` along
+    ``direction`` (a unit vector)."""
 
     name: str
-    eye: NDArray[np.float64]
     target: NDArray[np.float64]
+    direction: NDArray[np.float64]
+    distance: float
+
+    def eyes(self) -> list[NDArray[np.float64]]:
+        """Where the camera may be, the preferred first: at :attr:`distance`, then
+        closer by :data:`CLOSER` down to :data:`CLOSEST` (tried last)."""
+        distances = [self.distance]
+        while distances[-1] * CLOSER > CLOSEST:
+            distances.append(distances[-1] * CLOSER)
+        if distances[-1] > CLOSEST:
+            distances.append(CLOSEST)
+        return [self.target + d * self.direction for d in distances]
 
 
 def scan_views(world: MujocoWorld, truth: dict[str, Any], camera: str) -> list[View]:
@@ -73,18 +88,18 @@ def scan_views(world: MujocoWorld, truth: dict[str, Any], camera: str) -> list[V
     half_width = np.arctan(cam.width / 2 / cam.K[0, 0])
     distance = float(np.clip(RING_MARGIN * reach / np.tan(half_width), *RING_DISTANCE))
 
-    def eye(target: NDArray, azimuth: float, elevation: float, d: float) -> NDArray:
+    def direction(azimuth: float, elevation: float) -> NDArray[np.float64]:
         az, el = np.deg2rad(azimuth), np.deg2rad(elevation)
         horizontal = np.cos(az) * toward_robot + np.sin(az) * side
-        return target + d * np.r_[np.cos(el) * horizontal, np.sin(el)]
+        return np.r_[np.cos(el) * horizontal, np.sin(el)]
 
     ring = [
-        View(f"ring{az:+.0f}", eye(centre, az, RING_ELEVATION, distance), centre)
+        View(f"ring{az:+.0f}", centre, direction(az, RING_ELEVATION), distance)
         for az in RING_AZIMUTHS
     ]
     ring.insert(
         len(ring) // 2 + 1,
-        View("top", eye(centre, 0.0, TOP_ELEVATION, distance), centre),
+        View("top", centre, direction(0.0, TOP_ELEVATION), distance),
     )
     support = truth["support"]["height"]
     wide = []
@@ -92,18 +107,21 @@ def scan_views(world: MujocoWorld, truth: dict[str, Any], camera: str) -> list[V
         target = np.r_[centre[:2] + sign * (reach + WIDE_OFFSET) * side, support]
         wide.append(
             View(
-                name, eye(target, 0.0, WIDE_ELEVATION, WIDE_DISTANCE * distance), target
+                name,
+                target,
+                direction(0.0, WIDE_ELEVATION),
+                WIDE_DISTANCE * distance,
             )
         )
     return [wide[0], *ring, wide[1]]
 
 
-class _Path:
+class _JointPath:
     """The recorded joint path: a row per step; frames on multiples of ``every``."""
 
     def __init__(self, world: MujocoWorld, every: int) -> None:
         self.world, self.every = world, every
-        self.q = [np.asarray(world.spec.home_q, float)]
+        self.q = [np.asarray(world.robot.home_q, float)]
 
     def segment(self, q_goal: NDArray) -> list[NDArray] | None:
         """Joint-interpolated steps from the path's end to ``q_goal`` (a multiple of
@@ -114,10 +132,26 @@ class _Path:
         n = max(self.every, int(np.ceil(n / self.every)) * self.every)
         steps = [q0 + (q_goal - q0) * (i / n) for i in range(1, n + 1)]
         for q in steps:
-            self.world.robot.set(q, 0.0)
+            self.world.kinematics.set(q, 0.0)
             if self.world.clearance(CLEARANCE) < CLEARANCE:
                 return None
         return steps
+
+    def visit(self, view: View, camera: str) -> dict[str, Any]:
+        """Extend the path to the first of the view's eyes ``camera`` can be at with
+        a clear path; the eye and the path's step there, or why it was skipped."""
+        reason = "out of reach"
+        for eye in view.eyes():
+            q = _reach(self.world, camera, look_at(eye, view.target), self.q[-1])
+            if q is None:
+                continue
+            steps = self.segment(q)
+            if steps is None:
+                reason = f"within {CLEARANCE} m of the scene"
+                continue
+            self.q += steps
+            return {"eye": eye, "step": len(self.q) - 1}
+        return {"eye": view.eyes()[0], "skipped": reason}
 
 
 def _reach(
@@ -129,7 +163,7 @@ def _reach(
     for roll in np.deg2rad(ROLLS):
         c, s = np.cos(roll), np.sin(roll)
         turned = T_base_cam @ make_transform([[c, -s, 0], [s, c, 0], [0, 0, 1]], 0)
-        result = world.robot.ik(turned, q_seed, camera, "camera")
+        result = world.kinematics.ik(turned, q_seed, camera, "camera")
         if result.pos_error < IK_POS_TOL and result.rot_error < IK_ROT_TOL:
             return result.q
     return None
@@ -144,21 +178,12 @@ def record_capture(world: MujocoWorld, out_dir: str | Path, every: int = 5) -> C
     moving = [c for c in world.cameras if not world.camera_spec(c).is_static]
     if not moving:
         raise ValueError(f"world {world.name} has no camera on the robot to scan with")
-    path = _Path(world, every)
+    path = _JointPath(world, every)
     visits: list[dict[str, Any]] = []
     for view in scan_views(world, truth, moving[0]):
-        row = {"view": view.name, "eye": view.eye, "target": view.target}
-        q = _reach(world, moving[0], look_at(view.eye, view.target), path.q[-1])
-        if q is None:
-            visits.append({**row, "skipped": "out of reach"})
-            continue
-        steps = path.segment(q)
-        if steps is None:
-            visits.append({**row, "skipped": f"within {CLEARANCE} m of the scene"})
-            continue
-        path.q += steps
-        visits.append({**row, "step": len(path.q) - 1})
-    home = path.segment(np.asarray(world.spec.home_q, float))
+        row = {"view": view.name, "target": view.target}
+        visits.append({**row, **path.visit(view, moving[0])})
+    home = path.segment(np.asarray(world.robot.home_q, float))
     if home is None:
         raise RuntimeError(f"no clear way back home in world {world.name}")
     path.q += home
@@ -168,7 +193,7 @@ def record_capture(world: MujocoWorld, out_dir: str | Path, every: int = 5) -> C
 def _save(
     world: MujocoWorld,
     out_dir: Path,
-    path: _Path,
+    path: _JointPath,
     truth: dict[str, Any],
     visits: list[dict[str, Any]],
 ) -> Capture:
@@ -178,7 +203,7 @@ def _save(
     at_view = {v["step"]: v for v in visits if "step" in v}
     frames, levels = [], []
     for step, q in enumerate(path.q):
-        world.robot.set(q, 0.0)
+        world.kinematics.set(q, 0.0)
         level = world.gripper_level()
         levels.append(level)
         if step % path.every:
@@ -217,7 +242,7 @@ def _save(
     capture = Capture(
         name=out_dir.name,
         source="mujoco",
-        embodiment=world.spec.name,
+        embodiment=world.robot.name,
         instruction=world.instruction,
         cameras={c.serial: c for c in cameras.values()},
         frames=frames,

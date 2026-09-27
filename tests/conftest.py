@@ -1,5 +1,6 @@
-"""Shared fixtures: a tiny synthetic DROID episode and its calibration files, a small
-RGB-D capture; the ``gl`` marker for tests that render with MuJoCo."""
+"""Shared fixtures and helpers: a tiny synthetic DROID episode and its calibration
+files, a small RGB-D capture, a box URDF, robots skipped without their MJCF; the ``gl``
+marker for tests that render with MuJoCo."""
 
 from __future__ import annotations
 
@@ -13,7 +14,10 @@ import cv2
 import h5py
 import numpy as np
 import pytest
+import trimesh
 
+from r2s2r.robots import get_robot, ur5e_2f140
+from r2s2r.robots.spec import MENAGERIE_DIR, RobotSpec
 from r2s2r.structs import (
     CameraSpec,
     Capture,
@@ -32,6 +36,11 @@ LATENCY_MS = 41
 RGBD_K = intrinsics_matrix(300.0, 300.0, 159.5, 119.5)
 RGBD_SIZE = (320, 240)
 HOME_Q = np.array([0, -0.785, 0, -2.356, 0, 1.571, 0.785])  # the Panda's
+ROBOT_ASSETS = {
+    "franka_panda": MENAGERIE_DIR / "franka_emika_panda",
+    "droid_franka": MENAGERIE_DIR / "robotiq_2f85",
+    "ur5e_2f140": ur5e_2f140.MJCF_PATH,
+}
 
 
 @cache
@@ -64,6 +73,25 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     if gl and not offscreen_gl():
         for item in gl:
             item.add_marker(pytest.mark.skip(reason="no offscreen GL rendering"))
+
+
+def robot_or_skip(name: str) -> RobotSpec:
+    """Robot ``name``'s spec; the test is skipped where its MJCF is not."""
+    if not Path(ROBOT_ASSETS[name]).exists():
+        pytest.skip(f"{name}'s MJCF is not here ({ROBOT_ASSETS[name]})")
+    return get_robot(name)
+
+
+def box_urdf(root: Path, extents: tuple[float, ...], name: str = "box") -> Path:
+    """``<name>.urdf`` in ``root``: a box of ``extents`` (m) standing on its origin."""
+    box = trimesh.creation.box(extents=extents)
+    box.apply_translation([0, 0, extents[2] / 2])
+    box.export(root / f"{name}.obj")
+    (root / f"{name}.urdf").write_text(
+        f'<robot name="{name}"><link name="base"><visual><geometry>'
+        f'<mesh filename="{name}.obj"/></geometry></visual></link></robot>'
+    )
+    return root / f"{name}.urdf"
 
 
 def _pose6d(x: float) -> list[float]:

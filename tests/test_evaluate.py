@@ -3,22 +3,14 @@ from its metadata alone."""
 
 import numpy as np
 import pytest
-import trimesh
+from conftest import box_urdf
 
+from r2s2r import cli
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec
-from r2s2r.testbed.evaluate import evaluate, scenes_to_score, summary
+from r2s2r.testbed.evaluate import evaluate, summary
 from r2s2r.transforms import make_transform
 
 BOX = (0.03, 0.07, 0.12)
-
-
-def _box_urdf(root, extents):
-    trimesh.creation.box(extents=extents).export(root / "box.obj")
-    (root / "box.urdf").write_text(
-        '<robot name="box"><link name="base"><visual><geometry>'
-        '<mesh filename="box.obj"/></geometry></visual></link></robot>'
-    )
-    return str(root / "box.urdf")
 
 
 def _capture(tmp_path):
@@ -68,8 +60,8 @@ def _scene(tmp_path, offset, support_z=0.02, tilt_deg=0.0):
     obj = ObjectSpec(
         "thing",
         "box",
-        _box_urdf(tmp_path, BOX),
-        make_transform(np.eye(3), np.add([0.5, -0.1, 0.08], offset)),
+        str(box_urdf(tmp_path, BOX)),
+        make_transform(np.eye(3), np.add([0.5, -0.1, 0.08 - BOX[2] / 2], offset)),
     )
     return SceneSpec(
         name="s",
@@ -120,13 +112,22 @@ def test_only_the_original_capture_scores(tmp_path):
         evaluate(_scene(tmp_path, [0, 0, 0]), capture)
 
 
-def test_a_runs_scenes_are_scored(tmp_path):
-    """A run gives the scenes its stages left; a scene is itself."""
+def test_eval_scores_a_runs_scenes(tmp_path, capsys):
+    """``r2s2r eval`` scores the scenes a run's stages left, or a scene itself."""
+    capture = _capture(tmp_path)
     scene = _scene(tmp_path, [0, 0, 0])
     run = tmp_path / "run"
     for stage in ("s4_scene", "s6_refine"):
         scene.save(run / stage / "scene")
-    assert scenes_to_score(run) == [run / "s4_scene/scene", run / "s6_refine/scene"]
-    assert scenes_to_score(run / "s4_scene/scene") == [run / "s4_scene/scene"]
-    with pytest.raises(ValueError, match="neither"):
-        scenes_to_score(tmp_path / "capture")
+    for path, scored in (
+        (run, ["s4_scene", "s6_refine"]),
+        (run / "s4_scene/scene", ["s4_scene"]),
+    ):
+        cli.main(["eval", str(path), "--capture", str(capture.root)])
+        out = capsys.readouterr().out
+        assert [line[:-1] for line in out.splitlines() if line.endswith(":")] == [
+            str(run / stage / "scene") for stage in scored
+        ]
+        assert "thing ~ box: centre off by 0.0 cm" in out
+    with pytest.raises(SystemExit, match="neither"):
+        cli.main(["eval", str(tmp_path / "capture"), "--capture", str(capture.root)])

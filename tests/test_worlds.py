@@ -16,7 +16,13 @@ from r2s2r.robots.mask import NO_ROBOT, RobotMasker  # noqa: E402
 from r2s2r.robots.spec import MENAGERIE_DIR  # noqa: E402
 from r2s2r.structs import Capture, DepthView, read_depth  # noqa: E402
 from r2s2r.testbed import worlds  # noqa: E402
-from r2s2r.testbed.record import MAX_DEPTH, MIN_DEPTH, record_capture  # noqa: E402
+from r2s2r.testbed.record import (  # noqa: E402
+    CLOSEST,
+    MAX_DEPTH,
+    MIN_DEPTH,
+    View,
+    record_capture,
+)
 from r2s2r.tools.geometry import view_points  # noqa: E402
 
 PANDA = pytest.mark.skipif(
@@ -42,11 +48,6 @@ OBJECT_KEYS = {
 @pytest.fixture(name="panda", scope="module")
 def fixture_panda():
     """panda_table, settled."""
-    if (
-        not (MENAGERIE_DIR / "franka_emika_panda").exists()
-        or not worlds.GSO_DIR.exists()
-    ):
-        pytest.skip("MuJoCo assets not fetched (scripts/setup/fetch_mujoco_assets.sh)")
     world = worlds.build_world("panda_table")
     world.reset()
     yield world
@@ -55,11 +56,15 @@ def fixture_panda():
 
 @PANDA
 def test_panda_objects_rest_where_placed(panda):
-    """The GSO objects settle upright where the layout puts them, on the table; the
-    ground truth says so with every key."""
+    """The GSO objects settle upright where the layout puts them, on the table, while
+    the arm holds its home pose; the ground truth says so with every key."""
+    assert np.allclose(panda.arm_q(), panda.robot.home_q, atol=1e-3)
     truth = panda.ground_truth()
     assert set(truth) == TRUTH_KEYS and truth["target"] == "crayon_box"
-    assert truth["support"]["height"] == pytest.approx(0.0)
+    support = truth["support"]
+    assert support["height"] == pytest.approx(0.0)
+    assert support["size"] == pytest.approx(worlds.TABLE_SIZE)
+    assert support["T_base_support"][:2, 3] == pytest.approx(worlds.TABLE_CENTER)
     for placed in truth["layout"]["objects"]:
         obj = truth["objects"][placed["name"]]
         assert set(obj) == OBJECT_KEYS and not obj["static"]
@@ -122,7 +127,12 @@ def test_physcoder_world_holds_its_layout(block):
     box, blk = truth["objects"]["box"], truth["objects"]["block"]
     assert box["static"] and box["mass"] is None and len(box["collision"]) == 5
     assert not blk["static"] and blk["mass"] == pytest.approx(0.11)
-    assert truth["support"]["height"] == pytest.approx(worlds.TABLE_TOP)
+    # The support is the black mat the cameras see (the table's collision box is
+    # turned 90 degrees from it).
+    support = truth["support"]
+    assert support["height"] == pytest.approx(worlds.TABLE_TOP)
+    assert support["size"] == pytest.approx([0.81, 1.35], abs=0.01)
+    assert support["T_base_support"][:2, 3] == pytest.approx([-0.535, 0.0], abs=0.01)
     lo, hi = worlds.BOX_X, worlds.BOX_Y
     assert lo[0] <= box["T_base_obj"][0, 3] <= lo[1]
     assert hi[0] <= box["T_base_obj"][1, 3] <= hi[1]
@@ -135,7 +145,7 @@ def test_physcoder_world_holds_its_layout(block):
     else:
         assert in_box[1] > worlds.BOX_OUTER + worlds.BESIDE_GAP[0]
         assert bottom == pytest.approx(worlds.TABLE_TOP, abs=2e-3)
-    assert np.allclose(world.arm_q(), world.spec.home_q, atol=1e-3)
+    assert np.allclose(world.arm_q(), world.robot.home_q, atol=1e-3)
     assert world.gripper_level() < 0.01
     wrist, ext1 = world.camera_spec("wrist"), world.camera_spec("ext1")
     assert not wrist.is_static and (wrist.width, wrist.height) == (320, 240)
@@ -146,6 +156,16 @@ def test_physcoder_world_holds_its_layout(block):
     assert world.clearance(0.05) == pytest.approx(0.05)  # its mount aside
     assert truth["source"]["assets"] == str(worlds.PHYSCODER_ASSETS)
     world.close()
+
+
+def test_a_view_is_tried_closer():
+    """A view far out is tried closer and closer, the nearest at CLOSEST; a near one
+    only where it is."""
+    view = View("v", np.zeros(3), np.array([0.0, 0.6, 0.8]), 0.8)
+    distances = [np.linalg.norm(eye) for eye in view.eyes()]
+    assert distances == pytest.approx([0.8, 0.68, CLOSEST])
+    view.distance = 0.5
+    assert [np.linalg.norm(eye) for eye in view.eyes()] == pytest.approx([0.5])
 
 
 def test_unknown_worlds_and_parameters_are_named():
@@ -176,7 +196,7 @@ def test_recorded_capture(tmp_path, name, params):
     traj = capture.trajectory
     assert traj is not None and np.array_equal(traj.steps, np.arange(len(traj.steps)))
     assert capture.static_steps == (0, len(traj.steps))
-    assert np.allclose(traj.joint_positions[0], world.spec.home_q)
+    assert np.allclose(traj.joint_positions[0], world.robot.home_q)
     assert np.max(np.abs(np.diff(traj.joint_positions, axis=0))) < 0.02
     assert np.all(traj.gripper_position == 0.0)
     wrist = capture.frames_of("mj_wrist")

@@ -10,8 +10,8 @@ commands wherever it runs.
 
 The pick program only knows the reconstructed :class:`~r2s2r.structs.SceneSpec` and the
 robot, which is all a code-writing agent would get. It grasps from above, across the
-object's narrowest side, with the gripper's closing axis and finger reach read off the
-robot's model.
+object's narrowest side, with the gripper's closing axis, finger reach and empty
+closure read off the robot's model.
 """
 
 from __future__ import annotations
@@ -28,14 +28,15 @@ from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation, Slerp
 
 from r2s2r.assets import object_points
-from r2s2r.mjrender import geom_mesh
+from r2s2r.mjrender import geom_mesh, mujoco
 from r2s2r.robots.model import RobotModel, in_subtree
 from r2s2r.robots.spec import RobotSpec
 from r2s2r.structs import ObjectSpec, SceneSpec
-from r2s2r.transforms import invert, transform_points
+from r2s2r.transforms import invert, make_transform, transform_points
 
 LIFT_SUCCESS_M = 0.05  # the target must rise this much to count as picked
-HOLDING_LEVEL = 0.95  # a gripper that closed further than this holds nothing
+# A gripper holds something when it stopped this much short of where its fingers meet.
+HOLDING_MARGIN = 0.05
 
 
 @dataclass
@@ -168,16 +169,19 @@ class RobotInterface(ABC):
 # ------------------------------------------------------------------- grasping
 @dataclass
 class GripperGeometry:
-    """What a grasp plan needs of a gripper, in the TCP frame."""
+    """What a grasp plan needs of a gripper, in the TCP frame, and where it stops
+    closed on nothing."""
 
     closing_axis: NDArray[np.float64]  # the fingers close along it (unit, in x-y)
     tip_depth: float  # how far the fingers reach beyond the TCP along its z (m)
+    empty_level: float  # the opening (0 open, 1 closed) at which the fingers meet
 
 
 def gripper_geometry(model: RobotModel) -> GripperGeometry:
     """Read off the model: the fingers' colliding geoms, open and closed, in the TCP
     frame. They close along the main direction the geoms move in the TCP's x-y plane;
-    the tips are their farthest point along its z at either opening."""
+    the tips are their farthest point along its z at either opening; the two sides
+    (the geoms moving either way along the closing axis) meet at the empty level."""
     m, d = model.model, model.data
     roots = [m.jnt_bodyid[m.joint(j).id] for j in model.gripper.joints]
     geoms = [
@@ -197,13 +201,31 @@ def gripper_geometry(model: RobotModel) -> GripperGeometry:
             if mesh is None:
                 continue
             b = m.geom_bodyid[g]
-            T_base_body = np.eye(4)
-            T_base_body[:3, :3], T_base_body[:3, 3] = d.xmat[b].reshape(3, 3), d.xpos[b]
+            T_base_body = make_transform(d.xmat[b].reshape(3, 3), d.xpos[b])
             z = transform_points(T_tcp_base @ T_base_body, mesh.vertices)[:, 2]
             tip = max(tip, float(z.max()))
-    model.set(q, 0.0)
     _, _, vt = np.linalg.svd((centres[1] - centres[0])[:, :2])
-    return GripperGeometry(np.r_[vt[0], 0.0], tip)
+    closing_axis = np.r_[vt[0], 0.0]
+    moves = (centres[1] - centres[0]) @ closing_axis
+    sides = [[g for g, v in zip(geoms, moves) if v * sign > 0] for sign in (1, -1)]
+
+    def meet(level: float) -> bool:
+        model.set(q, level)
+        # A small distmax: with a large one mj_geomDistance can say 0 for far pairs.
+        return any(
+            mujoco.mj_geomDistance(m, d, a, b, 1e-3, None) <= 0.0
+            for a in sides[0]
+            for b in sides[1]
+        )
+
+    apart, met = 0.0, 1.0
+    if not meet(met):
+        apart = met
+    while met - apart > 1e-4:
+        mid = (apart + met) / 2
+        apart, met = (apart, mid) if meet(mid) else (mid, met)
+    model.set(q, 0.0)
+    return GripperGeometry(closing_axis, tip, apart)
 
 
 @dataclass
@@ -303,10 +325,11 @@ def pick_up(
     """
     robot.set_gripper(0.0, 0.5)
     robot.move_joints(np.asarray(robot.robot.home_q))
+    geometry = gripper_geometry(robot.model)
     plan = plan_top_down_grasp(
         scene,
         target,
-        gripper_geometry(robot.model),
+        geometry,
         robot.robot.max_opening,
         robot.tcp_pose()[:3, :3],
     )
@@ -322,7 +345,7 @@ def pick_up(
         "grasp": plan.as_dict(),
         "grasp_ik_error_m": grasp_err,
         "gripper_level_after_lift": level,
-        "holding": bool(level < HOLDING_LEVEL),
+        "holding": bool(level < geometry.empty_level - HOLDING_MARGIN),
     }
 
 

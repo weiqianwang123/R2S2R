@@ -2,18 +2,15 @@
 program on a kinematic robot, for every robot (skipped without its assets), and
 choosing the scene object a world's target is."""
 
-from pathlib import Path
-
 import numpy as np
 import pytest
-import trimesh
+from conftest import box_urdf, robot_or_skip
 from scipy.spatial.transform import Rotation
 
 pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
-from r2s2r.robots import ROBOTS, get_robot, ur5e_2f140  # noqa: E402
-from r2s2r.robots.spec import MENAGERIE_DIR  # noqa: E402
+from r2s2r.robots import ROBOTS  # noqa: E402
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec  # noqa: E402
 from r2s2r.testbed.pick import match_target  # noqa: E402
 from r2s2r.testbed.policy import (  # noqa: E402
@@ -27,23 +24,13 @@ from r2s2r.testbed.policy import (  # noqa: E402
 from r2s2r.transforms import invert, make_transform  # noqa: E402
 
 BOX = (0.03, 0.07, 0.12)  # thin along x in its own frame
-ASSETS = {
-    "franka_panda": MENAGERIE_DIR / "franka_emika_panda",
-    "droid_franka": MENAGERIE_DIR / "robotiq_2f85",
-    "ur5e_2f140": ur5e_2f140.MJCF_PATH,
-}
-# The closing axis in the TCP frame, and how far the fingertips reach past the TCP.
+# The closing axis in the TCP frame, how far the fingertips reach past the TCP, and
+# the opening at which the fingers meet (the 2F-140's pads touch before it is shut).
 GRIPPERS = {
-    "franka_panda": ((0, 1, 0), 0.009),
-    "droid_franka": ((0, 1, 0), 0.019),
-    "ur5e_2f140": ((1, 0, 0), 0.036),
+    "franka_panda": ((0, 1, 0), 0.009, 1.0),
+    "droid_franka": ((0, 1, 0), 0.019, 1.0),
+    "ur5e_2f140": ((1, 0, 0), 0.036, 0.9),
 }
-
-
-def _robot(name):
-    if not Path(ASSETS[name]).exists():
-        pytest.skip(f"{name}'s MJCF is not here ({ASSETS[name]})")
-    return get_robot(name)
 
 
 class KinematicRobot(RobotInterface):
@@ -69,20 +56,14 @@ class KinematicRobot(RobotInterface):
 
 def _scene(tmp_path, robot, yaw_deg):
     """A box standing on the table, below where the robot's home pose points."""
-    mesh = trimesh.creation.box(extents=BOX)
-    mesh.apply_translation([0, 0, BOX[2] / 2])
-    mesh.export(tmp_path / "box.obj")
-    (tmp_path / "box.urdf").write_text(
-        '<robot name="box"><link name="base"><visual><geometry>'
-        '<mesh filename="box.obj"/></geometry></visual></link></robot>'
-    )
+    urdf = box_urdf(tmp_path, BOX)
     probe = KinematicRobot(robot, 1.0)
     probe.model.set(np.asarray(robot.home_q))
     x, y = probe.model.tcp_pose()[:2, 3] + 0.05
     T = make_transform(
         Rotation.from_euler("z", yaw_deg, degrees=True).as_matrix(), [x, y, 0.0]
     )
-    obj = ObjectSpec("crayon_box", "box", str(tmp_path / "box.urdf"), T)
+    obj = ObjectSpec("crayon_box", "box", str(urdf), T)
     return SceneSpec(
         name="t",
         embodiment=robot.name,
@@ -104,16 +85,17 @@ def _scene_of(objects):
 @pytest.fixture(name="robot", params=sorted(ROBOTS))
 def fixture_robot(request):
     """Each robot's spec."""
-    return _robot(request.param)
+    return robot_or_skip(request.param)
 
 
 def test_gripper_geometry_from_the_model(robot):
     """Each gripper closes along the expected TCP axis; its tips reach past the TCP by
-    its known amount."""
+    its known amount; its fingers meet where they do."""
     geometry = gripper_geometry(KinematicRobot(robot, 1.0).model)
-    axis, tip = GRIPPERS[robot.name]
+    axis, tip, empty = GRIPPERS[robot.name]
     assert abs(geometry.closing_axis @ axis) == pytest.approx(1.0, abs=1e-3)
     assert geometry.tip_depth == pytest.approx(tip, abs=1e-3)
+    assert geometry.empty_level == pytest.approx(empty, abs=0.01)
 
 
 def test_grasp_closes_across_the_thin_side(tmp_path, robot):
@@ -135,7 +117,7 @@ def test_grasp_closes_across_the_thin_side(tmp_path, robot):
 
 def test_pick_up_reaches_the_grasp(tmp_path, robot):
     """On a perfect robot the program passes through the grasp in small joint steps,
-    closes and lifts."""
+    closes and lifts, holding what stopped its fingers (not what did not)."""
     scene = _scene(tmp_path, robot, -40.0)
     bot = KinematicRobot(robot, stop=0.6)
     result = pick_up(bot, scene, "crayon")
@@ -155,6 +137,8 @@ def test_pick_up_reaches_the_grasp(tmp_path, robot):
     assert np.allclose(invert(lifted)[:3, :3] @ grasp[:3, :3], np.eye(3), atol=1e-2)
     levels = np.array(bot.log.gripper)
     assert levels[0] == 0.0 and levels[-1] == 1.0
+    empty = GRIPPERS[robot.name][2]
+    assert not pick_up(KinematicRobot(robot, stop=empty), scene, "crayon")["holding"]
 
 
 def test_find_object_and_lift_score():
@@ -171,20 +155,10 @@ def test_find_object_and_lift_score():
 def test_match_target_takes_the_nearest_match(tmp_path):
     """Of two scene objects matched to the target, the nearer is the target; none
     matched is an error."""
-    mesh = trimesh.creation.box(extents=(0.02, 0.02, 0.02))
-    mesh.export(tmp_path / "cube.obj")
-    (tmp_path / "cube.urdf").write_text(
-        '<robot name="c"><link name="base"><visual><geometry>'
-        '<mesh filename="cube.obj"/></geometry></visual></link></robot>'
-    )
+    cube = str(box_urdf(tmp_path, (0.02, 0.02, 0.02), "cube"))
 
     def obj(name, x):
-        return ObjectSpec(
-            name,
-            name,
-            str(tmp_path / "cube.urdf"),
-            make_transform(np.eye(3), [x, 0, 0]),
-        )
+        return ObjectSpec(name, name, cube, make_transform(np.eye(3), [x, 0, -0.01]))
 
     truth = {
         "target": "block",

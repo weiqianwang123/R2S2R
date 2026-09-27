@@ -9,17 +9,13 @@ whose centre is nearest, and their axis-aligned boxes in the base frame are comp
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
 from r2s2r.assets import object_points
-from r2s2r.pipeline.stages import STAGE_DIRS
-from r2s2r.structs import SCENE_FILENAME, Capture, ObjectSpec, SceneSpec
-
-SCORED_STAGES = ("4", "5", "6")  # a run's stages that leave a scene
+from r2s2r.structs import Capture, ObjectSpec, SceneSpec
 
 
 def ground_truth(capture: Capture) -> dict[str, Any]:
@@ -104,18 +100,6 @@ def evaluate(scene: SceneSpec, capture: Capture) -> dict[str, Any]:
         "missed": sorted(set(truth["objects"]) - matched),
         "support": support_error(scene, truth),
     }
-
-
-def scenes_to_score(path: str | Path) -> list[Path]:
-    """A scene directory, or the scenes a run's stages 4-6 left."""
-    path = Path(path)
-    if (path / SCENE_FILENAME).exists():
-        return [path]
-    scenes = [path / STAGE_DIRS[k] / "scene" for k in SCORED_STAGES]
-    found = [s for s in scenes if (s / SCENE_FILENAME).exists()]
-    if not found:
-        raise ValueError(f"{path} is neither a scene nor a run with scenes")
-    return found
 
 
 def summary(report: dict[str, Any]) -> list[str]:
