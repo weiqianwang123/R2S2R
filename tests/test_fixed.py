@@ -211,9 +211,11 @@ def test_candidates_are_scaled_like_foundation_stereo(capture, tmp_path, monkeyp
     assert ws.frame_id(run_.frame_of(2)) == "ext1@0"
 
 
-def test_command_runs_the_submodule_with_codex(capture, tmp_path):
-    """Stages 3-12 but 9, in the submodule; frame selection by Codex with the task;
-    every VLM call through Codex."""
+def test_command_runs_the_submodule_with_codex(capture, tmp_path, monkeypatch):
+    """Stages 3-12 but 9, in the submodule, with no display; frame selection by Codex
+    with the task; every VLM call through Codex."""
+    monkeypatch.setenv("DISPLAY", ":1")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     cfg = SimFoundryConfig(codex_reasoning="high", overrides=["a=b"])
     capture = replace(capture, instruction='put the "café" mug away')
     run_ = sf.SimFoundry(capture, tmp_path / "sf", cfg, tmp_path / "log")
@@ -229,6 +231,7 @@ def test_command_runs_the_submodule_with_codex(capture, tmp_path):
         env["SIMFOUNDRY_CODEX_REASONING"] == "high" and env["PYTHONUNBUFFERED"] == "1"
     )
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(sf.SIMFOUNDRY_DIR)
+    assert "DISPLAY" not in env and "WAYLAND_DISPLAY" not in env
     hybrid = sf.SimFoundry(
         capture, tmp_path, SimFoundryConfig(frame_selection="hybrid"), tmp_path / "l"
     )

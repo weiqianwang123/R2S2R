@@ -167,7 +167,8 @@ class SimFoundry:
         self, stages: tuple[str, ...], extra: tuple[str, ...] = ()
     ) -> tuple[list[str], dict[str, str]]:
         """The orchestrator call and its environment; ``extra`` Hydra overrides go
-        last."""
+        last. No display: SimFoundry runs unattended, so a window it might open (a
+        visualisation, a tool that asks a person) fails at once instead of waiting."""
         cfg = self.config
         task = self.capture.instruction
         # Not ASCII-escaped: Hydra would pass \u escapes on literally.
@@ -204,7 +205,11 @@ class SimFoundry:
             ENV_MESH,
             *overrides,
         ]
-        env = simfoundry_env()
+        env = {
+            k: v
+            for k, v in simfoundry_env().items()
+            if k not in ("DISPLAY", "WAYLAND_DISPLAY")
+        }
         env.update(
             PYTHONUNBUFFERED="1",  # the log follows the stages as they go
             SIMFOUNDRY_VLM_BACKEND="codex",

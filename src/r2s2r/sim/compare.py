@@ -4,8 +4,9 @@ look at, and numbers.
 For every rendered frame (:mod:`r2s2r.sim.isaaclab.replay`): the real image, the sim
 render and a blend side by side, with each object's outline where the replay has it
 drawn on the real image. Where the real frame has depth, the depth residual too, over
-the whole image and per object. Per camera, a contact sheet over time; per object, how
-far it moved from where it started.
+the whole image and per object. Per camera, a contact sheet over time (at most
+``SHEET_ROWS`` frames, evenly spaced); per object, how far it moved from where it
+started.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from r2s2r.transforms import pos_quat_to_matrix
 
 RESIDUAL_CLIP = 0.05  # metres; the residual image saturates here
 THUMB_HEIGHT = 180  # pixels, of a contact sheet's rows
+SHEET_ROWS = 24  # a contact sheet's rows at most
 # Object outlines (RGB), one colour per object in turn.
 COLORS = [
     (255, 64, 64),
@@ -64,9 +66,17 @@ def compare_replay(
     )
     renderer = SceneRenderer(spec, size)
     summary: dict[str, Any] = {"frames": [], "motion_m": {}}
+    # Per camera, the frames its contact sheet shows.
+    by_role: dict[str, list[int]] = {}
+    for i, entry in enumerate(log["frames"]):
+        by_role.setdefault(entry["role"], []).append(i)
+    on_sheet: set[int] = set()
+    for rows in by_role.values():
+        picks = np.linspace(0, len(rows) - 1, min(SHEET_ROWS, len(rows))).round()
+        on_sheet.update(rows[int(k)] for k in picks)
     sheets: dict[str, list[NDArray[np.uint8]]] = {}
     try:
-        for entry in log["frames"]:
+        for i, entry in enumerate(log["frames"]):
             step, serial = int(entry["step"]), entry["camera"]
             frame = capture.frame(serial, step)
             cam = capture.cameras[serial]
@@ -90,7 +100,8 @@ def compare_replay(
             cv2.imwrite(str(path), cv2.cvtColor(panel, cv2.COLOR_RGB2BGR))
             row["image"] = str(path.relative_to(out_dir))
             summary["frames"].append(row)
-            sheets.setdefault(entry["role"], []).append(thumbnail(panel, step))
+            if i in on_sheet:
+                sheets.setdefault(entry["role"], []).append(thumbnail(panel, step))
     finally:
         renderer.close()
     for role, thumbs in sheets.items():

@@ -187,7 +187,7 @@ const PANELS = {
   support: () => {
     const s = S.state.support;
     if (!s) return notYet('2');
-    const line = `<div class="summary-line"><b>${s.extent ? s.extent.map((v) => fmt(v)).join(' × ') : '—'} m</b> · tilt <b>${fmt(s.tilt_deg, 1)}°</b> · plane RMS <b>${fmt(s.rms_m == null ? null : s.rms_m * 1000, 1)} mm</b>${s.description ? ` · ${esc(s.description)}` : ''}</div>`;
+    const line = `<div class="summary-line"><b>${s.extent ? s.extent.map((v) => fmt(v)).join(' × ') : '—'} m</b> · tilt <b>${fmt(s.tilt_deg, 1)}°</b>${s.rms_m == null ? '' : ` · plane RMS <b>${fmt(s.rms_m * 1000, 1)} mm</b>`}${s.description ? ` · ${esc(s.description)}` : ''}</div>`;
     return line + `<div class="grid">${s.overlays.map((p) => card(p, esc(p.split('_').pop().replace('.png', '')), 640)).join('')}</div>`;
   },
 
@@ -204,7 +204,7 @@ const PANELS = {
       html += `<div class="detail"><div class="summary-line"><b>${esc(o.name)}</b> ${inRun(o.glb) ? `<button data-glb="${esc(o.glb)}" data-up="${esc(o.up)}" data-caption="${esc(o.name)}">3D model</button>` : ''}</div>`;
       html += o.overlays.length
         ? `<div class="grid">${o.overlays.map((v) => card(v.path, `${esc(v.frame)} <span class="${iouClass(v.iou)}">IoU ${fmt(v.iou)}</span>`, 640)).join('')}</div>`
-        : '<div class="empty">no fit yet</div>';
+        : `<div class="empty">${S.state.method === 'fixed' ? 'the fixed method fits no single views' : 'no fit yet'}</div>`;
       html += '</div>';
     }
     return html;

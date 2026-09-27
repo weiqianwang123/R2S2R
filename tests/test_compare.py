@@ -12,7 +12,11 @@ pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
 from r2s2r.mjrender import SceneRenderer  # noqa: E402
-from r2s2r.sim.compare import compare_replay  # noqa: E402
+from r2s2r.sim.compare import (  # noqa: E402
+    SHEET_ROWS,
+    THUMB_HEIGHT,
+    compare_replay,
+)
 from r2s2r.structs import (  # noqa: E402
     CameraSpec,
     Capture,
@@ -105,3 +109,32 @@ def test_compare_replay_scores_the_depth_and_outlines_the_objects(tmp_path):
         assert panel.shape == (240, 4 * 320, 3)  # real+outline | sim | blend | residual
         saved = json.loads((tmp_path / f"compare_{name}" / "compare.json").read_text())
         assert saved["motion_m"] == {"box": [[0, 0.0]]}
+
+
+def test_a_long_replay_s_contact_sheet_shows_evenly_spaced_frames(tmp_path):
+    """Every frame gets its panel; the camera's contact sheet shows SHEET_ROWS of
+    them."""
+    T = look_at((0.9, 0.3, 0.45), TARGET)
+    scene = _scene(tmp_path, (0.5, 0.0))
+    rgb, _ = _render(scene, T)
+    root, replay_dir = tmp_path / "capture", tmp_path / "replay"
+    root.mkdir()
+    replay_dir.mkdir()
+    cv2.imwrite(str(root / "0.png"), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(str(replay_dir / "0.png"), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    n = SHEET_ROWS + 6
+    frames = [FrameRecord(s, "c", "0.png", None, T, np.zeros(7), 0.0) for s in range(n)]
+    cam = CameraSpec("c", "wrist", 320, 240, K, is_static=False)
+    capture = Capture("t", "test", "franka_panda", "", {"c": cam}, frames, (0, n), root)
+    log = {
+        "frames": [
+            {"step": s, "camera": "c", "role": "wrist", "sim_rgb": "0.png"}
+            for s in range(n)
+        ],
+        "objects": {"box": [[s, 0.5, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0] for s in range(n)]},
+        "arm_error_rad": [],
+    }
+    summary = compare_replay(log, scene, capture, tmp_path / "compare", replay_dir)
+    assert len(summary["frames"]) == n
+    sheet = cv2.imread(str(tmp_path / "compare" / "sheet_wrist.png"))
+    assert sheet.shape[0] == SHEET_ROWS * THUMB_HEIGHT
