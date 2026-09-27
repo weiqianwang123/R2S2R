@@ -29,6 +29,7 @@ BOX = (0.03, 0.07, 0.12)  # thin along x in its own frame
 GRIPPERS = {
     "franka_panda": ((0, 1, 0), 0.009, 1.0),
     "droid_franka": ((0, 1, 0), 0.019, 1.0),
+    "fr3_robotiq": ((0, 1, 0), 0.019, 1.0),
     "ur5e_2f140": ((1, 0, 0), 0.036, 0.9),
 }
 

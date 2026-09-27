@@ -69,12 +69,12 @@ flowchart LR
 
 ## Robots
 
-| `franka_panda` | `droid_franka` | `ur5e_2f140` |
-|:-:|:-:|:-:|
-| <img src="docs/robots/franka_panda.png" width="240"> | <img src="docs/robots/droid_franka.png" width="240"> | <img src="docs/robots/ur5e_2f140.png" width="240"> |
-| Panda + Franka Hand | Panda + Robotiq 2F-85 | UR5e + Robotiq 2F-140 |
-| MuJoCo world `panda_table`: RGB-D `ext1` + `wrist` | DROID: ZED 2 `ext1` `ext2` + ZED Mini `wrist`, stereo | [PhysCoder](https://github.com/Jaraxxus-Me/physcoder)'s robot and MuJoCo scene: `wrist` (optional `ext1` at its real front camera) |
-| MuJoCo Menagerie, Isaac Lab's Franka | Menagerie, Isaac Lab's Franka + Robotiq | PhysCoder's MJCF and USD, used by path from its checkout |
+| `franka_panda` | `droid_franka` | `fr3_robotiq` | `ur5e_2f140` |
+|:-:|:-:|:-:|:-:|
+| <img src="docs/robots/franka_panda.png" width="200"> | <img src="docs/robots/droid_franka.png" width="200"> | <img src="docs/robots/fr3_robotiq.png" width="200"> | <img src="docs/robots/ur5e_2f140.png" width="200"> |
+| Panda + Franka Hand | Panda + Robotiq 2F-85 | FR3 + Robotiq 2F-85 | UR5e + Robotiq 2F-140 |
+| MuJoCo world `panda_table`: RGB-D `ext1` + `wrist` | DROID: ZED 2 `ext1` `ext2` + ZED Mini `wrist`, stereo | DROID on an FR3: ZED Mini `wrist`, stereo | [PhysCoder](https://github.com/Jaraxxus-Me/physcoder)'s robot and MuJoCo scene: `wrist` (optional `ext1` at its real front camera) |
+| MuJoCo Menagerie, Isaac Lab's Franka | Menagerie, Isaac Lab's Franka + Robotiq | Menagerie's FR3; in Isaac Lab the Panda + Robotiq (same kinematics) with the FR3's joint limits | PhysCoder's MJCF and USD, used by path from its checkout |
 
 A robot is one `RobotSpec` module in [`src/r2s2r/robots/`](src/r2s2r/robots) (its MuJoCo
 and Isaac Lab models, arm joints, gripper, tool centre point), registered in `ROBOTS`

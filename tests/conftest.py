@@ -39,6 +39,7 @@ HOME_Q = np.array(franka_panda.HOME_Q)
 ROBOT_ASSETS = {
     "franka_panda": MENAGERIE_DIR / "franka_emika_panda",
     "droid_franka": MENAGERIE_DIR / "robotiq_2f85",
+    "fr3_robotiq": MENAGERIE_DIR / "franka_fr3",
     "ur5e_2f140": ur5e_2f140.MJCF_PATH,
 }
 

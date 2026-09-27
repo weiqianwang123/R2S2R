@@ -11,7 +11,13 @@ from conftest import robot_or_skip
 pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
-from r2s2r.robots import ROBOTS, droid_franka, get_robot, ur5e_2f140  # noqa: E402
+from r2s2r.robots import (  # noqa: E402
+    ROBOTS,
+    droid_franka,
+    fr3_robotiq,
+    get_robot,
+    ur5e_2f140,
+)
 from r2s2r.robots.model import RobotModel  # noqa: E402
 from r2s2r.transforms import intrinsics_matrix, invert, look_at  # noqa: E402
 
@@ -24,7 +30,7 @@ def fixture_model(request):
 
 def test_registry_names_the_known_robots():
     """Every robot is registered under its name; unknown names list the known ones."""
-    assert set(ROBOTS) == {"franka_panda", "droid_franka", "ur5e_2f140"}
+    assert set(ROBOTS) == {"franka_panda", "droid_franka", "fr3_robotiq", "ur5e_2f140"}
     assert all(get_robot(n).name == n for n in ROBOTS)
     with pytest.raises(ValueError, match="franka_panda"):
         get_robot("ur10")
@@ -34,9 +40,8 @@ def test_robot_compiles_with_its_arm_and_gripper(model):
     """The spec's joints, actuator and bodies exist; the home pose is within limits."""
     robot = model.robot
     assert model.arm_qadr.shape == (robot.dof,) == (len(robot.home_q),)
-    assert (
-        robot.dof == {"franka_panda": 7, "droid_franka": 7, "ur5e_2f140": 6}[robot.name]
-    )
+    dofs = {"franka_panda": 7, "droid_franka": 7, "fr3_robotiq": 7, "ur5e_2f140": 6}
+    assert robot.dof == dofs[robot.name]
     model.model.actuator(robot.gripper.actuator)
     model.model.body(robot.tcp_body)
     assert np.all(model.q_min <= robot.home_q) and np.all(robot.home_q <= model.q_max)
@@ -62,7 +67,7 @@ def test_gripper_opens_and_closes(model):
     assert widths[0] > widths[1] + 0.03
 
 
-@pytest.mark.parametrize("name", ["droid_franka", "ur5e_2f140"])
+@pytest.mark.parametrize("name", ["droid_franka", "fr3_robotiq", "ur5e_2f140"])
 def test_robotiq_tcp_is_between_the_closed_pads(name):
     """Closed, the Robotiq's pads meet at the TCP."""
     model = RobotModel(robot_or_skip(name))
@@ -163,6 +168,32 @@ def test_droid_robotiq_mount_matches_the_mjcf():
     expected = np.eye(4)
     expected[2, 3] = droid_franka.ROBOTIQ_BASE_Z
     assert np.allclose(T, expected, atol=1e-4)
+
+
+def test_fr3_and_droid_franka_put_the_tcp_in_the_same_place():
+    """The FR3 has the Panda's kinematics and the Robotiq on the same coupling: the same
+    joints give the same TCP pose, within both arms' limits."""
+    fr3 = RobotModel(robot_or_skip("fr3_robotiq"))
+    panda = RobotModel(robot_or_skip("droid_franka"))
+    lower = np.maximum(fr3.q_min, panda.q_min)
+    upper = np.minimum(fr3.q_max, panda.q_max)
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        q = rng.uniform(lower, upper)
+        fr3.set(q, 0.5)
+        panda.set(q, 0.5)
+        T_fr3, T_panda = fr3.tcp_pose(), panda.tcp_pose()
+        assert np.linalg.norm(T_fr3[:3, 3] - T_panda[:3, 3]) < 1e-3
+        assert np.allclose(T_fr3[:3, :3], T_panda[:3, :3], atol=1e-3)
+
+
+def test_fr3_joint_limits_match_the_mjcf():
+    """The limits Isaac's Panda joints get are the FR3 MJCF's ranges."""
+    model = RobotModel(robot_or_skip("fr3_robotiq"))
+    limits = np.array(fr3_robotiq.JOINT_LIMITS)
+    assert np.allclose(limits[:, 0], model.q_min) and np.allclose(
+        limits[:, 1], model.q_max
+    )
 
 
 def test_ur5e_position_control_holds_the_arm():

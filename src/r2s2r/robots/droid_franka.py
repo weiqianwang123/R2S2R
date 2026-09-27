@@ -38,21 +38,33 @@ ISAAC_HAND_JOINT = "panda_link7/panda_hand_joint"
 ISAAC_ROBOTIQ_JOINT = "Robotiq_2F_85_edit/Robotiq_2F_85/base_link/AssemblerFixedJoint"
 
 
-def mjcf() -> Any:
-    """The Panda with the Robotiq on its flange."""
+def attach_robotiq(spec: Any, link7: str) -> Any:
+    """``spec`` (an arm's ``mujoco.MjSpec``) with the Robotiq 2F-85 on the flange of its
+    body ``link7``, as on DROID: :data:`FLANGE_OFFSET` out, turned :data:`ROBOTIQ_YAW`,
+    its names prefixed :data:`PREFIX`."""
     # pylint: disable=import-outside-toplevel
     from r2s2r.mjrender import mujoco
 
-    spec = mujoco.MjSpec.from_file(
-        str(MENAGERIE_DIR / "franka_emika_panda" / "panda_nohand.xml")
-    )
     gripper = mujoco.MjSpec.from_file(str(MENAGERIE_DIR / "robotiq_2f85" / "2f85.xml"))
-    frame = spec.body("link7").add_frame(
+    frame = spec.body(link7).add_frame(
         pos=[0.0, 0.0, FLANGE_OFFSET],
         quat=[np.cos(ROBOTIQ_YAW / 2), 0.0, 0.0, np.sin(ROBOTIQ_YAW / 2)],
     )
     frame.attach_body(gripper.body("base_mount"), PREFIX, "")
     return spec
+
+
+def mjcf() -> Any:
+    """The Panda with the Robotiq on its flange."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.mjrender import mujoco
+
+    return attach_robotiq(
+        mujoco.MjSpec.from_file(
+            str(MENAGERIE_DIR / "franka_emika_panda" / "panda_nohand.xml")
+        ),
+        "link7",
+    )
 
 
 def isaac_cfg() -> Any:
