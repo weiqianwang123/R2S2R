@@ -10,6 +10,7 @@ that, or the fingers show up 45 degrees off in every wrist-camera render.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import numpy as np
@@ -36,6 +37,12 @@ ROBOTIQ_TCP = 0.144
 # the hand frame, and the hand frame to the Robotiq base.
 ISAAC_HAND_JOINT = "panda_link7/panda_hand_joint"
 ISAAC_ROBOTIQ_JOINT = "Robotiq_2F_85_edit/Robotiq_2F_85/base_link/AssemblerFixedJoint"
+# The Robotiq's drive (finger_joint) in Isaac Lab. The asset's own (stiffness 17,
+# damping 0.02, effort limit 1650) cannot open the closed linkage again: closed in the
+# air it reopens only half way, holding a 58 mm block it does not let go, and it drifts
+# shut while the arm moves. Stiffer, it opens fully; its torque capped near the real
+# 2F-85's grip force (up to 235 N), it does not crush into light objects.
+ISAAC_GRIPPER_DRIVE = {"stiffness": 100.0, "damping": 5.0, "effort_limit_sim": 20.0}
 
 
 def attach_robotiq(spec: Any, link7: str) -> Any:
@@ -68,11 +75,17 @@ def mjcf() -> Any:
 
 
 def isaac_cfg() -> Any:
-    """Isaac Lab's Panda with the Robotiq 2F-85 (stiff arm PD, gravity off)."""
+    """Isaac Lab's Panda with the Robotiq 2F-85 (stiff arm PD, gravity off), the
+    gripper's drive :data:`ISAAC_GRIPPER_DRIVE`."""
     # pylint: disable=import-outside-toplevel
     from isaaclab_assets.robots.franka import FRANKA_ROBOTIQ_GRIPPER_CFG
 
-    return FRANKA_ROBOTIQ_GRIPPER_CFG.copy()
+    cfg = FRANKA_ROBOTIQ_GRIPPER_CFG.copy()
+    drive = copy.deepcopy(cfg.actuators["gripper_drive"])
+    for name, value in ISAAC_GRIPPER_DRIVE.items():
+        setattr(drive, name, value)
+    cfg.actuators = {**cfg.actuators, "gripper_drive": drive}
+    return cfg
 
 
 def mount_robotiq(robot_prim: str) -> None:
