@@ -2,7 +2,8 @@
 
 The scene of stage 4 (`../s4_scene/objects.json`, assembled in `../s4_scene/scene`) has
 been settled under physics: `../s5_settle/scene`, with how far each object moved in
-`../s5_settle/scene/settle.json`. Now compare it with everything the robot recorded, and
+`../s5_settle/scene/settle.json` (and each articulated object's joints: `joints_moved`;
+joints are passive, so a part left hanging open falls shut). Now compare it with everything the robot recorded, and
 make it right. Work in this directory.
 
 Your main tool is `r2s2r tool replay SCENE_DIR --out DIR`: Isaac Lab replays the static
@@ -23,7 +24,7 @@ changes.
 2. Find what is wrong: an object off in position, height, orientation or scale; a
    wrong shape (generate it again from another view); a missing or a spurious object;
    the support at the wrong height or too small; objects that moved while settling
-   (not resting, or intersecting).
+   (not resting, or intersecting); an articulated part in the wrong place.
 3. Fix it on a copy of the objects file here (start from `../s4_scene/objects.json`,
    paths rewritten). Use `check` to try changes (seconds); then `assemble`, `settle`
    and `replay` the changed scene once to confirm them.

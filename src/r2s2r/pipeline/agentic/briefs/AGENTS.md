@@ -73,7 +73,8 @@ may be relative to the directory you run them in.
   `--up`.
 - `r2s2r tool check (OBJECTS_JSON | SCENE_DIR) --frames F [F ...] --out DIR`: renders
   the scene's objects into frames in seconds: real image with outlines | render |
-  blend | depth residual, and numbers.
+  blend | depth residual, and numbers. `--joint OBJECT:JOINT=VALUE [...]` renders an
+  articulated object with those joints moved, to see where its parts go.
 - `r2s2r tool assemble OBJECTS_JSON --out SCENE_DIR`: the simulation-ready scene
   (`scene.json`): collision parts (CoACD), inertia, flat bases for resting objects.
 - `r2s2r tool settle SCENE_DIR --out SCENE_DIR2`: the objects come to rest under
@@ -99,6 +100,25 @@ The scene as you build it, before assembly (JSON):
   ]
 }
 ```
+
+An articulated object (a box and its lid, a book and its cover, a cabinet and its door
+or drawer) also lists the parts that move and the joints that move them; its `mesh` is
+then the part that does not, and `mass` is the whole object's:
+
+```
+     "parts": [{"name": "lid", "mesh": "lid.obj"}],      same coordinates as "mesh"
+     "joints": [{"name": "hinge", "type": "revolute",    or "prismatic" (a drawer)
+                 "parent": "base", "child": "lid",       "base": the object's "mesh"
+                 "origin": [x, y, z],                    a point on the axis, and
+                 "axis": [x, y, z],                      its direction: object frame, m
+                 "limits": [lower, upper],               rad or m
+                 "position": 0.0}]                       where the joint is as recorded
+```
+
+Everything is as recorded: the parts' meshes where the parts were, the joints'
+`origin` and `axis` in the object's frame (the frame `T_base_obj` places, in metres,
+`scale` applied), each joint at its recorded `position` within its `limits`. The
+direction of `axis` and the sign of `position` follow the right-hand rule.
 
 Relative paths are relative to the objects file. `fit.json` gives `scale`,
 `T_base_obj` and `up` in this form. The support's `extent` is the size of the simulated

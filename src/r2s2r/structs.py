@@ -312,7 +312,7 @@ class DepthView:
 
 @dataclass
 class ObjectSpec:
-    """One rigid object, placed in the robot base frame."""
+    """One object, rigid or articulated, placed in the robot base frame."""
 
     name: str
     category: str
@@ -326,6 +326,9 @@ class ObjectSpec:
     # material; written by settling), with ``metadata.yaml`` beside it. Paths as for
     # ``asset_path``.
     usd: str | None = None
+    # An articulated object's joint positions (rad or m) as recorded, by the URDF's
+    # joint names; None for a rigid object.
+    joints: dict[str, float] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ObjectSpec:

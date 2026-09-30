@@ -126,7 +126,14 @@ def _check(args: argparse.Namespace) -> None:
     # pylint: disable=import-outside-toplevel
     from r2s2r.tools.check import check
 
-    print_json(check(_ws(args), args.source, args.frames, args.out))
+    joints: dict[str, dict[str, float]] = {}
+    for item in args.joint or []:
+        target, _, value = item.partition("=")
+        obj, _, joint = target.partition(":")
+        if not (obj and joint and value):
+            raise SystemExit(f"--joint wants OBJECT:JOINT=VALUE, not {item!r}")
+        joints.setdefault(obj, {})[joint] = float(value)
+    print_json(check(_ws(args), args.source, args.frames, args.out, joints))
 
 
 def _assemble(args: argparse.Namespace) -> None:
@@ -213,6 +220,12 @@ def add_tool_parser(sub: Any) -> None:
     p = add("check", _check, "render a scene's objects into frames (fast, MuJoCo)")
     p.add_argument("source", help="objects JSON or scene directory")
     p.add_argument("--frames", nargs="+", required=True)
+    p.add_argument(
+        "--joint",
+        nargs="+",
+        metavar="OBJECT:JOINT=VALUE",
+        help="render articulated objects with these joint positions (rad or m)",
+    )
     p.add_argument("--out", required=True)
 
     p = add("assemble", _assemble, "objects JSON -> simulation-ready scene")

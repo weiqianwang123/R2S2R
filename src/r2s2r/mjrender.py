@@ -135,7 +135,8 @@ def add_mesh(spec: Any, body: Any, name: str, visual: VisualMesh) -> None:
 
 
 class SceneRenderer:
-    """A scene's support and every object (textured) as mocap bodies."""
+    """A scene's support and every object (textured, its joints as the scene has them)
+    as mocap bodies."""
 
     def __init__(self, scene: SceneSpec, max_size: tuple[int, int]) -> None:
         spec = mujoco.MjSpec()
@@ -155,7 +156,7 @@ class SceneRenderer:
         )
         for i, obj in enumerate(scene.objects):
             body = spec.worldbody.add_body(name=f"obj{i}", mocap=True)
-            for j, visual in enumerate(urdf_visual_meshes(obj.asset_path)):
+            for j, visual in enumerate(urdf_visual_meshes(obj.asset_path, obj.joints)):
                 add_mesh(spec, body, f"obj{i}/{j}", visual)
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)

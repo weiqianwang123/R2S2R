@@ -1,5 +1,6 @@
-"""URDF assets: writing an object's URDF, making it simulation-ready, reading its
-geometry, and where an object rests.
+"""URDF assets: writing an object's URDF (one link, or an articulated object's links
+and joints), making it simulation-ready, reading its geometry, and where an object
+rests.
 
 :func:`make_sim_ready` writes one ``<name>_r2s2r.urdf`` per object:
 
@@ -11,7 +12,8 @@ geometry, and where an object rests.
   the edges an object stands on, and the contact patch left can be a fraction of the
   real footprint (a tall box then topples).
 
-Objects are rigid: the readers place every link where its joints' origins put it.
+The readers place every link where its joints put it: at given joint positions (an
+articulated object's :attr:`~r2s2r.structs.ObjectSpec.joints`), else at zero.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import trimesh
@@ -38,6 +41,38 @@ class SimReadyConfig:
 
     base_height: float = 0.005  # the flat base's thickness
     contact_tolerance: float = 0.01  # lowest point this close to the support: resting
+
+
+@dataclass
+class UrdfLink:
+    """A link to write: its visual mesh and collision meshes (paths relative to the
+    URDF), and ``mass`` (kg) at ``com`` with the 3x3 ``inertia`` about it, in the
+    link's axes."""
+
+    name: str
+    visual: str
+    mass: float
+    com: ArrayLike
+    inertia: ArrayLike
+    collisions: list[str]
+
+
+@dataclass
+class UrdfJoint:
+    """A joint to write: ``kind`` ``revolute`` or ``prismatic``, its frame at ``xyz`` in
+    the parent link's frame (axes aligned with it), moving along or about ``axis``
+    within ``limits`` (rad or m)."""
+
+    name: str
+    kind: str
+    parent: str
+    child: str
+    xyz: ArrayLike
+    axis: ArrayLike
+    limits: tuple[float, float]
+
+
+JOINT_KINDS = ("revolute", "prismatic")
 
 
 @dataclass
@@ -70,58 +105,80 @@ def make_sim_ready(
 
 
 def write_object_urdf(
-    path: Path,
-    name: str,
-    mass: float,
-    com: ArrayLike,
-    inertia: ArrayLike,
-    collisions: list[Path] | list[str],
+    path: Path, name: str, links: list[UrdfLink], joints: Sequence[UrdfJoint] = ()
 ) -> None:
-    """One link: the visual mesh ``visual.obj`` beside ``path``, the collision meshes
-    ``collisions`` (relative to it), and ``mass`` (kg) at ``com`` with the 3x3
-    ``inertia`` about it, in the link's axes."""
-    inertia = np.asarray(inertia, float)
+    """An object's URDF: ``links`` (the first is the root) joined by ``joints``."""
+
+    def numbers(values: ArrayLike, fmt: str = ".6f") -> str:
+        return " ".join(f"{v:{fmt}}" for v in np.asarray(values, float))
+
     robot = ET.Element("robot", {"name": name})
-    link = ET.SubElement(robot, "link", {"name": "base"})
-    inertial = ET.SubElement(link, "inertial")
-    ET.SubElement(
-        inertial,
-        "origin",
-        {"xyz": " ".join(f"{v:.6f}" for v in np.asarray(com, float)), "rpy": "0 0 0"},
-    )
-    ET.SubElement(inertial, "mass", {"value": f"{mass:.6f}"})
-    ET.SubElement(
-        inertial,
-        "inertia",
-        {
-            k: f"{inertia[i, j]:.8e}"
-            for k, (i, j) in {
-                "ixx": (0, 0),
-                "ixy": (0, 1),
-                "ixz": (0, 2),
-                "iyy": (1, 1),
-                "iyz": (1, 2),
-                "izz": (2, 2),
-            }.items()
-        },
-    )
-    visual = ET.SubElement(link, "visual")
-    ET.SubElement(ET.SubElement(visual, "geometry"), "mesh", {"filename": "visual.obj"})
-    for k, rel in enumerate(collisions):
-        col = ET.SubElement(link, "collision", {"name": f"hull_{k}"})
-        ET.SubElement(ET.SubElement(col, "geometry"), "mesh", {"filename": str(rel)})
+    for spec in links:
+        inertia = np.asarray(spec.inertia, float)
+        link = ET.SubElement(robot, "link", {"name": spec.name})
+        inertial = ET.SubElement(link, "inertial")
+        ET.SubElement(inertial, "origin", {"xyz": numbers(spec.com), "rpy": "0 0 0"})
+        ET.SubElement(inertial, "mass", {"value": f"{spec.mass:.6f}"})
+        ET.SubElement(
+            inertial,
+            "inertia",
+            {
+                k: f"{inertia[i, j]:.8e}"
+                for k, (i, j) in {
+                    "ixx": (0, 0),
+                    "ixy": (0, 1),
+                    "ixz": (0, 2),
+                    "iyy": (1, 1),
+                    "iyz": (1, 2),
+                    "izz": (2, 2),
+                }.items()
+            },
+        )
+        visual = ET.SubElement(link, "visual")
+        ET.SubElement(
+            ET.SubElement(visual, "geometry"), "mesh", {"filename": spec.visual}
+        )
+        for k, rel in enumerate(spec.collisions):
+            col = ET.SubElement(link, "collision", {"name": f"hull_{k}"})
+            ET.SubElement(ET.SubElement(col, "geometry"), "mesh", {"filename": rel})
+    for j in joints:
+        if j.kind not in JOINT_KINDS:
+            raise ValueError(f"joint {j.name}: kind must be one of {JOINT_KINDS}")
+        joint = ET.SubElement(robot, "joint", {"name": j.name, "type": j.kind})
+        ET.SubElement(joint, "parent", {"link": j.parent})
+        ET.SubElement(joint, "child", {"link": j.child})
+        ET.SubElement(joint, "origin", {"xyz": numbers(j.xyz), "rpy": "0 0 0"})
+        ET.SubElement(joint, "axis", {"xyz": numbers(j.axis)})
+        lower, upper = j.limits
+        ET.SubElement(
+            joint,
+            "limit",
+            {
+                "lower": f"{lower:.6f}",
+                "upper": f"{upper:.6f}",
+                "effort": "100",
+                "velocity": "10",
+            },
+        )
     ET.indent(robot)
     ET.ElementTree(robot).write(path, xml_declaration=True, encoding="utf-8")
 
 
 # ----------------------------------------------------------------------- readers
-def urdf_visual_meshes(urdf_path: str | Path) -> list[VisualMesh]:
-    """Every visual mesh, posed in the root link frame."""
+def urdf_visual_meshes(
+    urdf_path: str | Path,
+    joints: dict[str, float] | None = None,
+    links: list[str] | None = None,
+) -> list[VisualMesh]:
+    """Every visual mesh (of ``links`` only, when given), posed in the root link frame
+    with the joints at ``joints`` (zero for those it leaves out)."""
     urdf_path = Path(urdf_path)
     root = ET.parse(urdf_path).getroot()
-    poses = _link_poses(root)
+    poses = _link_poses(root, joints or {})
     out = []
     for link in root.iter("link"):
+        if links is not None and link.attrib["name"] not in links:
+            continue
         for visual in link.iter("visual"):
             mesh_el = visual.find("geometry/mesh")
             if mesh_el is None:
@@ -140,21 +197,27 @@ def urdf_visual_meshes(urdf_path: str | Path) -> list[VisualMesh]:
 
 
 def urdf_visual_points(
-    urdf_path: str | Path, n: int, seed: int = 0
+    urdf_path: str | Path,
+    n: int,
+    seed: int = 0,
+    joints: dict[str, float] | None = None,
 ) -> NDArray[np.float64]:
-    """``n`` surface samples per visual mesh, in the root link frame."""
+    """``n`` surface samples per visual mesh, in the root link frame (joints as for
+    :func:`urdf_visual_meshes`)."""
     return np.concatenate(
         [
             trimesh.sample.sample_surface(v.mesh, n, seed=seed)[0]
-            for v in urdf_visual_meshes(urdf_path)
+            for v in urdf_visual_meshes(urdf_path, joints)
         ]
     )
 
 
 def object_points(obj: ObjectSpec, n: int = 3000) -> NDArray[np.float64]:
-    """``n`` surface samples per visual mesh of a scene object, in the robot base
-    frame."""
-    return transform_points(obj.T_base_obj, urdf_visual_points(obj.asset_path, n))
+    """``n`` surface samples per visual mesh of a scene object, as it is placed (its
+    joints as recorded), in the robot base frame."""
+    return transform_points(
+        obj.T_base_obj, urdf_visual_points(obj.asset_path, n, joints=obj.joints)
+    )
 
 
 # ------------------------------------------------------------------ preparation
@@ -178,9 +241,9 @@ def _bake_mesh_scales(root: ET.Element, asset_dir: Path) -> None:
 def _add_resting_base(
     root: ET.Element, urdf_path: Path, T_support_obj: NDArray, cfg: SimReadyConfig
 ) -> None:
-    """A convex prism: the visual mesh's cross-section ``base_height`` above its lowest
-    point (support frame), extruded down to that point; added to the root link as an
-    extra collision.
+    """A convex prism: the root link's visual mesh's cross-section ``base_height`` above
+    its lowest point (support frame), extruded down to that point; added to the root
+    link as an extra collision.
 
     Skipped for objects not resting on the support.
     """
@@ -191,7 +254,7 @@ def _add_resting_base(
         if old.attrib.get("name") == RESTING_BASE:
             link.remove(old)
     try:
-        visuals = urdf_visual_meshes(urdf_path)
+        visuals = urdf_visual_meshes(urdf_path, links=[link.attrib["name"]])
     except ValueError:  # nothing to take the footprint from
         return
     mesh = trimesh.util.concatenate([v.mesh for v in visuals])
@@ -254,18 +317,43 @@ def base_color_texture(mesh_path: Path) -> Path | None:
     return None
 
 
-def _link_poses(root: ET.Element) -> dict[str, NDArray[np.float64]]:
-    """``T_root_link`` of every link, from the joints' origins."""
+def _link_poses(
+    root: ET.Element, positions: dict[str, float]
+) -> dict[str, NDArray[np.float64]]:
+    """``T_root_link`` of every link, its joints at ``positions`` (zero for the
+    others)."""
     joints = {_link(j, "child"): j for j in root.iter("joint")}
     poses = {}
     for link in root.iter("link"):
         name = link.attrib["name"]
         T = np.eye(4)
         while name in joints:
-            T = urdf_origin(joints[name]) @ T
-            name = _link(joints[name], "parent")
+            joint = joints[name]
+            T = urdf_origin(joint) @ joint_motion(joint, positions) @ T
+            name = _link(joint, "parent")
         poses[link.attrib["name"]] = T
     return poses
+
+
+def joint_motion(joint: ET.Element, positions: dict[str, float]) -> NDArray[np.float64]:
+    """How a URDF joint at its position in ``positions`` (zero if not given) moves its
+    child (:func:`joint_transform`)."""
+    return joint_transform(
+        joint.attrib.get("type", "fixed"),
+        urdf_vector(joint.find("axis"), "xyz", "1 0 0"),
+        float(positions.get(joint.attrib["name"], 0.0)),
+    )
+
+
+def joint_transform(kind: str, axis: ArrayLike, q: float) -> NDArray[np.float64]:
+    """A joint of ``kind`` at ``q`` moving its child about or along the unit ``axis``: a
+    turn (revolute), a slide (prismatic), or nothing (fixed)."""
+    axis = np.asarray(axis, float)
+    if kind in ("revolute", "continuous"):
+        return make_transform(Rotation.from_rotvec(axis * q).as_matrix(), np.zeros(3))
+    if kind == "prismatic":
+        return make_transform(np.eye(3), axis * q)
+    return np.eye(4)
 
 
 def _link(joint: ET.Element, tag: str) -> str:

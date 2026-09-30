@@ -11,10 +11,12 @@ import trimesh
 from conftest import RGBD_K, RGBD_SIZE, box_urdf, rgbd_capture
 from scipy.spatial.transform import Rotation
 
+from r2s2r.assets import object_points, urdf_visual_meshes
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
+from r2s2r.tools.check import check
 from r2s2r.tools.geometry import fit_plane, parse_masks, pattern_search, view_points
-from r2s2r.tools.objects import assemble
-from r2s2r.transforms import look_at, make_transform
+from r2s2r.tools.objects import articulation_problems, assemble
+from r2s2r.transforms import invert, look_at, make_transform, transform_points
 from r2s2r.workspace import Workspace
 
 BOX = (0.06, 0.04, 0.08)  # the true object
@@ -131,6 +133,100 @@ def test_assemble_writes_a_simulation_ready_scene(tmp_path):
     (tmp_path / "objects.json").write_text(json.dumps(objects))
     with pytest.raises(ValueError, match="rigid"):
         assemble(ws, tmp_path / "objects.json", tmp_path / "scene2", "hull")
+
+
+def _hinged_box(tmp_path):
+    """A workspace and the objects file of a box with its lid half open (a hinge along
+    the back top edge), assembled into ``tmp_path/scene``: the workspace, the objects
+    file, and the body, the lid as recorded, and the lid shut."""
+    capture = rgbd_capture(tmp_path / "capture", CAMERAS)
+    ws = Workspace.create(capture, tmp_path / "run", "agentic")
+    body = trimesh.creation.box(extents=(0.2, 0.1, 0.06))
+    body.apply_translation([0, 0, 0.03])
+    body.export(tmp_path / "body.obj")
+    shut = trimesh.creation.box(extents=(0.2, 0.1, 0.01))
+    shut.apply_translation([0, 0, 0.065])
+    hinge = np.array([0.0, 0.05, 0.06])
+    lid = shut.copy()
+    lid.apply_transform(trimesh.transformations.rotation_matrix(-0.8, [1, 0, 0], hinge))
+    lid.export(tmp_path / "lid.obj")
+    objects = {
+        "support": {"T_base_support": np.eye(4).tolist(), "extent": [1.0, 1.0]},
+        "objects": [
+            {
+                "name": "box",
+                "mesh": "body.obj",
+                "T_base_obj": TRUE_POSE.tolist(),
+                "mass": 0.4,
+                "parts": [{"name": "lid", "mesh": "lid.obj"}],
+                "joints": [
+                    {
+                        "name": "hinge",
+                        "type": "revolute",
+                        "parent": "base",
+                        "child": "lid",
+                        "origin": hinge.tolist(),
+                        "axis": [1, 0, 0],  # the lid's front rises at negative angles
+                        "limits": [-1.9, 0.0],
+                        "position": -0.8,
+                    }
+                ],
+            }
+        ],
+    }
+    (tmp_path / "objects.json").write_text(json.dumps(objects))
+    return ws, objects, (body, lid, shut)
+
+
+def test_assemble_an_articulated_object_keeps_its_parts_where_recorded(tmp_path):
+    """The hinged box becomes a two-link URDF: at the recorded joint position every
+    part is where it was, at zero the lid lies shut; broken joints are refused."""
+    ws, objects, (body, lid, shut) = _hinged_box(tmp_path)
+    report = assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "hull")
+    (obj,) = SceneSpec.load(tmp_path / "scene").objects
+    assert obj.joints == {"hinge": pytest.approx(-0.8)}
+    assert report["objects"]["box"]["joints"]["hinge"]["limits"] == [-1.9, 0.0]
+    root = ET.parse(obj.asset_path).getroot()
+    assert [link.attrib["name"] for link in root.iter("link")] == ["base", "lid"]
+    masses = [float(m.attrib["value"]) for m in root.iter("mass")]
+    assert sum(masses) == pytest.approx(0.4) and masses[1] < masses[0]
+    as_recorded = urdf_visual_meshes(obj.asset_path, obj.joints)[1].mesh  # the lid
+    assert np.allclose(np.sort(as_recorded.vertices, 0), np.sort(lid.vertices, 0))
+    at_zero = urdf_visual_meshes(obj.asset_path)[1].mesh
+    assert np.allclose(np.sort(at_zero.vertices, 0), np.sort(shut.vertices, 0))
+    # Placed in the base frame as recorded: the body and the raised lid.
+    seen = trimesh.util.concatenate([body, lid])
+    local = transform_points(invert(TRUE_POSE), object_points(obj, 2000))
+    assert np.allclose(local.min(0), seen.bounds[0], atol=2e-3)
+    assert np.allclose(local.max(0), seen.bounds[1], atol=2e-3)
+
+    joint = objects["objects"][0]["joints"][0]
+    for broken, problem in (
+        ({"position": 0.5}, "outside its limits"),
+        ({"parent": "lid"}, "tree"),
+        ({"type": "ball"}, "type"),
+        ({"axis": [0, 0, 0]}, "axis not 0"),
+    ):
+        objects["objects"][0]["joints"] = [{**joint, **broken}]
+        assert any(problem in p for p in articulation_problems(objects["objects"][0]))
+
+
+@pytest.mark.gl
+def test_check_renders_an_articulated_object_with_its_joints_moved(tmp_path):
+    """``check`` with a joint moved renders the part elsewhere; unknown joints are
+    refused."""
+    ws, _, _ = _hinged_box(tmp_path)
+    assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "none")
+    fid = ws.frame_id(ws.capture.frames[0])
+    recorded = check(ws, tmp_path / "scene", [fid], tmp_path / "check_open")
+    shut = check(
+        ws, tmp_path / "scene", [fid], tmp_path / "check_shut", {"box": {"hinge": 0}}
+    )
+    assert shut["joints"] == {"box": {"hinge": 0}}
+    images = [cv2.imread(r["frames"][0]["image"]) for r in (recorded, shut)]
+    assert not np.array_equal(*images)
+    with pytest.raises(ValueError, match="no joints"):
+        check(ws, tmp_path / "scene", [fid], tmp_path / "c", {"box": {"lock": 0}})
 
 
 @pytest.mark.gl

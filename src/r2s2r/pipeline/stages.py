@@ -34,6 +34,7 @@ import numpy as np
 
 from r2s2r.structs import SceneSpec
 from r2s2r.tools.geometry import UP_ROTATIONS, load_support
+from r2s2r.tools.objects import articulation_problems
 from r2s2r.transforms import is_rigid
 from r2s2r.workspace import Workspace
 
@@ -148,6 +149,10 @@ def check_objects(_: Workspace, d: Path) -> list[str]:
             problems.append(f"{name}: T_base_obj must be a rigid 4x4 transform")
         if obj.get("up", "z") not in UP_ROTATIONS:
             problems.append(f"{name}: up must be one of {sorted(UP_ROTATIONS)}")
+        for part in obj.get("parts") or []:
+            if not part.get("mesh") or not (base / part["mesh"]).exists():
+                problems.append(f"{name}: part {part.get('name')}'s mesh not found")
+        problems += articulation_problems(obj)
     support = spec.get("support")
     if isinstance(support, str):
         problems += check_support(base / support)

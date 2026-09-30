@@ -8,6 +8,7 @@ seconds.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,13 +28,18 @@ from r2s2r.workspace import Workspace
 
 
 def check(
-    ws: Workspace, source: str | Path, frame_ids: list[str], out_dir: str | Path
+    ws: Workspace,
+    source: str | Path,
+    frame_ids: list[str],
+    out_dir: str | Path,
+    joints: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Panels (real with the objects' outlines | render | blend | depth residual) per
     frame, a contact sheet, and the depth residual per object (``check.json``).
 
     ``source`` is a scene directory, or an objects file (assembled without collision
-    first).
+    first). ``joints`` ({object: {joint: position}}) renders articulated objects with
+    those joints moved, to see where a part goes (the recording shows it where it was).
     """
     out_dir = Path(out_dir).resolve()
     (out_dir / "frames").mkdir(parents=True, exist_ok=True)
@@ -45,6 +51,15 @@ def check(
         scene = SceneSpec.load(out_dir / "scene")
     if not scene.objects:
         raise ValueError("the scene has no objects to check")
+    for name, moved in (joints or {}).items():
+        index = next((i for i, o in enumerate(scene.objects) if o.name == name), None)
+        if index is None or not scene.objects[index].joints:
+            raise ValueError(f"no articulated object {name!r} in the scene")
+        obj = scene.objects[index]
+        unknown = set(moved) - set(obj.joints or {})
+        if unknown:
+            raise ValueError(f"{name} has no joints {sorted(unknown)}")
+        scene.objects[index] = replace(obj, joints={**(obj.joints or {}), **moved})
     size = (
         max(c.width for c in ws.capture.cameras.values()),
         max(c.height for c in ws.capture.cameras.values()),
@@ -81,6 +96,7 @@ def check(
         )
         cv2.imwrite(str(out_dir / "sheet.png"), cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
     summary = {
+        "joints": joints or {},
         "scene": str(
             (source if source.is_dir() else out_dir / "scene") / SCENE_FILENAME
         ),

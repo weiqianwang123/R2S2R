@@ -9,9 +9,9 @@ frames for, the objects are held where the scene places them, and each of the ca
 cameras renders RGB and depth, a static camera where it is calibrated and a moving
 (wrist) camera at the frame's recorded pose.
 
-:func:`settle` lets a scene's objects come to rest, the robot held as it was at the
-start of the static period, and keeps each object's USD (and physcoder's
-``metadata.yaml``) with the settled scene.
+:func:`settle` lets a scene's objects come to rest (an articulated object's joints
+too), the robot held as it was at the start of the static period, and keeps each
+object's USD (and physcoder's ``metadata.yaml``) with the settled scene.
 """
 
 from __future__ import annotations
@@ -167,9 +167,9 @@ def settle(
     session = _Recorded(spec, capture, cfg.device, {}, False)
     start = capture.static_steps[0]
     session.set_state(session.index.get(start, 0))
-    before = session.object_poses()
+    before, joints_before = session.object_poses(), session.object_joints()
     session.step_physics(int(round(cfg.seconds / session.dt)))
-    after = session.object_poses()
+    after, joints_after = session.object_poses(), session.object_joints()
     report: dict[str, Any] = {
         "seconds": cfg.seconds,
         "robot_step": start,
@@ -184,9 +184,14 @@ def settle(
             "turned_deg": round(float(np.degrees(turn)), 2),
             "dropped_m": round(float(T0[2, 3] - T1[2, 3]), 4),
         }
+        joints = joints_after.get(obj.name)
+        if joints:  # how far each joint moved (rad or m)
+            report["objects"][obj.name]["joints_moved"] = {
+                j: round(q - joints_before[obj.name][j], 4) for j, q in joints.items()
+            }
         assert obj.usd is not None
         write_metadata(obj.usd, T1, spec.T_base_support)
-        objects.append(replace(obj, T_base_obj=T1))
+        objects.append(replace(obj, T_base_obj=T1, joints=joints or None))
     settled = replace(
         spec,
         objects=objects,

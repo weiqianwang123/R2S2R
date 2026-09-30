@@ -51,7 +51,7 @@ def scene_glb(path: Path) -> tuple[bytes, dict[str, Any]]:
         spec = SceneSpec.load(path if path.is_dir() else path.parent)
         T_support, extent = spec.T_base_support, spec.support_extent
         for obj in spec.objects:
-            for k, visual in enumerate(urdf_visual_meshes(obj.asset_path)):
+            for k, visual in enumerate(urdf_visual_meshes(obj.asset_path, obj.joints)):
                 mesh = visual.mesh.copy()
                 mesh.apply_transform(obj.T_base_obj)
                 scene.add_geometry(mesh, node_name=f"{obj.name}_{k}")
@@ -71,11 +71,13 @@ def scene_glb(path: Path) -> tuple[bytes, dict[str, Any]]:
         else:
             T_support, extent = load_support(path)
         for entry in objects:
-            loaded = load_mesh(entry["mesh"])
-            loaded.apply_transform(np.diag([*entry["scale"], 1.0]))
             T = np.asarray(entry["T_base_obj"], float)
-            loaded.apply_transform(T)
-            scene.add_geometry(loaded, node_name=str(entry["name"]))
+            meshes = [entry["mesh"]] + [p["mesh"] for p in entry["parts"]]
+            for k, mesh_path in enumerate(meshes):  # parts: as recorded, like the mesh
+                loaded = load_mesh(mesh_path)
+                loaded.apply_transform(np.diag([*entry["scale"], 1.0]))
+                loaded.apply_transform(T)
+                scene.add_geometry(loaded, node_name=f"{entry['name']}_{k}")
             info["objects"].append(
                 {"name": entry["name"], "position": T[:3, 3].round(4).tolist()}
             )

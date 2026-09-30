@@ -29,6 +29,17 @@ Then write `objects.json` (the objects file of `../AGENTS.md`) with every object
 `r2s2r tool check objects.json --frames <the chosen frames> --out check`, and look at
 every panel: each object's outline must sit on it in every frame. Fix what is off.
 
+Articulated objects: an object with parts that move against each other (a lid, a
+cover, a door, a drawer) is one object with `parts` and `joints` (see the objects file
+in `../AGENTS.md`). The recording may never show them move: judge from what the object
+is and what you see (hinges, seams, gaps, handles) where the joint is and how far it
+goes, the way you would expect such an object to work. Split the part from the fitted
+mesh (or build it) in the mesh's own coordinates, as it was recorded; give each joint
+its axis, origin, limits and recorded position. Then `check` it at the recorded
+positions and with `--joint` at the ends of its limits: the part must turn or slide
+the way the real one would, without passing through the rest of the object. Only
+model joints you believe the object has; a rigid object stays rigid.
+
 Add objects stage 2 missed; drop anything that is not a separate object. Finish with
 `notes.md`: per object, the view it was generated from, the frames it was fitted to,
-its final IoUs, and any doubts.
+its final IoUs, its joints and why, and any doubts.

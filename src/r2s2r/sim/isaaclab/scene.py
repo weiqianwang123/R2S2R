@@ -12,9 +12,11 @@ convention). There is one environment, at the world origin: some robots' USDs pi
 root there.
 
 Objects are spawned from single-file USDs (:func:`object_usd`): the assembled URDF
-converted, its rigid body on the default prim, and a physics material with the object's
-friction bound to its colliders. physcoder loads the same files, with the
-``metadata.yaml`` :func:`write_metadata` puts beside them.
+converted, its rigid body on the default prim (an articulated object's links under it,
+the first the articulation root), and a physics material with the object's friction
+bound to its colliders. physcoder loads the same files, with the ``metadata.yaml``
+:func:`write_metadata` puts beside them. An articulated object's joints are passive,
+damped; held where the scene has them when the objects are kinematic.
 """
 
 from __future__ import annotations
@@ -28,7 +30,14 @@ import isaaclab.sim as sim_utils
 import numpy as np
 import torch
 import yaml
-from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.assets import (
+    Articulation,
+    ArticulationCfg,
+    AssetBaseCfg,
+    RigidObject,
+    RigidObjectCfg,
+)
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
 from isaaclab.sim import SimulationCfg, SimulationContext
@@ -49,6 +58,10 @@ from r2s2r.transforms import (
 SUPPORT_EXTENT = (0.6, 0.6)  # for scenes whose support outline is unknown
 METADATA_FILENAME = "metadata.yaml"
 PHYSICS_DT = 0.005  # seconds per physics step
+# An articulated object's joints: damped (N m s/rad, N s/m), else free; held stiffly
+# (N m/rad, N/m) where the scene has them when the objects are kinematic.
+JOINT_DAMPING = 1.0
+JOINT_HOLD_STIFFNESS = 1e4
 
 
 def _pose(T: NDArray) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -105,7 +118,8 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
 
     Isaac's URDF importer writes its layered output under ``out_dir/usd/``; this
     flattens it into a single file with the rigid body (and its mass) on the default
-    prim, the visuals and colliders underneath, and a ``PhysicsMaterial`` with the
+    prim, the visuals and colliders underneath (an articulated object keeps its links,
+    and its joints, under the default prim), and a ``PhysicsMaterial`` with the
     object's friction bound to every collider. Texture paths stay relative, so the
     directory can move.
     """
@@ -134,9 +148,14 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
     flat = Usd.Stage.Open(stage.Flatten())
     root = flat.GetDefaultPrim()
     links = [p for p in root.GetChildren() if p.HasAPI(UsdPhysics.RigidBodyAPI)]
-    if len(links) != 1:
+    if obj.joints:
+        # Articulated: the links stay as the importer made them, the first the root.
+        if not links[0].HasAPI(UsdPhysics.ArticulationRootAPI):
+            raise ValueError(f"{obj.asset_path}'s first link is no articulation root")
+    elif len(links) != 1:
         raise ValueError(f"{obj.asset_path} is not a single rigid link")
-    _move_rigid_body(links[0], root)
+    else:
+        _move_rigid_body(links[0], root)
     for prim in flat.Traverse():
         for attr in prim.GetAttributes():
             value = attr.Get()
@@ -245,14 +264,38 @@ def with_object_usds(scene: SceneSpec, out_dir: str | Path) -> SceneSpec:
     return replace(scene, objects=objects)
 
 
-def object_cfg(obj: ObjectSpec, index: int, kinematic: bool) -> RigidObjectCfg:
+def object_cfg(
+    obj: ObjectSpec, index: int, kinematic: bool
+) -> RigidObjectCfg | ArticulationCfg:
     """An object from its USD (:func:`object_usd`); ``kinematic`` holds it where it
-    is placed (for comparing geometry, not physics)."""
+    is placed (for comparing geometry, not physics), an articulated one with its
+    joints as the scene has them."""
     if obj.usd is None:
         raise ValueError(f"{obj.name} has no USD yet (with_object_usds)")
     pos, rot = _pose(obj.T_base_obj)
+    prim_path = f"{{ENV_REGEX_NS}}/Object_{index}"
+    if obj.joints:
+        return ArticulationCfg(
+            prim_path=prim_path,
+            spawn=sim_utils.UsdFileCfg(
+                usd_path=obj.usd,
+                articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                    fix_root_link=kinematic
+                ),
+            ),
+            init_state=ArticulationCfg.InitialStateCfg(
+                pos=pos, rot=rot, joint_pos=dict(obj.joints)
+            ),
+            actuators={
+                "joints": ImplicitActuatorCfg(
+                    joint_names_expr=[".*"],
+                    stiffness=JOINT_HOLD_STIFFNESS if kinematic else 0.0,
+                    damping=JOINT_DAMPING,
+                )
+            },
+        )
     return RigidObjectCfg(
-        prim_path=f"{{ENV_REGEX_NS}}/Object_{index}",
+        prim_path=prim_path,
         spawn=sim_utils.UsdFileCfg(
             usd_path=obj.usd,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic),
@@ -418,6 +461,10 @@ class Session:
             self.articulation, robot_spec
         )
         self.names = {object_key(i): obj.name for i, obj in enumerate(spec.objects)}
+        for obj in self._objects().values():
+            if isinstance(obj, Articulation):  # the joints as the scene has them
+                pos = obj.data.default_joint_pos
+                obj.write_joint_state_to_sim(pos, torch.zeros_like(pos))
 
     def gripper_targets(self, level: float) -> torch.Tensor:
         """The gripper joints' positions at opening ``level`` (0 open, 1 closed)."""
@@ -430,12 +477,28 @@ class Session:
             self.sim.step(render=render and i == n - 1)
             self.scene.update(self.dt)
 
+    def _objects(self) -> dict[str, RigidObject | Articulation]:
+        """The scene's objects (rigid or articulated) by name."""
+        entities = {**self.scene.rigid_objects, **self.scene.articulations}
+        return {name: entities[key] for key, name in self.names.items()}
+
     def object_poses(self) -> dict[str, NDArray[np.float64]]:
         """Every object's pose in the robot base frame (the environment is at the
         origin)."""
         out = {}
-        for key, obj in self.scene.rigid_objects.items():
+        for name, obj in self._objects().items():
             pos = obj.data.root_pos_w[0].cpu().numpy()
             quat = obj.data.root_quat_w[0].cpu().numpy()
-            out[self.names[key]] = pos_quat_to_matrix(pos, quat)
+            out[name] = pos_quat_to_matrix(pos, quat)
         return out
+
+    def object_joints(self) -> dict[str, dict[str, float]]:
+        """Every articulated object's joint positions, by name."""
+        return {
+            name: {
+                joint: round(float(q), 6) + 0.0
+                for joint, q in zip(obj.joint_names, obj.data.joint_pos[0].tolist())
+            }
+            for name, obj in self._objects().items()
+            if isinstance(obj, Articulation)
+        }
