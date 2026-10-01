@@ -82,8 +82,8 @@ details.phys summary { cursor: pointer; }
 details.phys summary .n { font-weight: 600; margin-right: 10px; }
 details.phys p { margin: 8px 0 2px; color: var(--muted); }
 .empty { color: var(--muted); padding: 10px 0; }
-.joint { margin: 8px 0 2px; }
-.joint .why { margin: 2px 0 0; }
+.phys-item { margin: 8px 0 2px; }
+.phys-item .why { margin: 2px 0 0; }
 
 /* articulated objects: a slider per joint */
 .joints { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }

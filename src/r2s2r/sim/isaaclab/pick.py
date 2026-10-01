@@ -100,7 +100,9 @@ def run_pick(
     )
 
     def positions() -> dict[str, NDArray[np.float64]]:
-        return {name: T[:3, 3] for name, T in session.object_poses().items()}
+        out = {name: T[:3, 3] for name, T in session.object_poses().items()}
+        out.update({n: p.mean(axis=0) for n, p in session.cloth_points().items()})
+        return out
 
     # sim.reset() leaves the USD's joint state; start from the scene's instead,
     # then let the objects come to rest under physics.

@@ -323,15 +323,16 @@ class ObjectSpec:
     mass: float | None = None
     friction: float | None = None
     # The object as one USD file for Isaac Lab (its rigid body or articulation,
-    # colliders and friction material; written by settling), with ``metadata.yaml``
+    # colliders and friction material, or a cloth's deformable surface and material;
+    # written by settling), with ``metadata.yaml``
     # beside it. Paths as for ``asset_path``.
     usd: str | None = None
     # An articulated object's joint positions (rad or m) by the URDF's joint names: as
     # recorded, or where settling left them; None for a rigid object.
     joints: dict[str, float] | None = None
     # A cloth's material (``thickness`` m, ``youngs_modulus`` Pa, ``poissons_ratio``);
-    # its visual mesh is its surface as it lies, which is also its rest shape. None for
-    # a body.
+    # its visual mesh is its surface as it lies, unstretched there, bending back toward
+    # flat. None for a body.
     cloth: dict[str, float] | None = None
 
     @classmethod

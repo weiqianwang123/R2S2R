@@ -39,8 +39,9 @@ Part and joint names are lower case, digits and underscores; ``base`` and ``visu
 are taken.
 
 A cloth (a towel, a napkin) is a thin surface that drapes: its ``mesh`` is the surface
-as it lies (an open triangle mesh, no thickness), which is also its rest shape, and
-its material is given::
+as it lies (an open triangle mesh, no thickness, one piece whose triangles share their
+vertices: one UV chart), unstretched as it lies but bending back toward flat, and its
+material is given::
 
         "cloth": {"thickness": 0.002,                    # m
                   "youngs_modulus": 5e5,                 # Pa: how hard it stretches
@@ -66,6 +67,7 @@ from numpy.typing import NDArray
 from r2s2r.assets import (
     JOINT_KINDS,
     ROOT_LINK,
+    VISUAL,
     UrdfJoint,
     UrdfLink,
     VisualMesh,
@@ -96,7 +98,6 @@ HUNYUAN_REPO = SIMFOUNDRY_DIR / "deps" / "Hunyuan3D-2.1"
 DEFAULT_DENSITY = 500.0  # kg/m^3, when an object has no mass
 CLOTH_AREAL_DENSITY = 0.2  # kg/m^2, when a cloth has no mass
 CLOTH_POISSONS_RATIO = 0.3
-VISUAL = "visual"  # the file name of an object's (root link's) visual mesh
 
 
 # ----------------------------------------------------------------------- generate
@@ -308,18 +309,25 @@ def cloth_problems(obj: dict[str, Any]) -> list[str]:
     if obj.get("parts") or obj.get("joints") or obj.get("collision"):
         problems.append(f"{name}: a cloth has no parts, joints or collision parts")
     try:
-        thickness = float(cloth["thickness"])
-        modulus = float(cloth["youngs_modulus"])
-        ratio = float(cloth.get("poissons_ratio", CLOTH_POISSONS_RATIO))
+        material = _cloth_material(cloth)
     except (KeyError, TypeError, ValueError):
         return problems + [f"{name}: cloth needs thickness and youngs_modulus"]
-    if not 0 < thickness < 0.05:
+    if not 0 < material["thickness"] < 0.05:
         problems.append(f"{name}: cloth thickness must be in (0, 0.05) m")
-    if modulus <= 0:
+    if material["youngs_modulus"] <= 0:
         problems.append(f"{name}: cloth youngs_modulus must be positive")
-    if not 0 <= ratio < 0.5:
+    if not 0 <= material["poissons_ratio"] < 0.5:
         problems.append(f"{name}: cloth poissons_ratio must be in [0, 0.5)")
     return problems
+
+
+def _cloth_material(cloth: dict[str, Any]) -> dict[str, float]:
+    """A cloth's material numbers, the Poisson's ratio defaulted."""
+    return {
+        "thickness": float(cloth["thickness"]),
+        "youngs_modulus": float(cloth["youngs_modulus"]),
+        "poissons_ratio": float(cloth.get("poissons_ratio", CLOTH_POISSONS_RATIO)),
+    }
 
 
 def link_frames(
@@ -382,9 +390,12 @@ def assemble(
     CoACD's convex decomposition, ``hull``: one convex hull, ``none``: none, for looking
     only), per link; inertia of the convex hull at the given mass (else
     ``DEFAULT_DENSITY``), shared among the links by convex volume; a URDF, made
-    simulation-ready (a flat base for an object resting on the support). The
-    scene's provenance names the run's method and where the collision parts came from:
-    ``"given"`` or ``collision``, per object when they differ.
+    simulation-ready (a flat base for an object resting on the support). A cloth: its
+    surface into ``visual.obj``, no collision parts (its surface collides, in
+    simulation), mass the given one (else ``CLOTH_AREAL_DENSITY``), a box's inertia,
+    no flat base. The scene's provenance names the run's method and where the
+    collision parts came from: ``"given"``, ``collision`` or ``"none"`` (a cloth), per
+    object when they differ.
     """
     if collision not in ("coacd", "hull", "none"):
         raise ValueError(f"unknown collision {collision!r} (coacd, hull, none)")
@@ -414,7 +425,9 @@ def assemble(
         obj_dir.mkdir(parents=True)
         scaling = np.diag([*obj["scale"], 1.0])
         if obj.get("cloth") is not None:
-            cloth, report[name] = _cloth(obj, obj_dir, scaling)
+            cloth, report[name] = _cloth(
+                obj, name, T_base_obj, T_base_support, obj_dir, scaling
+            )
             objects.append(cloth)
             sources[name] = "none"  # the cloth surface itself collides
             continue
@@ -479,13 +492,8 @@ def assemble(
             "hull_volume_share": (  # of the links' convex hulls
                 round(hull_volume / sum(volumes.values()), 3) if hulls else None
             ),
-            "lowest_point_above_support_m": round(
-                float(
-                    transform_points(
-                        invert(T_base_support) @ T_base_obj, whole.vertices
-                    )[:, 2].min()
-                ),
-                4,
+            "lowest_point_above_support_m": _lowest_point(
+                whole, invert(T_base_support) @ T_base_obj
             ),
             **(
                 {
@@ -577,22 +585,40 @@ def _collision(
     return [path]
 
 
+def _lowest_point(mesh: trimesh.Trimesh, T_support_obj: NDArray[np.float64]) -> float:
+    """How far ``mesh``'s lowest point is above the support (m)."""
+    return round(float(transform_points(T_support_obj, mesh.vertices)[:, 2].min()), 4)
+
+
 def _cloth(
-    obj: dict[str, Any], obj_dir: Path, scaling: NDArray[np.float64]
+    obj: dict[str, Any],
+    name: str,
+    T_base_obj: NDArray[np.float64],
+    T_base_support: NDArray[np.float64],
+    obj_dir: Path,
+    scaling: NDArray[np.float64],
 ) -> tuple[ObjectSpec, dict[str, Any]]:
     """A cloth's scene object and report: its surface scaled into ``visual.obj``, a
     URDF that only shows it (the cloth's own surface collides, in simulation), its
     material."""
     mesh = load_mesh(obj["mesh"])
+    welded = trimesh.Trimesh(mesh.vertices, mesh.faces)  # merges duplicated vertices
+    # body_count is a cached property, not a method
+    # pylint: disable-next=comparison-with-callable
+    if len(welded.vertices) < len(mesh.vertices) or welded.body_count > 1:
+        raise ValueError(
+            f"{name}: a cloth's surface must be one piece whose triangles share their "
+            "vertices (one UV chart: a seam splits the cloth)"
+        )
     mesh.apply_transform(scaling)
     mesh.export(obj_dir / f"{VISUAL}.obj")
     area = float(mesh.area)
     mass = float(obj.get("mass") or CLOTH_AREAL_DENSITY * area)
     size = np.asarray(mesh.extents, float)
-    urdf = obj_dir / f"{slug(obj['name'])}.urdf"
+    urdf = obj_dir / f"{name}.urdf"
     write_object_urdf(
         urdf,
-        slug(obj["name"]),
+        name,
         [
             UrdfLink(
                 name=ROOT_LINK,
@@ -604,18 +630,12 @@ def _cloth(
             )
         ],
     )
-    material = {
-        "thickness": float(obj["cloth"]["thickness"]),
-        "youngs_modulus": float(obj["cloth"]["youngs_modulus"]),
-        "poissons_ratio": float(
-            obj["cloth"].get("poissons_ratio", CLOTH_POISSONS_RATIO)
-        ),
-    }
+    material = _cloth_material(obj["cloth"])
     spec = ObjectSpec(
-        name=slug(obj["name"]),
-        category=obj.get("category", obj["name"]),
+        name=name,
+        category=obj.get("category", name),
         asset_path=str(urdf),
-        T_base_obj=np.asarray(obj["T_base_obj"], float),
+        T_base_obj=T_base_obj,
         mass=mass,
         friction=obj.get("friction"),
         cloth=material,
@@ -624,6 +644,9 @@ def _cloth(
         "size_m": np.round(size, 4).tolist(),
         "area_m2": round(area, 4),
         "mass_kg": round(mass, 4),
+        "lowest_point_above_support_m": _lowest_point(
+            mesh, invert(T_base_support) @ T_base_obj
+        ),
         "cloth": material,
     }
     return spec, report

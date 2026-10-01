@@ -289,7 +289,8 @@ def test_articulation_problems_name_the_bad_names(tmp_path):
 
 def test_assemble_a_cloth_keeps_its_surface_and_material(tmp_path):
     """A towel: its surface as it lies (no collision parts, no resting base), its
-    material, its mass (else an areal density); a bad material is refused."""
+    material, its mass (else an areal density); a bad material, and a surface in
+    pieces, are refused."""
     capture = rgbd_capture(tmp_path / "capture", CAMERAS)
     ws = Workspace.create(capture, tmp_path / "run", "agentic")
     towel_mesh(0.3).export(tmp_path / "towel.obj")
@@ -314,6 +315,7 @@ def test_assemble_a_cloth_keeps_its_surface_and_material(tmp_path):
     }
     assert obj.mass == pytest.approx(CLOTH_AREAL_DENSITY * 0.09)
     assert report["objects"]["towel"]["area_m2"] == pytest.approx(0.09)
+    assert report["objects"]["towel"]["lowest_point_above_support_m"] == 0.001
     root = ET.parse(obj.asset_path).getroot()
     assert not list(root.iter("collision"))
     visuals = urdf_visual_meshes(obj.asset_path)
@@ -324,8 +326,16 @@ def test_assemble_a_cloth_keeps_its_surface_and_material(tmp_path):
         ({"cloth": {"thickness": 0.002}}, "needs thickness and youngs_modulus"),
         ({"cloth": {**towel["cloth"], "poissons_ratio": 0.7}}, "poissons_ratio"),
         ({"parts": [{"name": "lid", "mesh": "towel.obj"}]}, "a cloth has no parts"),
+        ({"collision": ["hull.obj"]}, "a cloth has no parts"),
+        ({"cloth": 0.002}, "cloth must be an object"),
+        ({"cloth": {"thickness": 0.002, "youngs_modulus": 0}}, "must be positive"),
     ):
         assert any(problem in p for p in cloth_problems({**towel, **change}))
+
+    halves = [towel_mesh(0.14, 5).apply_translation([x, 0, 0]) for x in (-0.08, 0.08)]
+    trimesh.util.concatenate(halves).export(tmp_path / "towel.obj")
+    with pytest.raises(ValueError, match="one piece"):
+        assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "coacd")
 
 
 def test_check_cli_reads_joint_positions(monkeypatch):

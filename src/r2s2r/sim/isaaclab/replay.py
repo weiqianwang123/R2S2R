@@ -27,13 +27,12 @@ import torch
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-from r2s2r.assets import urdf_visual_meshes
+from r2s2r.assets import VISUAL, urdf_visual_meshes
 from r2s2r.robots import get_robot
 from r2s2r.sim.isaac import SETTLE_SECONDS
 from r2s2r.sim.isaaclab.scene import (
     Session,
     camera_key,
-    cloth_usd,
     crop_window,
     object_usd,
     with_object_usds,
@@ -156,8 +155,9 @@ def settle(
     start of the static period.
 
     Each object's USD goes to ``out_dir/objects/<name>/<name>.usd`` with physcoder's
-    ``metadata.yaml`` beside it (for the settled pose). Returns the scene with the
-    objects where they came to rest (and their USDs), and how far each moved.
+    ``metadata.yaml`` beside it (for the settled pose); a cloth's settled surface and
+    URDF go there too, and its ``asset_path`` points at them. Returns the scene with
+    the objects where they came to rest (and their USDs), and how far each moved.
     """
     cfg = config or SettleConfig()
     out_dir = Path(out_dir).resolve()
@@ -172,7 +172,6 @@ def settle(
     start = capture.static_steps[0]
     session.set_state(session.index.get(start, 0))
     before, joints_before = session.object_poses(), session.object_joints()
-    cloth_before = session.cloth_points()
     session.step_physics(int(round(cfg.seconds / session.dt)))
     after, joints_after = session.object_poses(), session.object_joints()
     cloth_after = session.cloth_points()
@@ -185,7 +184,7 @@ def settle(
     for obj in spec.objects:
         if obj.cloth:
             cloth, report["objects"][obj.name] = _settled_cloth(
-                obj, cloth_before[obj.name], cloth_after[obj.name], out_dir
+                obj, cloth_after[obj.name], out_dir
             )
             assert cloth.usd is not None
             write_metadata(cloth.usd, cloth.T_base_obj, spec.T_base_support)
@@ -215,18 +214,21 @@ def settle(
 
 
 def _settled_cloth(
-    obj: ObjectSpec, before: NDArray, after: NDArray, out_dir: Path
+    obj: ObjectSpec, after: NDArray, out_dir: Path
 ) -> tuple[ObjectSpec, dict[str, Any]]:
-    """A cloth as it came to rest: its surface (base frame ``after``) as the new visual
-    mesh and rest shape, in ``out_dir/objects/<name>/``, and how far it moved."""
+    """A cloth as it came to rest: its surface (base frame ``after``) as its new
+    visual mesh, in ``out_dir/objects/<name>/``, and how far it moved from the surface
+    it was placed as."""
     obj_dir = out_dir / "objects" / obj.name
-    mesh = urdf_visual_meshes(obj.asset_path)[0].mesh.copy()  # a cloth has one
+    mesh = urdf_visual_meshes(obj.asset_path)[0].mesh  # a cloth has one
+    before = transform_points(obj.T_base_obj, mesh.vertices)
     mesh.vertices = transform_points(invert(obj.T_base_obj), after)
-    mesh.export(obj_dir / "visual.obj")
+    mesh.export(obj_dir / f"{VISUAL}.obj")
     urdf = obj_dir / Path(obj.asset_path).name
-    shutil.copy(obj.asset_path, urdf)  # its visual is visual.obj beside it
+    if urdf != Path(obj.asset_path).resolve():  # its visual is the one beside it
+        shutil.copy(obj.asset_path, urdf)
     settled = replace(obj, asset_path=str(urdf))
-    settled = replace(settled, usd=str(cloth_usd(settled, obj_dir)))
+    settled = replace(settled, usd=str(object_usd(settled, obj_dir)))
     moved = np.linalg.norm(after - before, axis=1)
     return settled, {
         "moved_m": round(float(moved.max()), 4),  # its furthest point

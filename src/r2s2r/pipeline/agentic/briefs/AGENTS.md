@@ -123,8 +123,10 @@ and joints in lower case, digits and underscores (`base` and `visual` are taken)
 
 A cloth (a towel, a napkin, a cloth over a bowl) is a thin surface that drapes. Its
 `mesh` is the surface as it lies (an open triangle mesh in metres, no thickness, a few
-hundred to a few thousand triangles, evenly sized), which is also its rest shape; its
-material says how it behaves, and `mass` is the whole cloth's:
+hundred to a few thousand triangles, evenly sized, one piece whose triangles share
+their vertices: one UV chart if textured, as a seam would split the cloth). It is
+unstretched as it lies and bends back toward flat; its material says how it behaves,
+and `mass` is the whole cloth's:
 
 ```
      "cloth": {"thickness": 0.002,                      m

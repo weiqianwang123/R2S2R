@@ -34,6 +34,7 @@ from r2s2r.transforms import make_transform, rotation_to_quat, transform_points
 SIM_READY_SUFFIX = "_r2s2r"
 RESTING_BASE = "r2s2r_resting_base"
 ROOT_LINK = "base"  # an object's root link: a rigid object's only one
+VISUAL = "visual"  # the file name of an object's (root link's) visual mesh
 
 
 @dataclass

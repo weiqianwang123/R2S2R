@@ -20,9 +20,6 @@ from r2s2r.paths import REPO_ROOT
 
 ISAAC_SCRIPTS = REPO_ROOT / "scripts" / "isaaclab"
 SETTLE_SECONDS = 2.0  # simulated time for the objects to come to rest
-# Every Isaac script starts its app with these: cloth is PhysX's surface deformable
-# body, which Isaac Sim 5.1 has behind its deformable beta switch.
-KIT_ARGS = "--/physics/enableDeformableBeta=true"
 
 
 def _run_isaac(script: str, args: list[str], log_path: Path) -> None:
@@ -38,6 +35,15 @@ def _run_isaac(script: str, args: list[str], log_path: Path) -> None:
         raise RuntimeError(
             f"{script} failed (exit {proc.returncode}); log {log_path}:\n{tail}"
         )
+
+
+def settle_summary(report: dict[str, Any]) -> str:
+    """One line on how far each object moved while settling (a body also turned)."""
+    return ", ".join(
+        f"{name} moved {r['moved_m']:.3f} m"
+        + (f", turned {r['turned_deg']:.1f} deg" if "turned_deg" in r else "")
+        for name, r in report["objects"].items()
+    )
 
 
 def settle(

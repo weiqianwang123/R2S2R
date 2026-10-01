@@ -195,7 +195,8 @@ def _support(ws: Workspace, d: Path, objects_dir: Path) -> dict[str, Any] | None
 def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
     """The objects file's objects (or, before it exists, every generated mesh), each
     with its preview, its up axis and its latest fit; an articulated one with its
-    number of joints and the objects file to show it whole from (``model``)."""
+    number of joints and the objects file to show it whole from (``model``); whether
+    it is a cloth."""
     fits = []  # (mesh, fit directory, summary), oldest first
     for path in sorted(d.rglob("fit.json"), key=lambda p: p.stat().st_mtime):
         fit = _json(path)
@@ -226,14 +227,15 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
                     mesh if mesh.is_absolute() else d / mesh,
                     str(obj.get("up", "z")),
                     len(obj.get("joints") or []),
+                    obj.get("cloth") is not None,
                 )
             )
     else:  # generated meshes are y-up
         previews = sorted(d.rglob("preview.png"), key=lambda p: p.stat().st_mtime)
         latest = {p.parent.name: p.parent / "mesh.glb" for p in previews}
-        meshes = [(name, mesh, "y", 0) for name, mesh in latest.items()]
+        meshes = [(name, mesh, "y", 0, False) for name, mesh in latest.items()]
     out = []
-    for name, mesh, up, joints in meshes:
+    for name, mesh, up, joints, cloth in meshes:
         mesh = mesh.resolve()
         preview = mesh.parent / "preview.png"
         # The latest fit of this mesh, else the latest whose directory names the object.
@@ -252,6 +254,7 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
                 # movable) from the objects file.
                 "joints": joints,
                 "model": _rel(ws, d / "objects.json") if joints else None,
+                "cloth": cloth,
             }
         )
     return out
