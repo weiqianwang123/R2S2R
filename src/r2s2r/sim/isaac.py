@@ -20,6 +20,9 @@ from r2s2r.paths import REPO_ROOT
 
 ISAAC_SCRIPTS = REPO_ROOT / "scripts" / "isaaclab"
 SETTLE_SECONDS = 2.0  # simulated time for the objects to come to rest
+# Every Isaac script starts its app with these: cloth is PhysX's surface deformable
+# body, which Isaac Sim 5.1 has behind its deformable beta switch.
+KIT_ARGS = "--/physics/enableDeformableBeta=true"
 
 
 def _run_isaac(script: str, args: list[str], log_path: Path) -> None:

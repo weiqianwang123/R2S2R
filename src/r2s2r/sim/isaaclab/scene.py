@@ -16,7 +16,9 @@ converted, its rigid body on the default prim (an articulated object's links und
 the first the articulation root), and a physics material with the object's friction
 bound to its colliders. physcoder loads the same files, with the ``metadata.yaml``
 :func:`write_metadata` puts beside them. An articulated object's joints are passive,
-damped; held where the scene has them when the objects are kinematic.
+damped; held where the scene has them when the objects are kinematic. A cloth is a
+PhysX surface deformable body (:func:`cloth_usd`), held still as a plain surface when
+the objects are kinematic.
 """
 
 from __future__ import annotations
@@ -28,7 +30,9 @@ from typing import Iterable
 
 import isaaclab.sim as sim_utils
 import numpy as np
+import omni.physics.tensors as physics_tensors
 import torch
+import trimesh
 import yaml
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import (
@@ -43,9 +47,10 @@ from isaaclab.sensors import CameraCfg
 from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
 from numpy.typing import NDArray
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from omni.physx.scripts import deformableUtils, physicsUtils
+from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
-from r2s2r.assets import bottom_offset
+from r2s2r.assets import bottom_offset, urdf_visual_meshes
 from r2s2r.robots.spec import RobotSpec
 from r2s2r.structs import SUPPORT_THICKNESS, CameraSpec, ObjectSpec, SceneSpec
 from r2s2r.transforms import (
@@ -62,6 +67,8 @@ PHYSICS_DT = 0.005  # seconds per physics step
 # (N m/rad, N/m) where the scene has them when the objects are kinematic.
 JOINT_DAMPING = 1.0
 JOINT_HOLD_STIFFNESS = 1e4
+CLOTH_MESH = "mesh"  # a cloth USD's surface, under its default prim
+CLOTH_CONTACT_GAP = 0.002  # m: a cloth's contacts start this far beyond its surface
 
 
 def _pose(T: NDArray) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -124,6 +131,8 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
     directory can move.
     """
     out_dir = Path(out_dir).resolve()
+    if obj.cloth:
+        return cloth_usd(obj, out_dir)
     converter = UrdfConverter(
         UrdfConverterCfg(
             asset_path=obj.asset_path,
@@ -176,6 +185,72 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
     path = out_dir / f"{obj.name}.usd"
     flat.GetRootLayer().Export(str(path))
     return path
+
+
+def cloth_usd(obj: ObjectSpec, out_dir: Path) -> Path:
+    """Write a cloth as one USD file, ``out_dir/<name>.usd``: its surface (the scene's
+    visual mesh, object frame) as a PhysX surface deformable body, at rest as it lies,
+    with a material from its ``cloth`` numbers, mass and friction."""
+    assert obj.cloth is not None
+    mesh = urdf_visual_meshes(obj.asset_path)[0].mesh  # a cloth has one
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{obj.name}.usd"
+    stage = Usd.Stage.CreateInMemory()  # the file may be open in the running scene
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    root = UsdGeom.Xform.Define(stage, f"/{obj.name}")
+    stage.SetDefaultPrim(root.GetPrim())
+    surface = UsdGeom.Mesh.Define(stage, root.GetPath().AppendChild(CLOTH_MESH))
+    surface.GetPointsAttr().Set(
+        Vt.Vec3fArray.FromNumpy(mesh.vertices.astype(np.float32))
+    )
+    surface.GetFaceVertexCountsAttr().Set([3] * len(mesh.faces))
+    surface.GetFaceVertexIndicesAttr().Set(mesh.faces.reshape(-1).tolist())
+    surface.CreateDoubleSidedAttr(True)
+    surface.CreateDisplayColorAttr([Gf.Vec3f(*_mean_colour(mesh))])
+    if not deformableUtils.set_physics_surface_deformable_body(
+        stage, surface.GetPath()
+    ):
+        raise ValueError(f"{obj.name}: no surface deformable body from its mesh")
+    thickness = obj.cloth["thickness"]
+    collision = PhysxSchema.PhysxCollisionAPI.Apply(surface.GetPrim())
+    collision.CreateRestOffsetAttr(thickness / 2)
+    collision.CreateContactOffsetAttr(thickness / 2 + CLOTH_CONTACT_GAP)
+    material = root.GetPath().AppendChild("ClothMaterial")
+    friction = 0.5 if obj.friction is None else obj.friction
+    deformableUtils.add_surface_deformable_material(
+        stage,
+        material,
+        density=(obj.mass or 0.0) / (float(mesh.area) * thickness),
+        static_friction=friction,
+        dynamic_friction=friction,
+        youngs_modulus=obj.cloth["youngs_modulus"],
+        poissons_ratio=obj.cloth["poissons_ratio"],
+        surface_thickness=thickness,
+    )
+    physicsUtils.add_physics_material_to_prim(stage, surface.GetPrim(), material)
+    stage.GetRootLayer().Export(str(path))
+    return path
+
+
+def _mean_colour(mesh: trimesh.Trimesh) -> NDArray[np.float64]:
+    """A mesh's average colour (RGB, 0 to 1): its texture's, else its vertices'."""
+    image = getattr(getattr(mesh.visual, "material", None), "image", None)
+    if image is not None:
+        return np.asarray(image.convert("RGB"), float).reshape(-1, 3).mean(0) / 255.0
+    colours = getattr(mesh.visual, "vertex_colors", None)
+    if colours is not None:
+        return np.asarray(colours, float)[:, :3].mean(0) / 255.0
+    return np.full(3, 0.7)
+
+
+def _freeze_cloth(prim_path: str) -> None:
+    """A spawned cloth as a plain surface: no longer a deformable body, so it stays as
+    it lies (a static collider)."""
+    stage = sim_utils.get_current_stage()
+    prim = stage.GetPrimAtPath(f"{prim_path}/{CLOTH_MESH}")
+    for api in ("OmniPhysicsSurfaceDeformableSimAPI", "OmniPhysicsDeformableBodyAPI"):
+        prim.RemoveAPI(api)
 
 
 def _move_rigid_body(link: Usd.Prim, root: Usd.Prim) -> None:
@@ -267,14 +342,21 @@ def with_object_usds(scene: SceneSpec, out_dir: str | Path) -> SceneSpec:
 
 def object_cfg(
     obj: ObjectSpec, index: int, kinematic: bool
-) -> RigidObjectCfg | ArticulationCfg:
+) -> RigidObjectCfg | ArticulationCfg | AssetBaseCfg:
     """An object from its USD (:func:`object_usd`); ``kinematic`` holds it where it
     is placed (for comparing geometry, not physics), an articulated one with its
-    joints as the scene has them."""
+    joints as the scene has them. A cloth is spawned as a plain asset (Isaac Lab has
+    no cloth asset); the session simulates or freezes it."""
     if obj.usd is None:
         raise ValueError(f"{obj.name} has no USD yet (with_object_usds)")
     pos, rot = _pose(obj.T_base_obj)
     prim_path = f"{{ENV_REGEX_NS}}/Object_{index}"
+    if obj.cloth:
+        return AssetBaseCfg(
+            prim_path=prim_path,
+            spawn=sim_utils.UsdFileCfg(usd_path=obj.usd),
+            init_state=AssetBaseCfg.InitialStateCfg(pos=pos, rot=rot),
+        )
     if obj.joints:
         return ArticulationCfg(
             prim_path=prim_path,
@@ -436,7 +518,8 @@ class Session:
     interactive scene, the robot's arm and gripper joints, the objects by name.
 
     ``robot_spec`` is the scene's embodiment; ``kinematic_objects`` holds the objects
-    where they are placed; ``cameras`` as for :func:`build_scene_cfg`.
+    where they are placed (a cloth frozen as it lies); ``cameras`` as for
+    :func:`build_scene_cfg`.
     """
 
     def __init__(
@@ -452,7 +535,22 @@ class Session:
         self.scene = make_scene(
             build_scene_cfg(spec, robot_spec, kinematic_objects, cameras), robot_spec
         )
+        # Cloths by name: their poses (a cloth's frame does not move) and prim paths.
+        self.cloths = {
+            obj.name: (obj.T_base_obj, f"{self.scene.env_prim_paths[0]}/Object_{i}")
+            for i, obj in enumerate(spec.objects)
+            if obj.cloth
+        }
+        if kinematic_objects:
+            for _, prim_path in self.cloths.values():
+                _freeze_cloth(prim_path)
         self.sim.reset()
+        views = physics_tensors.create_simulation_view("torch") if self.cloths else None
+        self._cloth_views = {  # one per cloth (a view takes one path pattern)
+            name: views.create_surface_deformable_body_view(f"{path}/{CLOTH_MESH}")
+            for name, (_, path) in self.cloths.items()
+            if views is not None and not kinematic_objects
+        }
         self.dt = self.sim.get_physics_dt()
         self.articulation: Articulation = self.scene["robot"]
         self.arm_ids, _ = self.articulation.find_joints(
@@ -480,14 +578,24 @@ class Session:
             self.scene.update(self.dt)
 
     def _objects(self) -> dict[str, RigidObject | Articulation]:
-        """The scene's objects (rigid or articulated) by name."""
+        """The scene's bodies (rigid or articulated) by name."""
         entities = {**self.scene.rigid_objects, **self.scene.articulations}
-        return {name: entities[key] for key, name in self.names.items()}
+        return {
+            name: entities[key] for key, name in self.names.items() if key in entities
+        }
+
+    def cloth_points(self) -> dict[str, NDArray[np.float64]]:
+        """Every simulated cloth's surface points (its mesh's vertices, in order) in the
+        robot base frame."""
+        return {
+            name: view.get_simulation_nodal_positions()[0].cpu().numpy().astype(float)
+            for name, view in self._cloth_views.items()
+        }
 
     def object_poses(self) -> dict[str, NDArray[np.float64]]:
         """Every object's pose in the robot base frame (the environment is at the
-        origin)."""
-        out = {}
+        origin); a cloth's frame stays where the scene put it."""
+        out = {name: T for name, (T, _) in self.cloths.items()}
         for name, obj in self._objects().items():
             pos = obj.data.root_pos_w[0].cpu().numpy()
             quat = obj.data.root_quat_w[0].cpu().numpy()

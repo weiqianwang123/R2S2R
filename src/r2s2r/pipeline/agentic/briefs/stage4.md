@@ -7,7 +7,8 @@ Turn the objects of stage 3 into a simulation-ready scene. Work in this director
 2. Give every object a mass (kg) and a friction coefficient, from what it is: its
    material and its size (the fit's `size_m`). An articulated object's mass is the
    whole object's; check its joints' limits once more: what a real one of its kind
-   allows.
+   allows. A cloth gets its `cloth` material too, from what it is (a thin cotton
+   napkin, a thick terry towel): thickness, and how hard it stretches.
 3. Check the poses: an object standing on the support must touch it (lowest point at
    about 0 in the support frame), objects must not intersect each other, and every
    object must stand within the support's `extent` (enlarge the extent if not; it is
@@ -25,7 +26,8 @@ Write `output.json`:
   "scene": "scene/scene.json",
   "objects": {"mug": {"mass": 0.3, "friction": 0.6, "why": "..."},
               "box": {"mass": 0.2, "friction": 0.6, "why": "...",
-                      "joints": {"hinge": "why its limits are what they are"}}},
+                      "joints": {"hinge": "why its limits are what they are"}},
+              "towel": {"mass": 0.06, "friction": 0.8, "why": "... and its cloth"}},
   "notes": "..."
 }
 ```

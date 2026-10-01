@@ -259,10 +259,11 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
 
 def _physics(d: Path) -> list[dict[str, Any]]:
     """Every object's mass, friction and why (stage 4's ``output.json``, else what its
-    objects file has set so far), with an articulated object's joints."""
+    objects file has set so far), with an articulated object's joints and a cloth's
+    material."""
     spec = _json(d / "objects.json")
-    joints = {
-        o.get("name"): o.get("joints") or []
+    written = {
+        o.get("name"): o
         for o in (spec.get("objects", []) if isinstance(spec, dict) else [])
     }
     out = _json(d / "output.json")
@@ -288,8 +289,9 @@ def _physics(d: Path) -> list[dict[str, Any]]:
                     "position": j.get("position"),
                     "why": _joint_why(o.get("joints"), j.get("name")),
                 }
-                for j in joints.get(name, [])
+                for j in written.get(name, {}).get("joints") or []
             ],
+            "cloth": written.get(name, {}).get("cloth"),
         }
         for name, o in rows
     ]

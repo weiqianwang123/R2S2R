@@ -276,3 +276,21 @@ def hinged_box(root: Path, T_base_obj: NDArray) -> tuple[dict, tuple]:
     }
     (root / "objects.json").write_text(json.dumps(objects))
     return objects, (body, lid, shut)
+
+
+def towel_mesh(size: float = 0.3, cells: int = 10) -> trimesh.Trimesh:
+    """A flat square sheet in the z = 0 plane, centred on the origin (a cloth's
+    surface)."""
+    xs = np.linspace(-size / 2, size / 2, cells + 1)
+    vertices = np.array([[x, y, 0.0] for y in xs for x in xs])
+    n = cells + 1
+    faces = [
+        face
+        for j in range(cells)
+        for i in range(cells)
+        for face in (
+            [j * n + i, j * n + i + 1, (j + 1) * n + i + 1],
+            [j * n + i, (j + 1) * n + i + 1, (j + 1) * n + i],
+        )
+    ]
+    return trimesh.Trimesh(vertices, faces, process=False)

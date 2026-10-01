@@ -220,12 +220,14 @@ const PANELS = {
   physics: () => {
     const rows = S.state.physics;
     if (!rows?.length) return notYet('4');
+    const cloth = (c) => `<div class="joint"><b>cloth</b> <span class="muted">${fmt(c.thickness * 1000, 1)} mm thick
+      · Young's modulus ${Number(c.youngs_modulus).toExponential(1)} Pa${c.poissons_ratio != null ? ` · Poisson's ratio ${fmt(c.poissons_ratio)}` : ''}</span></div>`;
     const joint = (j) => `<div class="joint"><b>${esc(j.name)}</b> <span class="muted">${esc(j.type)}
       · ${j.limits ? j.limits.map((v) => jointValue(j.type, v)).join(' to ') : '—'} · recorded ${jointValue(j.type, j.position)}</span>
       ${j.why ? `<p class="why">${esc(j.why)}</p>` : ''}</div>`;
     return rows.map((r) => `<details class="phys"><summary><span class="n">${esc(r.name)}</span>
-      <span class="muted">${fmt(r.mass, 3)} kg · friction ${fmt(r.friction)}${r.joints.length ? ` · ${r.joints.length} joint${r.joints.length > 1 ? 's' : ''}` : ''}</span></summary>
-      <p>${esc(r.why || 'no reason written')}</p>${r.joints.map(joint).join('')}</details>`).join('');
+      <span class="muted">${fmt(r.mass, 3)} kg · friction ${fmt(r.friction)}${r.joints.length ? ` · ${r.joints.length} joint${r.joints.length > 1 ? 's' : ''}` : ''}${r.cloth ? ' · cloth' : ''}</span></summary>
+      <p>${esc(r.why || 'no reason written')}</p>${r.joints.map(joint).join('')}${r.cloth ? cloth(r.cloth) : ''}</details>`).join('');
   },
 };
 

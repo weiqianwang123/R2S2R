@@ -312,7 +312,7 @@ class DepthView:
 
 @dataclass
 class ObjectSpec:
-    """One object, rigid or articulated, placed in the robot base frame."""
+    """One object, rigid, articulated or cloth, placed in the robot base frame."""
 
     name: str
     category: str
@@ -329,6 +329,10 @@ class ObjectSpec:
     # An articulated object's joint positions (rad or m) by the URDF's joint names: as
     # recorded, or where settling left them; None for a rigid object.
     joints: dict[str, float] | None = None
+    # A cloth's material (``thickness`` m, ``youngs_modulus`` Pa, ``poissons_ratio``);
+    # its visual mesh is its surface as it lies, which is also its rest shape. None for
+    # a body.
+    cloth: dict[str, float] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ObjectSpec:

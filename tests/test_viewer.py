@@ -221,6 +221,7 @@ def test_articulated_objects_show_their_joints(tmp_path):
     ]
     (joint,) = state["physics"][0]["joints"]
     assert joint["limits"] == [-1.9, 0.0] and joint["why"] == reason
+    assert state["physics"][0]["cloth"] is None
 
     for path in (s3 / "objects.json", s4 / "scene"):
         glb = scene_glb(path, "box")

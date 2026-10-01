@@ -10,12 +10,13 @@ cameras renders RGB and depth, a static camera where it is calibrated and a movi
 (wrist) camera at the frame's recorded pose.
 
 :func:`settle` lets a scene's objects come to rest (an articulated object's joints
-too), the robot held as it was at the start of the static period, and keeps each
-object's USD (and physcoder's ``metadata.yaml``) with the settled scene.
+too, a cloth drapes), the robot held as it was at the start of the static period, and
+keeps each object's USD (and physcoder's ``metadata.yaml``) with the settled scene.
 """
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -23,20 +24,23 @@ from typing import Any
 import cv2
 import numpy as np
 import torch
+from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
+from r2s2r.assets import urdf_visual_meshes
 from r2s2r.robots import get_robot
 from r2s2r.sim.isaac import SETTLE_SECONDS
 from r2s2r.sim.isaaclab.scene import (
     Session,
     camera_key,
+    cloth_usd,
     crop_window,
     object_usd,
     with_object_usds,
     write_metadata,
 )
-from r2s2r.structs import CameraSpec, Capture, SceneSpec, write_depth
-from r2s2r.transforms import matrix_to_pos_quat
+from r2s2r.structs import CameraSpec, Capture, ObjectSpec, SceneSpec, write_depth
+from r2s2r.transforms import invert, matrix_to_pos_quat, transform_points
 
 RENDER_PASSES = 2  # renders after moving a camera, so the image catches up
 
@@ -168,8 +172,10 @@ def settle(
     start = capture.static_steps[0]
     session.set_state(session.index.get(start, 0))
     before, joints_before = session.object_poses(), session.object_joints()
+    cloth_before = session.cloth_points()
     session.step_physics(int(round(cfg.seconds / session.dt)))
     after, joints_after = session.object_poses(), session.object_joints()
+    cloth_after = session.cloth_points()
     report: dict[str, Any] = {
         "seconds": cfg.seconds,
         "robot_step": start,
@@ -177,6 +183,14 @@ def settle(
     }
     objects = []
     for obj in spec.objects:
+        if obj.cloth:
+            cloth, report["objects"][obj.name] = _settled_cloth(
+                obj, cloth_before[obj.name], cloth_after[obj.name], out_dir
+            )
+            assert cloth.usd is not None
+            write_metadata(cloth.usd, cloth.T_base_obj, spec.T_base_support)
+            objects.append(cloth)
+            continue
         T0, T1 = before[obj.name], after[obj.name]
         turn = Rotation.from_matrix(T0[:3, :3].T @ T1[:3, :3]).magnitude()
         report["objects"][obj.name] = {
@@ -198,6 +212,27 @@ def settle(
         provenance={**spec.provenance, "settle": report},
     )
     return settled, report
+
+
+def _settled_cloth(
+    obj: ObjectSpec, before: NDArray, after: NDArray, out_dir: Path
+) -> tuple[ObjectSpec, dict[str, Any]]:
+    """A cloth as it came to rest: its surface (base frame ``after``) as the new visual
+    mesh and rest shape, in ``out_dir/objects/<name>/``, and how far it moved."""
+    obj_dir = out_dir / "objects" / obj.name
+    mesh = urdf_visual_meshes(obj.asset_path)[0].mesh.copy()  # a cloth has one
+    mesh.vertices = transform_points(invert(obj.T_base_obj), after)
+    mesh.export(obj_dir / "visual.obj")
+    urdf = obj_dir / Path(obj.asset_path).name
+    shutil.copy(obj.asset_path, urdf)  # its visual is visual.obj beside it
+    settled = replace(obj, asset_path=str(urdf))
+    settled = replace(settled, usd=str(cloth_usd(settled, obj_dir)))
+    moved = np.linalg.norm(after - before, axis=1)
+    return settled, {
+        "moved_m": round(float(moved.max()), 4),  # its furthest point
+        "mean_moved_m": round(float(moved.mean()), 4),
+        "dropped_m": round(float((before[:, 2] - after[:, 2]).mean()), 4),
+    }
 
 
 def _render(

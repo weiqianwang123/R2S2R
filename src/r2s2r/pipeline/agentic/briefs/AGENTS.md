@@ -121,6 +121,19 @@ Everything is as recorded: the parts' meshes where the parts were, the joints'
 direction of `axis` and the sign of `position` follow the right-hand rule. Name parts
 and joints in lower case, digits and underscores (`base` and `visual` are taken).
 
+A cloth (a towel, a napkin, a cloth over a bowl) is a thin surface that drapes. Its
+`mesh` is the surface as it lies (an open triangle mesh in metres, no thickness, a few
+hundred to a few thousand triangles, evenly sized), which is also its rest shape; its
+material says how it behaves, and `mass` is the whole cloth's:
+
+```
+     "cloth": {"thickness": 0.002,                      m
+               "youngs_modulus": 5e5,                   Pa: how hard it stretches
+               "poissons_ratio": 0.3}                   optional, 0 to 0.5
+```
+
+In simulation it drapes over what is under it while settling, then holds that shape.
+
 Relative paths are relative to the objects file. `fit.json` gives `scale`,
 `T_base_obj` and `up` in this form. The support's `extent` is the size of the simulated
 table top, centred on the support frame: every object must stand within it.
