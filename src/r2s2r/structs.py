@@ -359,6 +359,8 @@ class SceneSpec:
     # Support outline as a rectangle centred on T_base_support (x, y sizes in its
     # frame); None when only the plane is known.
     support_extent: tuple[float, float] | None = None
+    # The support's colour, sRGB 0 to 1, from the capture (settling); None: unknown.
+    support_color: tuple[float, float, float] | None = None
 
     def save(self, root: str | Path) -> Path:
         """Write ``scene.json`` into ``root``, asset paths relative to it (a run can be
@@ -401,5 +403,14 @@ class SceneSpec:
                 None
                 if d.get("support_extent") is None
                 else (float(d["support_extent"][0]), float(d["support_extent"][1]))
+            ),
+            support_color=(
+                None
+                if d.get("support_color") is None
+                else (
+                    float(d["support_color"][0]),
+                    float(d["support_color"][1]),
+                    float(d["support_color"][2]),
+                )
             ),
         )

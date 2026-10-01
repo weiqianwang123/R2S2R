@@ -17,13 +17,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 from r2s2r.paths import REPO_ROOT
-from r2s2r.structs import SceneSpec
+from r2s2r.structs import Capture, SceneSpec, read_depth, read_rgb
+from r2s2r.transforms import backproject, invert, transform_points
 
 ISAAC_SCRIPTS = REPO_ROOT / "scripts" / "isaaclab"
 SETTLE_SECONDS = 2.0  # simulated time for the objects to come to rest
+ON_SUPPORT = 0.005  # m: a point this near the support's plane lies on it
 # Isaac Lab's rendering preset (the scripts' ``--rendering_mode`` default):
 # "balanced" blends earlier frames into each image, so a cloth that moved leaves a
 # ghost where it lay for many frames; "performance" renders each frame by itself.
@@ -38,6 +42,44 @@ def physics_device(scene: SceneSpec, device: str) -> str:
     faster there, and GPU PhysX mis-solves contacts on an articulated object's links:
     what rests on a lid or a book's cover creeps up and tumbles off within seconds."""
     return device if any(obj.cloth for obj in scene.objects) else "cpu"
+
+
+def support_color(
+    capture: Capture,
+    T_base_support: NDArray,
+    extent: tuple[float, float] | None,
+    stride: int = 4,
+) -> tuple[float, float, float]:
+    """The support's colour (sRGB, 0 to 1): the median, over the static period's
+    frames with depth, of the pixels whose depth puts them on its plane (within
+    :data:`ON_SUPPORT`) and inside its outline. What stands on it is above the
+    plane and left out."""
+    to_support = invert(np.asarray(T_base_support, float))
+    found = []
+    for frame in capture.frames:
+        if frame.depth_image is None or not capture.in_static(frame.step):
+            continue
+        depth = read_depth(capture.root / frame.depth_image)
+        image = read_rgb(capture.root / frame.left_image)
+        if image.shape[:2] != depth.shape:
+            image = np.asarray(
+                cv2.resize(image, depth.shape[::-1], interpolation=cv2.INTER_AREA),
+                np.uint8,
+            )
+        keep = np.zeros(depth.shape, bool)
+        keep[::stride, ::stride] = True
+        keep &= depth > 0
+        pts = backproject(np.where(keep, depth, 0.0), capture.cameras[frame.camera].K)
+        s = transform_points(to_support @ frame.T_base_cam, pts)
+        on = np.abs(s[:, 2]) < ON_SUPPORT
+        if extent is not None:
+            on &= (np.abs(s[:, 0]) < extent[0] / 2) & (np.abs(s[:, 1]) < extent[1] / 2)
+        found.append(image[keep][on])
+    pixels = np.concatenate(found) if found else np.zeros((0, 3))
+    if len(pixels) < 100:
+        raise ValueError("too few pixels on the support for its colour")
+    r, g, b = np.median(pixels, axis=0) / 255.0
+    return float(r), float(g), float(b)
 
 
 def gravity(scene: SceneSpec) -> tuple[float, float, float]:

@@ -1,10 +1,19 @@
-"""Tests for sim/isaac.py: where PhysX runs a scene, and which way gravity points."""
+"""Tests for sim/isaac.py: where PhysX runs a scene, which way gravity points, and
+the support's colour."""
 
+import cv2
 import numpy as np
 import pytest
 
-from r2s2r.sim.isaac import gravity, physics_device
-from r2s2r.structs import ObjectSpec, SceneSpec
+from r2s2r.sim.isaac import gravity, physics_device, support_color
+from r2s2r.structs import (
+    CameraSpec,
+    Capture,
+    FrameRecord,
+    ObjectSpec,
+    SceneSpec,
+    write_depth,
+)
 from r2s2r.transforms import make_transform
 
 
@@ -43,3 +52,47 @@ def test_gravity_is_along_the_supports_normal():
     g = np.array(gravity(_scene([], make_transform(R, [0.4, 0.0, -0.02]))))
     assert np.linalg.norm(g) == pytest.approx(9.81)
     assert g / 9.81 == pytest.approx(-R[:, 2])
+
+
+def test_the_support_takes_the_colour_of_the_pixels_on_its_plane(tmp_path):
+    """A camera 0.5 m above the table, looking down: the table's pixels give its
+    colour; a box standing on it, above the plane, and the pixels beyond the
+    table's outline do not."""
+    depth = np.full((48, 64), 0.5)
+    depth[:36] = 0.45  # a box's top, 5 cm up, over most of the view
+    rgb = np.full((48, 64, 3), (200, 160, 90), np.uint8)
+    rgb[:36] = (0, 0, 255)
+    rgb[:, 60:] = (255, 255, 255)  # beyond x = 0.14 m
+    write_depth(tmp_path / "d.png", depth)
+    cv2.imwrite(str(tmp_path / "c.png"), rgb[..., ::-1])
+    K = np.array([[100.0, 0.0, 32.0], [0.0, 100.0, 24.0], [0.0, 0.0, 1.0]])
+    down = make_transform(np.diag([1.0, -1.0, -1.0]), [0.0, 0.0, 0.5])
+    frame = FrameRecord(
+        0, "w", "c.png", None, down, np.zeros(7), 0.0, depth_image="d.png"
+    )
+    camera = CameraSpec("w", "wrist", 64, 48, K)
+    capture = Capture(
+        "c", "test", "fr3_robotiq", "", {"w": camera}, [frame], (0, 1), root=tmp_path
+    )
+    colour = support_color(capture, np.eye(4), (0.26, 1.0), stride=1)
+    assert np.array(colour) * 255 == pytest.approx([200, 160, 90], abs=0.5)
+
+
+def test_a_scene_keeps_its_support_colour(tmp_path):
+    """Saved and loaded with the scene; a scene without one has none."""
+    scene = SceneSpec("t", "franka_panda", [], np.eye(4), {}, "c", 0, np.zeros(7))
+    scene.save(tmp_path / "a")
+    assert SceneSpec.load(tmp_path / "a").support_color is None
+    coloured = SceneSpec(
+        "t",
+        "franka_panda",
+        [],
+        np.eye(4),
+        {},
+        "c",
+        0,
+        np.zeros(7),
+        support_color=(0.78, 0.64, 0.36),
+    )
+    coloured.save(tmp_path / "b")
+    assert SceneSpec.load(tmp_path / "b").support_color == (0.78, 0.64, 0.36)

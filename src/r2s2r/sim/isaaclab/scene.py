@@ -72,6 +72,10 @@ JOINT_HOLD_STIFFNESS = 1e4
 CLOTH_MESH = "mesh"  # a cloth USD's surface, under its default prim
 CLOTH_CONTACT_GAP = 0.002  # m: a cloth's contacts start this far beyond its surface
 AA_FXAA = 2  # ``/rtx/post/aa/op``: anti-aliasing from the frame alone
+# The sun's intensity: a flat matte surface facing up renders in its own colour
+# (a cloth and a wooden table within about 15/255 of what the camera saw; at 2000
+# they rendered 50-80 brighter, a light blue cloth almost white).
+SUN_INTENSITY = 800.0
 
 
 def _pose(T: NDArray) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -249,7 +253,12 @@ def _mean_color(mesh: trimesh.Trimesh) -> NDArray[np.float64]:
         srgb = np.asarray(colors, float)[:, :3].mean(0) / 255.0
     else:
         srgb = np.full(3, 0.7)
-    return np.asarray(srgb**2.2, float)
+    return _linear(srgb)
+
+
+def _linear(srgb: NDArray) -> NDArray[np.float64]:
+    """sRGB colour (0 to 1) as the linear colour USD takes."""
+    return np.asarray(srgb, float) ** 2.2
 
 
 def _freeze_cloth(prim_path: str) -> None:
@@ -360,10 +369,16 @@ def object_cfg(
         raise ValueError(f"{obj.name} has no USD yet (with_object_usds)")
     pos, rot = _pose(obj.T_base_obj)
     prim_path = object_prim_path(index)
-    if obj.cloth:
+    if obj.cloth:  # matte in its colour; the renderer's default material is glossy
+        colour = _mean_color(urdf_visual_meshes(obj.asset_path)[0].mesh)
         return AssetBaseCfg(
             prim_path=prim_path,
-            spawn=sim_utils.UsdFileCfg(usd_path=obj.usd),
+            spawn=sim_utils.UsdFileCfg(
+                usd_path=obj.usd,
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=tuple(colour), roughness=1.0
+                ),
+            ),
             init_state=AssetBaseCfg.InitialStateCfg(pos=pos, rot=rot),
         )
     if obj.joints:
@@ -398,7 +413,8 @@ def object_cfg(
 
 # ----------------------------------------------------------------- support, cameras
 def support_cfg(scene: SceneSpec) -> AssetBaseCfg:
-    """A static slab whose top face is the reconstructed support plane."""
+    """A static slab whose top face is the reconstructed support plane, in the
+    support's colour (blue when the scene has none)."""
     extent = scene.support_extent or SUPPORT_EXTENT
     below = make_transform(np.eye(3), [0.0, 0.0, -SUPPORT_THICKNESS / 2])
     pos, rot = _pose(scene.T_base_support @ below)
@@ -407,7 +423,13 @@ def support_cfg(scene: SceneSpec) -> AssetBaseCfg:
         spawn=sim_utils.CuboidCfg(
             size=(extent[0], extent[1], SUPPORT_THICKNESS),
             collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.45, 0.9)),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(
+                    (0.2, 0.45, 0.9)
+                    if scene.support_color is None
+                    else tuple(_linear(np.asarray(scene.support_color)))
+                )
+            ),
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=pos, rot=rot),
     )
@@ -513,7 +535,7 @@ def build_scene_cfg(
         "sun_light",
         AssetBaseCfg(
             prim_path="/World/SunLight",
-            spawn=sim_utils.DistantLightCfg(intensity=2000.0, angle=5.0),
+            spawn=sim_utils.DistantLightCfg(intensity=SUN_INTENSITY, angle=5.0),
             init_state=AssetBaseCfg.InitialStateCfg(rot=(0.9239, 0.0, 0.3827, 0.0)),
         ),
     )

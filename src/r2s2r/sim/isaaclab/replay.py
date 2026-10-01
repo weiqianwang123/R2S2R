@@ -11,7 +11,8 @@ cameras renders RGB and depth, a static camera where it is calibrated and a movi
 
 :func:`settle` lets a scene's objects come to rest (an articulated object's joints
 too, a cloth drapes), the robot held as it was at the start of the static period, and
-keeps each object's USD (and physcoder's ``metadata.yaml``) with the settled scene.
+keeps each object's USD (and physcoder's ``metadata.yaml``) with the settled scene,
+and the support's colour from the capture's frames.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from scipy.spatial.transform import Rotation
 
 from r2s2r.assets import VISUAL, urdf_visual_meshes
 from r2s2r.robots import get_robot
-from r2s2r.sim.isaac import SETTLE_SECONDS
+from r2s2r.sim.isaac import SETTLE_SECONDS, support_color
 from r2s2r.sim.isaaclab.scene import (
     Session,
     camera_key,
@@ -157,7 +158,9 @@ def settle(
     Each object's USD goes to ``out_dir/objects/<name>/<name>.usd`` with physcoder's
     ``metadata.yaml`` beside it (for the settled pose); a cloth's settled surface and
     URDF go there too, and its ``asset_path`` points at them. Returns the scene with
-    the objects where they came to rest (and their USDs), and how far each moved.
+    the objects where they came to rest (and their USDs) and the support's colour as
+    the capture's depth frames show it (:func:`~r2s2r.sim.isaac.support_color`), and
+    how far each object moved.
     """
     cfg = config or SettleConfig()
     out_dir = Path(out_dir).resolve()
@@ -205,10 +208,18 @@ def settle(
         assert obj.usd is not None
         write_metadata(obj.usd, T1, spec.T_base_support)
         objects.append(replace(obj, T_base_obj=T1, joints=joints))
+    try:
+        colour: tuple[float, float, float] | None = support_color(
+            capture, spec.T_base_support, spec.support_extent
+        )
+    except ValueError as exc:  # no depth on the support; it stays as it was
+        colour = spec.support_color
+        report["support_color"] = str(exc)
     settled = replace(
         spec,
         objects=objects,
         provenance={**spec.provenance, "settle": report},
+        support_color=colour,
     )
     return settled, report
 
