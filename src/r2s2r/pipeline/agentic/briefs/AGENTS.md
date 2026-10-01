@@ -118,7 +118,8 @@ then the part that does not, and `mass` is the whole object's:
 Everything is as recorded: the parts' meshes where the parts were, the joints'
 `origin` and `axis` in the object's frame (the frame `T_base_obj` places, in metres,
 `scale` applied), each joint at its recorded `position` within its `limits`. The
-direction of `axis` and the sign of `position` follow the right-hand rule.
+direction of `axis` and the sign of `position` follow the right-hand rule. Name parts
+and joints in lower case, digits and underscores (`base` and `visual` are taken).
 
 Relative paths are relative to the objects file. `fit.json` gives `scale`,
 `T_base_obj` and `up` in this form. The support's `extent` is the size of the simulated

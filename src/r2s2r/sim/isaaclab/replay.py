@@ -191,7 +191,7 @@ def settle(
             }
         assert obj.usd is not None
         write_metadata(obj.usd, T1, spec.T_base_support)
-        objects.append(replace(obj, T_base_obj=T1, joints=joints or None))
+        objects.append(replace(obj, T_base_obj=T1, joints=joints))
     settled = replace(
         spec,
         objects=objects,

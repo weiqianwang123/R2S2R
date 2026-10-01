@@ -2,8 +2,9 @@
 
 Real-to-sim from a robot's own cameras. In: what the robot records, calibrated images
 from one exterior camera, the wrist camera or both, with its joint states, every pose in
-its base frame. Out: an Isaac Lab scene of the rigid objects on their support, in that
-base frame, each with a URDF and a USD, a mass and a friction, settled under gravity.
+its base frame. Out: an Isaac Lab scene of the objects on their support, in that base
+frame, rigid or articulated (a lid, a door: the agentic method models joints), each with
+a URDF and a USD, a mass and a friction, settled under gravity.
 Two methods, **fixed** and **agentic**, share the inputs, the run directory, the last
 stages and the viewer. MuJoCo worlds stand in for the real world in local tests.
 

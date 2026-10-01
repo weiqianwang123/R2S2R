@@ -8,9 +8,10 @@ sub-directories are runs (new ones show up as they are made). Routes, each for t
 ``/api/state`` (JSON); ``/api/robot.json`` and ``/robot.glb`` (the robot along the
 trajectory); ``/f/<path>`` a file of the run; ``/thumb/<path>?w=N`` an image scaled down
 (JPEG); ``/glb/<path>`` a mesh as GLB; ``/preview/<path>?up=y`` four views of a mesh
-(PNG) turned up-axis up; ``/scene.glb?path=<path>`` a scene directory or objects file,
-posed, as GLB. Paths are relative to the run, and nothing outside it can be read through
-them.
+(PNG) turned up-axis up; ``/scene.glb?path=<path>[&object=<name>]`` a scene
+directory or objects file (or one of its objects), posed, as GLB, with articulated
+objects' joints in its extras. Paths are relative to the run, and nothing outside it
+can be read through them.
 """
 
 from __future__ import annotations
@@ -179,9 +180,12 @@ def make_handler(viewers: Viewers) -> type[BaseHTTPRequestHandler]:
                     )
                 elif url.path == "/scene.glb":
                     path = viewer.resolve(query["path"][0])
+                    only = query.get("object", [None])[0]
                     marker = path / "scene.json" if path.is_dir() else path
-                    key = f"scene:{path}:{marker.stat().st_mtime}"
-                    self._file(viewer.cached(key, ".glb", lambda: scene_glb(path)[0]))
+                    key = f"scene:{path}:{only}:{marker.stat().st_mtime}"
+                    self._file(
+                        viewer.cached(key, ".glb", lambda: scene_glb(path, only))
+                    )
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
             except PermissionError:

@@ -194,7 +194,8 @@ def _support(ws: Workspace, d: Path, objects_dir: Path) -> dict[str, Any] | None
 
 def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
     """The objects file's objects (or, before it exists, every generated mesh), each
-    with its preview, its up axis and its latest fit."""
+    with its preview, its up axis and its latest fit; an articulated one with its
+    number of joints and the objects file to show it whole from (``model``)."""
     fits = []  # (mesh, fit directory, summary), oldest first
     for path in sorted(d.rglob("fit.json"), key=lambda p: p.stat().st_mtime):
         fit = _json(path)
@@ -224,14 +225,15 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
                     str(obj.get("name")),
                     mesh if mesh.is_absolute() else d / mesh,
                     str(obj.get("up", "z")),
+                    len(obj.get("joints") or []),
                 )
             )
     else:  # generated meshes are y-up
         previews = sorted(d.rglob("preview.png"), key=lambda p: p.stat().st_mtime)
         latest = {p.parent.name: p.parent / "mesh.glb" for p in previews}
-        meshes = [(name, mesh, "y") for name, mesh in latest.items()]
+        meshes = [(name, mesh, "y", 0) for name, mesh in latest.items()]
     out = []
-    for name, mesh, up in meshes:
+    for name, mesh, up, joints in meshes:
         mesh = mesh.resolve()
         preview = mesh.parent / "preview.png"
         # The latest fit of this mesh, else the latest whose directory names the object.
@@ -246,36 +248,58 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
                 "preview": _rel(ws, preview) if preview.exists() else None,
                 "iou": fit.get("iou"),
                 "overlays": fit.get("overlays", []),
+                # An articulated object is shown whole (all its parts, its joints
+                # movable) from the objects file.
+                "joints": joints,
+                "model": _rel(ws, d / "objects.json") if joints else None,
             }
         )
     return out
 
 
 def _physics(d: Path) -> list[dict[str, Any]]:
+    """Every object's mass, friction and why (stage 4's ``output.json``, else what its
+    objects file has set so far), with an articulated object's joints."""
+    spec = _json(d / "objects.json")
+    joints = {
+        o.get("name"): o.get("joints") or []
+        for o in (spec.get("objects", []) if isinstance(spec, dict) else [])
+    }
     out = _json(d / "output.json")
     if isinstance(out, dict) and isinstance(out.get("objects"), dict):
-        return [
-            {
-                "name": name,
-                "mass": o.get("mass"),
-                "friction": o.get("friction"),
-                "why": o.get("why"),
-            }
-            for name, o in out["objects"].items()
-        ]
-    spec = _json(d / "objects.json")  # before output.json: what it has set so far
-    if isinstance(spec, dict):
-        return [
-            {
-                "name": o.get("name"),
-                "mass": o.get("mass"),
-                "friction": o.get("friction"),
-                "why": None,
-            }
-            for o in spec.get("objects", [])
+        rows = list(out["objects"].items())
+    else:  # before output.json: what the objects file has set so far
+        rows = [
+            (o.get("name"), {**o, "why": None})
+            for o in (spec.get("objects", []) if isinstance(spec, dict) else [])
             if o.get("mass") is not None
         ]
-    return []
+    return [
+        {
+            "name": name,
+            "mass": o.get("mass"),
+            "friction": o.get("friction"),
+            "why": o.get("why"),
+            "joints": [
+                {
+                    "name": j.get("name"),
+                    "type": j.get("type"),
+                    "limits": j.get("limits"),
+                    "position": j.get("position"),
+                    "why": _joint_why(o.get("joints"), j.get("name")),
+                }
+                for j in joints.get(name, [])
+            ],
+        }
+        for name, o in rows
+    ]
+
+
+def _joint_why(written: Any, joint: str) -> str | None:
+    """The reason the method wrote for ``joint``, if any (output.json's ``joints``: a
+    reason per joint name)."""
+    entry = written.get(joint) if isinstance(written, dict) else None
+    return entry if isinstance(entry, str) else None
 
 
 def _replay_panels(ws: Workspace, d: Path) -> list[str]:

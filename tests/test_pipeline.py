@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pytest
 import trimesh
-from conftest import rgbd_capture
+from conftest import hinged_box, rgbd_capture
 
 from r2s2r.pipeline import run as run_module
 from r2s2r.pipeline.agentic import method as agentic
@@ -151,6 +151,16 @@ def test_stage_checks_say_what_is_wrong(tmp_path):
     assert not VALIDATORS["3"](ws, s3)
     _objects_product(s3, up="sideways", T_base_obj=2 * np.eye(4), mesh="no.obj")
     assert len(VALIDATORS["3"](ws, s3)) == 3
+    hinged = s3 / "hinged"
+    hinged.mkdir()
+    objects, _ = hinged_box(hinged, np.eye(4))
+    objects["objects"][0]["parts"][0]["mesh"] = "hinged/no_lid.obj"
+    objects["objects"][0]["joints"][0]["position"] = 1.0
+    objects["objects"][0]["mesh"] = "hinged/body.obj"
+    (s3 / "objects.json").write_text(json.dumps(objects))
+    problems = VALIDATORS["3"](ws, s3)
+    assert len(problems) == 2
+    assert "lid's mesh not found" in problems[0] and "outside its limits" in problems[1]
 
     _scene_product(s4, ws, extra="notes.md")
     assert VALIDATORS["4"](ws, s4) == ["output.json missing"]

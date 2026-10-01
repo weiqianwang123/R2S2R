@@ -17,7 +17,7 @@ import trimesh
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-from r2s2r.assets import UrdfLink, write_object_urdf
+from r2s2r.assets import ROOT_LINK, UrdfLink, write_object_urdf
 from r2s2r.mjrender import geom_mesh
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec
 from r2s2r.testbed.evaluate import ground_truth, scene_errors
@@ -147,7 +147,7 @@ def _object_urdf(world: MujocoWorld, body: str, out_dir: Path) -> Path:
         )
     path = out_dir / f"{body}.urdf"
     write_object_urdf(
-        path, body, [UrdfLink("base", "visual.obj", mass, com, inertia, collisions)]
+        path, body, [UrdfLink(ROOT_LINK, "visual.obj", mass, com, inertia, collisions)]
     )
     return path
 

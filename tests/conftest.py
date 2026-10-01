@@ -15,7 +15,9 @@ import h5py
 import numpy as np
 import pytest
 import trimesh
+from numpy.typing import NDArray
 
+from r2s2r.assets import joint_transform
 from r2s2r.robots import franka_panda, get_robot, ur5e_2f140
 from r2s2r.robots.spec import MENAGERIE_DIR, RobotSpec
 from r2s2r.structs import (
@@ -25,7 +27,7 @@ from r2s2r.structs import (
     RobotTrajectory,
     write_depth,
 )
-from r2s2r.transforms import intrinsics_matrix
+from r2s2r.transforms import intrinsics_matrix, make_transform
 
 UUID = "LAB+abc12345+2026-01-01-00h-00m-00s"
 SERIALS = {"ext1": "111", "ext2": "222", "wrist": "333"}
@@ -228,3 +230,49 @@ def rgbd_capture(
     )
     capture.save()
     return capture
+
+
+def hinged_box(root: Path, T_base_obj: NDArray) -> tuple[dict, tuple]:
+    """An articulated object in ``root/objects.json`` (meshes beside it): a box at
+    ``T_base_obj`` with its lid half open (-0.8 rad about +x, hinged along the back top
+    edge). Returns the objects file's content, and the body, the lid as recorded and the
+    lid shut (object frame)."""
+    body = trimesh.creation.box(extents=(0.2, 0.1, 0.06))
+    body.apply_translation([0, 0, 0.03])
+    body.export(root / "body.obj")
+    shut = trimesh.creation.box(extents=(0.2, 0.1, 0.01))
+    shut.apply_translation([0, 0, 0.065])
+    hinge = np.array([0.0, 0.05, 0.06])
+    lid = shut.copy()
+    lid.apply_transform(
+        make_transform(np.eye(3), hinge)
+        @ joint_transform("revolute", [1, 0, 0], -0.8)
+        @ make_transform(np.eye(3), -hinge)
+    )
+    lid.export(root / "lid.obj")
+    objects = {
+        "support": {"T_base_support": np.eye(4).tolist(), "extent": [1.0, 1.0]},
+        "objects": [
+            {
+                "name": "box",
+                "mesh": "body.obj",
+                "T_base_obj": np.asarray(T_base_obj).tolist(),
+                "mass": 0.4,
+                "parts": [{"name": "lid", "mesh": "lid.obj"}],
+                "joints": [
+                    {
+                        "name": "hinge",
+                        "type": "revolute",
+                        "parent": "base",
+                        "child": "lid",
+                        "origin": hinge.tolist(),
+                        "axis": [1, 0, 0],  # the lid's front rises at negative angles
+                        "limits": [-1.9, 0.0],
+                        "position": -0.8,
+                    }
+                ],
+            }
+        ],
+    }
+    (root / "objects.json").write_text(json.dumps(objects))
+    return objects, (body, lid, shut)

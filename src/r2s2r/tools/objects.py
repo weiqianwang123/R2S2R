@@ -18,8 +18,8 @@ An objects file (JSON) describes a scene the way a method's stage 3 leaves it::
 
 Relative paths are relative to the objects file. ``up`` only says how to show the mesh
 file on its own (upright); ``T_base_obj`` places it. Collision parts are in the mesh
-file's coordinates (``scale`` applies to them too); an object without them gets its own
-at assembly.
+file's coordinates (``scale`` applies to them too) and belong to ``mesh``; without them
+(and for an articulated object's parts) assembly makes its own.
 
 An articulated object (a box and its lid, a cabinet and its door) also has the parts
 that move, and the joints that move them; ``mesh`` is then the part that does not::
@@ -35,6 +35,8 @@ that move, and the joints that move them; ``mesh`` is then the part that does no
 Everything is as recorded: the parts' meshes where they were, the joints' origins and
 axes in the object's frame (metres, after ``scale``), at their recorded positions.
 Assembly turns that into a URDF whose joints are zero where they are at their origins.
+Part and joint names are lower case, digits and underscores; ``base`` and ``visual``
+are taken.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from numpy.typing import NDArray
 
 from r2s2r.assets import (
     JOINT_KINDS,
+    ROOT_LINK,
     UrdfJoint,
     UrdfLink,
     VisualMesh,
@@ -81,7 +84,7 @@ logger = logging.getLogger(__name__)
 
 HUNYUAN_REPO = SIMFOUNDRY_DIR / "deps" / "Hunyuan3D-2.1"
 DEFAULT_DENSITY = 500.0  # kg/m^3, when an object has no mass
-ROOT_LINK = "base"  # an articulated object's part that does not move
+VISUAL = "visual"  # the file name of an object's (root link's) visual mesh
 
 
 # ----------------------------------------------------------------------- generate
@@ -193,7 +196,8 @@ def render_preview(
 @dataclass
 class ObjectsFile:
     """An objects file, read: its support, and its objects as written but for their
-    ``mesh`` and ``collision`` parts (absolute paths) and ``scale`` (three values)."""
+    ``mesh``, ``collision`` parts and ``parts``' meshes (absolute paths), ``scale``
+    (three values), and ``parts`` and ``joints`` (lists, empty for a rigid object)."""
 
     T_base_support: NDArray[np.float64]
     extent: tuple[float, float] | None
@@ -235,13 +239,20 @@ def articulation_problems(obj: dict[str, Any]) -> list[str]:
     if not parts and not joints:
         return []
     problems = []
-    if len(set(parts)) != len(parts) or ROOT_LINK in parts:
-        problems.append(f"{name}: part names must be unique and not {ROOT_LINK!r}")
+    for kind, names in (("part", parts), ("joint", [j.get("name") for j in joints])):
+        bad = [n for n in names if not isinstance(n, str) or slug(n) != n]
+        if bad:
+            problems.append(
+                f"{name}: {kind} names must be lower case, digits and underscores: "
+                f"{bad}"
+            )
+        if len(set(map(str, names))) != len(names):
+            problems.append(f"{name}: {kind} names must be unique")
+    if {ROOT_LINK, VISUAL} & set(map(str, parts)):
+        problems.append(f"{name}: no part may be called {ROOT_LINK!r} or {VISUAL!r}")
     children = [j.get("child") for j in joints]
     if sorted(map(str, children)) != sorted(map(str, parts)):
         problems.append(f"{name}: every part must be the child of exactly one joint")
-    if len({j.get("name") for j in joints}) != len(joints):
-        problems.append(f"{name}: joint names must be unique")
     for joint in joints:
         label = f"{name}: joint {joint.get('name')}"
         if joint.get("type") not in JOINT_KINDS:
@@ -291,8 +302,8 @@ def link_frames(
         ready = [j for j in pending if j["parent"] in frames]
         if not ready:
             raise ValueError(
-                "joints must form a tree from 'base': "
-                f"{[j['name'] for j in pending]} hang from nothing"
+                f"joints must form a tree from {ROOT_LINK!r}: "
+                f"{[j.get('name') for j in pending]} hang from nothing"
             )
         for joint in ready:
             pending.remove(joint)
@@ -355,15 +366,15 @@ def assemble(
             raise ValueError(
                 f"{name}: T_base_obj must be a rigid transform (put scale in 'scale')"
             )
+        problems = articulation_problems(obj)
+        if problems:
+            raise ValueError("; ".join(problems))
+        frames, joints, positions = link_frames(obj["joints"])
         obj_dir = out_dir / "objects" / name
         if obj_dir.exists():
             shutil.rmtree(obj_dir)
         obj_dir.mkdir(parents=True)
         scaling = np.diag([*obj["scale"], 1.0])
-        problems = articulation_problems(obj)
-        if problems:
-            raise ValueError("; ".join(problems))
-        frames, joints, positions = link_frames(obj["joints"])
         sources[name] = "given" if obj["collision"] else collision
         seen = {}  # every link's mesh as recorded, scaled, in the object frame
         for link, source in [(ROOT_LINK, obj["mesh"])] + [
@@ -422,10 +433,8 @@ def assemble(
             "size_m": np.round(whole.extents, 4).tolist(),
             "mass_kg": round(mass, 4),
             "hulls": len(hulls),
-            "hull_volume_share": (
-                round(hull_volume / float(whole.convex_hull.volume), 3)
-                if hulls
-                else None
+            "hull_volume_share": (  # of the links' convex hulls
+                round(hull_volume / sum(volumes.values()), 3) if hulls else None
             ),
             "lowest_point_above_support_m": round(
                 float(
@@ -527,4 +536,4 @@ def _collision(
 
 def _stem(link: str) -> str:
     """The file name (without suffix) of a link's visual mesh."""
-    return "visual" if link == ROOT_LINK else slug(link)
+    return VISUAL if link == ROOT_LINK else link

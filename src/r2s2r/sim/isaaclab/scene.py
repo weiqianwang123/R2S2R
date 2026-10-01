@@ -213,7 +213,8 @@ def write_metadata(
 
     ``bottom_offset`` (and ``assembled_offset``, the same here) is the bottom centre of
     the colliders as the object rests at ``T_base_obj`` (:func:`~r2s2r.assets.
-    bottom_offset`, up being the support's normal).
+    bottom_offset`, up being the support's normal); an articulated object's links at
+    its USD's joint zero.
     """
     stage = Usd.Stage.Open(str(usd_path))
     root = stage.GetDefaultPrim()
@@ -465,6 +466,7 @@ class Session:
             if isinstance(obj, Articulation):  # the joints as the scene has them
                 pos = obj.data.default_joint_pos
                 obj.write_joint_state_to_sim(pos, torch.zeros_like(pos))
+                obj.set_joint_position_target(pos)  # held there when kinematic
 
     def gripper_targets(self, level: float) -> torch.Tensor:
         """The gripper joints' positions at opening ``level`` (0 open, 1 closed)."""
@@ -493,12 +495,15 @@ class Session:
         return out
 
     def object_joints(self) -> dict[str, dict[str, float]]:
-        """Every articulated object's joint positions, by name."""
-        return {
-            name: {
-                joint: round(float(q), 6) + 0.0
-                for joint, q in zip(obj.joint_names, obj.data.joint_pos[0].tolist())
-            }
-            for name, obj in self._objects().items()
-            if isinstance(obj, Articulation)
-        }
+        """Every articulated object's joint positions, by name, within their limits
+        (PhysX lets a joint pass a limit a little, which Isaac Lab then refuses as a
+        starting position)."""
+        out = {}
+        for name, obj in self._objects().items():
+            if isinstance(obj, Articulation):
+                limits = obj.data.joint_pos_limits[0]
+                q = obj.data.joint_pos[0].clamp(limits[:, 0], limits[:, 1])
+                out[name] = {
+                    joint: float(v) for joint, v in zip(obj.joint_names, q.tolist())
+                }
+        return out

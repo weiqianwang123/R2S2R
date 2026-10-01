@@ -52,14 +52,15 @@ def check(
     if not scene.objects:
         raise ValueError("the scene has no objects to check")
     for name, moved in (joints or {}).items():
-        index = next((i for i, o in enumerate(scene.objects) if o.name == name), None)
-        if index is None or not scene.objects[index].joints:
+        obj = next((o for o in scene.objects if o.name == name), None)
+        if obj is None or not obj.joints:
             raise ValueError(f"no articulated object {name!r} in the scene")
-        obj = scene.objects[index]
-        unknown = set(moved) - set(obj.joints or {})
+        unknown = set(moved) - set(obj.joints)
         if unknown:
             raise ValueError(f"{name} has no joints {sorted(unknown)}")
-        scene.objects[index] = replace(obj, joints={**(obj.joints or {}), **moved})
+        scene.objects[scene.objects.index(obj)] = replace(
+            obj, joints={**obj.joints, **moved}
+        )
     size = (
         max(c.width for c in ws.capture.cameras.values()),
         max(c.height for c in ws.capture.cameras.values()),

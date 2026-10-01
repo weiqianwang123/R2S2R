@@ -23,8 +23,9 @@ Write `output.json`:
 ```
 {
   "scene": "scene/scene.json",
-  "objects": {"mug": {"mass": 0.3, "friction": 0.6, "why": "..."}},
-                                   (articulated objects: also "joints", why each)
+  "objects": {"mug": {"mass": 0.3, "friction": 0.6, "why": "..."},
+              "box": {"mass": 0.2, "friction": 0.6, "why": "...",
+                      "joints": {"hinge": "why its limits are what they are"}}},
   "notes": "..."
 }
 ```

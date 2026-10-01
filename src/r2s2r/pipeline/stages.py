@@ -142,7 +142,7 @@ def check_objects(_: Workspace, d: Path) -> list[str]:
         mesh = obj.get("mesh")
         if not mesh or not (base / mesh).exists():
             problems.append(f"{name}: mesh {mesh} not found")
-        scale = np.asarray(obj.get("scale", 0.0), float)
+        scale = np.asarray(obj.get("scale", 1.0), float)  # as the reader takes it
         if scale.size not in (1, 3) or np.any(scale <= 0):
             problems.append(f"{name}: scale must be positive (one value or three)")
         if not is_rigid(obj.get("T_base_obj", np.zeros((4, 4)))):

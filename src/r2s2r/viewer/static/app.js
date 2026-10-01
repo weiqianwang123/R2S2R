@@ -1,5 +1,6 @@
 // R2S2R run viewer: a progress axis over the stages; the recording, the chosen frames,
-// the support, the objects and their physical parameters open on a click.
+// the support, the objects and their physical parameters open on a click. Articulated
+// objects get a slider per joint wherever they are shown in 3D.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -30,6 +31,8 @@ const inRun = (p) => p && !p.startsWith('/');
 const UP_EULER = { y: [Math.PI / 2, 0, 0], '-y': [-Math.PI / 2, 0, 0], x: [0, -Math.PI / 2, 0], z: [0, 0, 0] };
 const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(+v) ? '—' : Number(v).toFixed(d));
 const iouClass = (v) => (v >= 0.85 ? 'iou-good' : v >= 0.7 ? 'iou-mid' : 'iou-bad');
+// A joint position as people read it: degrees for a turn, centimetres for a slide.
+const jointValue = (type, v) => (type === 'prismatic' ? `${fmt(v * 100, 1)} cm` : `${fmt(v * 180 / Math.PI, 0)}°`);
 
 const S = {
   rec: null, robot: null, state: null, open: null, panelKey: '', selected: null,
@@ -197,11 +200,15 @@ const PANELS = {
     let html = `<div class="grid">${objs.map((o, k) => {
       const src = inRun(o.preview) ? thumbUrl(o.preview, 480) : inRun(o.glb) ? `/preview/${enc(o.glb)}?up=${encodeURIComponent(o.up)}&${Q}` : '';
       const iou = o.iou != null ? `<span class="${iouClass(o.iou)}" title="mean silhouette IoU over the fitted frames">IoU ${fmt(o.iou)}</span>` : '';
-      return `<div class="card pick ${S.selected === k ? 'selected' : ''}" data-object="${k}">${src ? `<img src="${src}" data-object="${k}">` : ''}<div class="cap"><b>${esc(o.name)}</b>${iou}</div></div>`;
+      const joints = o.joints ? `<span class="muted" title="articulated: parts that move">${o.joints} joint${o.joints > 1 ? 's' : ''}</span>` : '';
+      return `<div class="card pick ${S.selected === k ? 'selected' : ''}" data-object="${k}">${src ? `<img src="${src}" data-object="${k}">` : ''}<div class="cap"><b>${esc(o.name)}</b>${joints}${iou}</div></div>`;
     }).join('')}</div>`;
     const o = objs[S.selected];
     if (o) {
-      html += `<div class="detail"><div class="summary-line"><b>${esc(o.name)}</b> ${inRun(o.glb) ? `<button data-glb="${esc(o.glb)}" data-up="${esc(o.up)}" data-caption="${esc(o.name)}">3D model</button>` : ''}</div>`;
+      const model = o.model
+        ? `<button data-model="${esc(o.model)}" data-name="${esc(o.name)}">3D model, joints</button>`
+        : inRun(o.glb) ? `<button data-glb="${esc(o.glb)}" data-up="${esc(o.up)}" data-caption="${esc(o.name)}">3D model</button>` : '';
+      html += `<div class="detail"><div class="summary-line"><b>${esc(o.name)}</b> ${model}</div>`;
       html += o.overlays.length
         ? `<div class="grid">${o.overlays.map((v) => card(v.path, `${esc(v.frame)} <span class="${iouClass(v.iou)}">IoU ${fmt(v.iou)}</span>`, 640)).join('')}</div>`
         : `<div class="empty">${S.state.method === 'fixed' ? 'the fixed method fits no single views' : 'no fit yet'}</div>`;
@@ -213,15 +220,22 @@ const PANELS = {
   physics: () => {
     const rows = S.state.physics;
     if (!rows?.length) return notYet('4');
+    const joint = (j) => `<div class="joint"><b>${esc(j.name)}</b> <span class="muted">${esc(j.type)}
+      · ${j.limits ? j.limits.map((v) => jointValue(j.type, v)).join(' to ') : '—'} · recorded ${jointValue(j.type, j.position)}</span>
+      ${j.why ? `<p class="why">${esc(j.why)}</p>` : ''}</div>`;
     return rows.map((r) => `<details class="phys"><summary><span class="n">${esc(r.name)}</span>
-      <span class="muted">${fmt(r.mass, 3)} kg · friction ${fmt(r.friction)}</span></summary>
-      <p>${esc(r.why || 'no reason written')}</p></details>`).join('');
+      <span class="muted">${fmt(r.mass, 3)} kg · friction ${fmt(r.friction)}${r.joints.length ? ` · ${r.joints.length} joint${r.joints.length > 1 ? 's' : ''}` : ''}</span></summary>
+      <p>${esc(r.why || 'no reason written')}</p>${r.joints.map(joint).join('')}</details>`).join('');
   },
 };
 
 function onPanelClick(e) {
   const t = e.target;
-  if (t.dataset.glb) { openModel(t.dataset.glb, t.dataset.caption, t.dataset.up); return; }
+  if (t.dataset.glb) { openModel(`/glb/${enc(t.dataset.glb)}?${Q}`, t.dataset.caption, t.dataset.up); return; }
+  if (t.dataset.model) {
+    openModel(`/scene.glb?path=${encodeURIComponent(t.dataset.model)}&object=${encodeURIComponent(t.dataset.name)}&${Q}`, t.dataset.name, 'z');
+    return;
+  }
   const pick = t.closest('[data-object]');
   if (pick) {
     const k = +pick.dataset.object;
@@ -467,6 +481,7 @@ function matte(material) {
 
 function loadScene(path) {
   S.scenePath = path;
+  $('joints').innerHTML = '';
   while (sceneRoot.children.length) sceneRoot.remove(sceneRoot.children[0]);
   if (!path) return;
   gltf.load(`/scene.glb?path=${encodeURIComponent(path)}&${Q}`, (g) => {
@@ -477,7 +492,61 @@ function loadScene(path) {
       if (o.name.startsWith('support')) { o.material.transparent = true; o.material.opacity = 0.45; o.material.depthWrite = false; }
     });
     sceneRoot.add(g.scene);
+    articulate(g.scene, $('joints'));
   });
+}
+
+// ------------------------------------------------------------------ articulation
+// The joints of a scene's articulated objects come in its GLB's extras (see
+// viewer/scenes.py): each with its axis in the base frame as recorded, its limits and
+// recorded position, the nodes it moves and a node of its parent link. A slider per
+// joint turns or slides those nodes; parents go first, so a joint's axis follows its
+// parent's motion. The axes are drawn as lines.
+function articulate(root, box) {
+  box.innerHTML = '';
+  const joints = root.userData.joints || [];
+  if (!joints.length) return;
+  const values = joints.map((j) => j.position);
+  const axes = joints.map(() => {
+    const line = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xff5ad2, depthTest: false }));
+    line.renderOrder = 1; // drawn over the parts it lies on
+    root.add(line);
+    return line;
+  });
+  const apply = () => {
+    const motion = {}; // node -> its motion from the recorded pose
+    joints.forEach((j, k) => {
+      const parent = (j.parent_node && motion[j.parent_node]) || new THREE.Matrix4();
+      const p = new THREE.Vector3(...j.origin).applyMatrix4(parent);
+      const a = new THREE.Vector3(...j.axis).transformDirection(parent);
+      const d = values[k] - j.position;
+      const m = j.type === 'prismatic'
+        ? new THREE.Matrix4().makeTranslation(a.clone().multiplyScalar(d))
+        : new THREE.Matrix4().makeTranslation(p).multiply(new THREE.Matrix4().makeRotationAxis(a, d)).multiply(new THREE.Matrix4().makeTranslation(p.clone().negate()));
+      for (const n of j.nodes) motion[n] = m.clone().multiply(motion[n] || new THREE.Matrix4());
+      axes[k].geometry.setFromPoints([p.clone().addScaledVector(a, -0.12), p.clone().addScaledVector(a, 0.12)]);
+    });
+    for (const [name, m] of Object.entries(motion)) {
+      const node = root.getObjectByName(name);
+      if (!node) continue;
+      node.matrixAutoUpdate = false;
+      node.matrix.copy(m);
+      node.matrixWorldNeedsUpdate = true;
+    }
+  };
+  box.innerHTML = joints.map((j, k) => {
+    const [lo, hi] = j.limits;
+    return `<label title="${esc(j.type)} joint; limits ${jointValue(j.type, lo)} to ${jointValue(j.type, hi)}">${esc(j.object)} · ${esc(j.name)}
+      <input type="range" data-k="${k}" min="${lo}" max="${hi}" step="${(hi - lo) / 200}" value="${j.position}">
+      <span class="v" id="${box.id}-v${k}">${jointValue(j.type, j.position)}</span></label>`;
+  }).join('');
+  box.querySelectorAll('input').forEach((input) => input.addEventListener('input', () => {
+    const k = +input.dataset.k;
+    values[k] = +input.value;
+    $(`${box.id}-v${k}`).textContent = jointValue(joints[k].type, values[k]);
+    apply();
+  }));
+  apply();
 }
 
 function updateSceneSelect(scenes) {
@@ -493,36 +562,49 @@ function updateSceneSelect(scenes) {
 
 // --------------------------------------------------------------------- lightbox
 let lbRenderer = null;
+let lbResize = null;
 function openLightbox(src, caption) {
   if (!src) return;
   $('lb-img').classList.remove('hidden');
   $('lb-model').classList.add('hidden');
+  $('lb-joints').innerHTML = '';
   $('lb-img').src = src;
   $('lb-caption').textContent = caption || '';
   $('lightbox').classList.remove('hidden');
 }
 
-function openModel(path, caption, up) {
+// A model from ``url`` (a GLB) turned ``up``-axis up; an articulated object's joints
+// get sliders below it.
+function openModel(url, caption, up) {
   $('lb-img').classList.add('hidden');
   const box = $('lb-model');
   box.classList.remove('hidden');
   box.innerHTML = '';
+  $('lb-joints').innerHTML = '';
   $('lb-caption').textContent = `${caption} (drag to turn)`;
   $('lightbox').classList.remove('hidden');
-  const w = box.clientWidth, h = box.clientHeight;
   lbRenderer = new THREE.WebGLRenderer({ antialias: true });
-  lbRenderer.setSize(w, h);
   box.appendChild(lbRenderer.domElement);
   const sc = new THREE.Scene();
   sc.background = new THREE.Color(0x15181d);
   sc.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2.0));
-  const cam = new THREE.PerspectiveCamera(40, w / h, 0.001, 100);
+  const cam = new THREE.PerspectiveCamera(40, 1, 0.001, 100);
   const ctl = new OrbitControls(cam, lbRenderer.domElement);
-  gltf.load(`/glb/${enc(path)}?${Q}`, (g) => {
+  // The box's size changes as the joint sliders appear below it.
+  lbResize = new ResizeObserver(() => {
+    const w = box.clientWidth, h = box.clientHeight;
+    if (!w || !h || !lbRenderer) return;
+    lbRenderer.setSize(w, h, false);
+    cam.aspect = w / h;
+    cam.updateProjectionMatrix();
+  });
+  lbResize.observe(box);
+  gltf.load(url, (g) => {
     const obj = g.scene;
     obj.traverse((o) => { if (o.isMesh) matte(o.material); });
     obj.rotation.set(...(UP_EULER[up] || UP_EULER.z));
     sc.add(obj);
+    articulate(obj, $('lb-joints'));
     const bounds = new THREE.Box3().setFromObject(obj);
     const size = bounds.getSize(new THREE.Vector3()).length();
     const centre = bounds.getCenter(new THREE.Vector3());
@@ -540,6 +622,7 @@ function openModel(path, caption, up) {
 
 function closeLightbox() {
   $('lightbox').classList.add('hidden');
+  if (lbResize) { lbResize.disconnect(); lbResize = null; }
   if (lbRenderer) { lbRenderer.dispose(); lbRenderer = null; }
 }
 

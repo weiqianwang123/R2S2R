@@ -7,10 +7,10 @@ rests.
 - every ``<mesh scale>`` is baked into its mesh (Isaac Sim 5.1's importer turns a
   scaled mesh into an unscaled prototype plus a scaled instance, and left a 1 m
   collider beside the right one);
-- a rigid object resting on the support gets a flat base. An object seen standing
-  still on the support must also stand in simulation, but generated meshes round off
-  the edges an object stands on, and the contact patch left can be a fraction of the
-  real footprint (a tall box then topples).
+- an object resting on the support gets a flat base (on its root link). An object seen
+  standing still on the support must also stand in simulation, but generated meshes
+  round off the edges an object stands on, and the contact patch left can be a
+  fraction of the real footprint (a tall box then topples).
 
 The readers place every link where its joints put it: at given joint positions (an
 articulated object's :attr:`~r2s2r.structs.ObjectSpec.joints`), else at zero.
@@ -21,7 +21,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import trimesh
@@ -33,6 +33,7 @@ from r2s2r.transforms import make_transform, rotation_to_quat, transform_points
 
 SIM_READY_SUFFIX = "_r2s2r"
 RESTING_BASE = "r2s2r_resting_base"
+ROOT_LINK = "base"  # an object's root link: a rigid object's only one
 
 
 @dataclass
@@ -77,10 +78,12 @@ JOINT_KINDS = ("revolute", "prismatic")
 
 @dataclass
 class VisualMesh:
-    """A visual mesh in the URDF root link frame, with its base-colour texture."""
+    """A visual mesh in the URDF root link frame, with its base-colour texture, and
+    the link it belongs to."""
 
     mesh: trimesh.Trimesh
     texture: Path | None
+    link: str = ROOT_LINK
 
 
 def make_sim_ready(
@@ -190,9 +193,46 @@ def urdf_visual_meshes(
                 np.diag([*urdf_vector(mesh_el, "scale", "1 1 1"), 1.0])
             )
             mesh.apply_transform(poses[link.attrib["name"]] @ urdf_origin(visual))
-            out.append(VisualMesh(mesh, base_color_texture(path)))
+            out.append(VisualMesh(mesh, base_color_texture(path), link.attrib["name"]))
     if not out:
         raise ValueError(f"no visual meshes in {urdf_path}")
+    return out
+
+
+def urdf_joints(
+    urdf_path: str | Path, joints: dict[str, float] | None = None
+) -> list[dict[str, Any]]:
+    """The URDF's moving joints, posed with its joints at ``joints`` (zero for those
+    it leaves out): name, type, parent and child links, a point on the axis
+    (``origin``) and its direction (``axis``) in the root link frame, limits, and
+    the joint's position."""
+    root = ET.parse(Path(urdf_path)).getroot()
+    joints = joints or {}
+    poses = _link_poses(root, joints)
+    out = []
+    for joint in root.iter("joint"):
+        kind = joint.attrib.get("type", "fixed")
+        if kind == "fixed":
+            continue
+        frame = poses[_link(joint, "parent")] @ urdf_origin(joint)
+        limit = joint.find("limit")
+        out.append(
+            {
+                "name": joint.attrib["name"],
+                "type": kind,
+                "parent": _link(joint, "parent"),
+                "child": _link(joint, "child"),
+                "origin": frame[:3, 3].tolist(),
+                "axis": (
+                    frame[:3, :3] @ urdf_vector(joint.find("axis"), "xyz", "1 0 0")
+                ).tolist(),
+                "limits": [
+                    float(urdf_vector(limit, "lower", "0")[0]),
+                    float(urdf_vector(limit, "upper", "0")[0]),
+                ],
+                "position": float(joints.get(joint.attrib["name"], 0.0)),
+            }
+        )
     return out
 
 
@@ -318,30 +358,29 @@ def base_color_texture(mesh_path: Path) -> Path | None:
 
 
 def _link_poses(
-    root: ET.Element, positions: dict[str, float]
+    root: ET.Element, joints: dict[str, float]
 ) -> dict[str, NDArray[np.float64]]:
-    """``T_root_link`` of every link, its joints at ``positions`` (zero for the
-    others)."""
-    joints = {_link(j, "child"): j for j in root.iter("joint")}
+    """``T_root_link`` of every link, its joints at ``joints`` (zero for the others)."""
+    by_child = {_link(j, "child"): j for j in root.iter("joint")}
     poses = {}
     for link in root.iter("link"):
         name = link.attrib["name"]
         T = np.eye(4)
-        while name in joints:
-            joint = joints[name]
-            T = urdf_origin(joint) @ joint_motion(joint, positions) @ T
+        while name in by_child:
+            joint = by_child[name]
+            T = urdf_origin(joint) @ _joint_motion(joint, joints) @ T
             name = _link(joint, "parent")
         poses[link.attrib["name"]] = T
     return poses
 
 
-def joint_motion(joint: ET.Element, positions: dict[str, float]) -> NDArray[np.float64]:
-    """How a URDF joint at its position in ``positions`` (zero if not given) moves its
+def _joint_motion(joint: ET.Element, joints: dict[str, float]) -> NDArray[np.float64]:
+    """How a URDF joint at its position in ``joints`` (zero if not given) moves its
     child (:func:`joint_transform`)."""
     return joint_transform(
         joint.attrib.get("type", "fixed"),
         urdf_vector(joint.find("axis"), "xyz", "1 0 0"),
-        float(positions.get(joint.attrib["name"], 0.0)),
+        float(joints.get(joint.attrib["name"], 0.0)),
     )
 
 

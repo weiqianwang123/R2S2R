@@ -322,12 +322,12 @@ class ObjectSpec:
     T_base_obj: NDArray[np.float64]
     mass: float | None = None
     friction: float | None = None
-    # The object as one USD file for Isaac Lab (its rigid body, colliders and friction
-    # material; written by settling), with ``metadata.yaml`` beside it. Paths as for
-    # ``asset_path``.
+    # The object as one USD file for Isaac Lab (its rigid body or articulation,
+    # colliders and friction material; written by settling), with ``metadata.yaml``
+    # beside it. Paths as for ``asset_path``.
     usd: str | None = None
-    # An articulated object's joint positions (rad or m) as recorded, by the URDF's
-    # joint names; None for a rigid object.
+    # An articulated object's joint positions (rad or m) by the URDF's joint names: as
+    # recorded, or where settling left them; None for a rigid object.
     joints: dict[str, float] | None = None
 
     @classmethod

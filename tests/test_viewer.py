@@ -1,6 +1,7 @@
 """Tests for r2s2r.viewer: what it reads of a run, and what its server serves."""
 
 import json
+import struct
 import threading
 import time
 import urllib.error
@@ -10,9 +11,12 @@ from http.server import ThreadingHTTPServer
 import cv2
 import numpy as np
 import pytest
-from conftest import rgbd_capture
+from conftest import hinged_box, rgbd_capture
 
 from r2s2r.structs import Capture
+from r2s2r.tools.objects import assemble
+from r2s2r.transforms import make_transform
+from r2s2r.viewer.scenes import scene_glb
 from r2s2r.viewer.server import Viewers, make_handler
 from r2s2r.viewer.state import run_state
 from r2s2r.workspace import Workspace
@@ -190,6 +194,44 @@ def test_state_of_a_fixed_run(tmp_path):
     obj = state["objects"][0]
     assert obj["preview"] == "s3_objects/mug/preview.png" and obj["up"] == "z"
     assert "s2_frames/parsed" in [s["path"] for s in state["scenes"]]
+
+
+def test_articulated_objects_show_their_joints(tmp_path):
+    """An articulated object: its joints counted in the objects, listed (with the
+    method's reasons) in the physics, and in its scene GLB's extras, in the base frame,
+    with the nodes they move."""
+    ws = _run(tmp_path)
+    T = make_transform(np.eye(3), [0.5, 0.0, 0.0])
+    s3 = ws.root / "s3_objects"
+    s3.mkdir()
+    hinged_box(s3, T)
+    s4 = ws.root / "s4_scene"
+    s4.mkdir()
+    (s4 / "objects.json").write_text((s3 / "objects.json").read_text())
+    for mesh in ("body.obj", "lid.obj"):
+        (s4 / mesh).write_bytes((s3 / mesh).read_bytes())
+    assemble(ws, s4 / "objects.json", s4 / "scene", "none")
+    reason = "a lid hinged at the back"
+    (s4 / "output.json").write_text(
+        json.dumps({"objects": {"box": {"mass": 0.4, "joints": {"hinge": reason}}}})
+    )
+    state = run_state(ws)
+    assert [(o["joints"], o["model"]) for o in state["objects"]] == [
+        (1, "s3_objects/objects.json")
+    ]
+    (joint,) = state["physics"][0]["joints"]
+    assert joint["limits"] == [-1.9, 0.0] and joint["why"] == reason
+
+    for path in (s3 / "objects.json", s4 / "scene"):
+        glb = scene_glb(path, "box")
+        size = struct.unpack("<I", glb[12:16])[0]
+        gltf = json.loads(glb[20 : 20 + size])
+        (joint,) = gltf["scenes"][0]["extras"]["joints"]
+        assert joint["nodes"] == ["box__lid__0"]
+        assert joint["origin"] == pytest.approx([0.5, 0.05, 0.06], abs=1e-6)
+        assert joint["axis"] == pytest.approx([1, 0, 0])
+        assert joint["position"] == pytest.approx(-0.8)
+        assert "support" not in [n.get("name") for n in gltf["nodes"]]
 
 
 def test_server_serves_the_run_and_nothing_else(tmp_path):
