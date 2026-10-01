@@ -19,12 +19,15 @@ from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
+from r2s2r.sim.isaac import RENDERING_MODE
+
 parser = argparse.ArgumentParser()
 parser.add_argument("scene_dir", type=Path)
 parser.add_argument("--target", required=True, help="object name or unique substring")
 parser.add_argument("--out", type=Path, required=True)
 parser.add_argument("--video-camera", default="ext1", help="'' for no video")
 AppLauncher.add_app_launcher_args(parser)
+parser.set_defaults(rendering_mode=RENDERING_MODE)
 args = parser.parse_args()
 args.enable_cameras = bool(args.video_camera)
 app = AppLauncher(args).app

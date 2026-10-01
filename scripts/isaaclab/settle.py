@@ -20,7 +20,7 @@ from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
-from r2s2r.sim.isaac import SETTLE_SECONDS, settle_summary
+from r2s2r.sim.isaac import RENDERING_MODE, SETTLE_SECONDS, settle_summary
 
 parser = argparse.ArgumentParser()
 parser.add_argument("scene_dir", type=Path)
@@ -28,6 +28,7 @@ parser.add_argument("capture_dir", type=Path)
 parser.add_argument("--out", type=Path, required=True)
 parser.add_argument("--seconds", type=float, default=SETTLE_SECONDS)
 AppLauncher.add_app_launcher_args(parser)
+parser.set_defaults(rendering_mode=RENDERING_MODE)
 args = parser.parse_args()
 app = AppLauncher(args).app
 

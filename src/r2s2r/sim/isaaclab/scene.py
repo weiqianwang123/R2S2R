@@ -28,6 +28,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable
 
+import carb
 import isaaclab.sim as sim_utils
 import numpy as np
 import omni.physics.tensors as physics_tensors
@@ -52,6 +53,7 @@ from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 from r2s2r.assets import bottom_offset, urdf_visual_meshes
 from r2s2r.robots.spec import RobotSpec
+from r2s2r.sim.isaac import gravity, physics_device
 from r2s2r.structs import SUPPORT_THICKNESS, CameraSpec, ObjectSpec, SceneSpec
 from r2s2r.transforms import (
     make_transform,
@@ -69,6 +71,7 @@ JOINT_DAMPING = 1.0
 JOINT_HOLD_STIFFNESS = 1e4
 CLOTH_MESH = "mesh"  # a cloth USD's surface, under its default prim
 CLOTH_CONTACT_GAP = 0.002  # m: a cloth's contacts start this far beyond its surface
+AA_FXAA = 2  # ``/rtx/post/aa/op``: anti-aliasing from the frame alone
 
 
 def _pose(T: NDArray) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -524,13 +527,29 @@ def build_scene_cfg(
 
 
 # ------------------------------------------------------------------------ session
+def simulation_cfg(scene: SceneSpec, device: str) -> SimulationCfg:
+    """The simulation ``scene`` runs in: :data:`PHYSICS_DT` steps, PhysX where
+    :func:`~r2s2r.sim.isaac.physics_device` puts it (``device`` for a cloth, else the
+    CPU), gravity along the support's normal (:func:`~r2s2r.sim.isaac.gravity`)."""
+    return SimulationCfg(
+        dt=PHYSICS_DT, device=physics_device(scene, device), gravity=gravity(scene)
+    )
+
+
+def render_frames_alone() -> None:
+    """Anti-alias every rendered frame by itself (FXAA), not with DLSS, which upscales
+    from earlier frames too (see :data:`~r2s2r.sim.isaac.RENDERING_MODE`)."""
+    carb.settings.get_settings().set("/rtx/post/aa/op", AA_FXAA)
+
+
 class Session:
     """A scene running in Isaac Lab (:func:`build_scene_cfg`): the simulation, the
     interactive scene, the robot's arm and gripper joints, the objects by name.
 
     ``robot_spec`` is the scene's embodiment; ``kinematic_objects`` holds the objects
-    where they are placed (a cloth frozen as it lies); ``cameras`` as for
-    :func:`build_scene_cfg`.
+    where they are placed (a cloth frozen as it lies); ``device`` is where PhysX runs
+    a scene with a cloth (any other runs on the CPU, :func:`simulation_cfg`);
+    ``cameras`` as for :func:`build_scene_cfg`.
     """
 
     def __init__(
@@ -542,7 +561,8 @@ class Session:
         cameras: Iterable[tuple[CameraSpec, NDArray]] = (),
     ) -> None:
         self.robot_spec = robot_spec
-        self.sim = SimulationContext(SimulationCfg(dt=PHYSICS_DT, device=device))
+        render_frames_alone()
+        self.sim = SimulationContext(simulation_cfg(spec, device))
         self.scene = make_scene(
             build_scene_cfg(spec, robot_spec, kinematic_objects, cameras), robot_spec
         )

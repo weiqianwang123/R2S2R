@@ -21,6 +21,8 @@ from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
+from r2s2r.sim.isaac import RENDERING_MODE
+
 parser = argparse.ArgumentParser()
 parser.add_argument("scene_dir", type=Path)
 parser.add_argument("capture_dir", type=Path)
@@ -28,6 +30,7 @@ parser.add_argument("--out", type=Path, required=True)
 parser.add_argument("--cameras", nargs="+", help="roles or serials (default: all)")
 parser.add_argument("--every", type=int, default=1, help="render every n-th frame step")
 AppLauncher.add_app_launcher_args(parser)
+parser.set_defaults(rendering_mode=RENDERING_MODE)
 args = parser.parse_args()
 args.enable_cameras = True
 app = AppLauncher(args).app

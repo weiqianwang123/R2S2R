@@ -2,7 +2,10 @@
 scene, replaying a capture's recording in it to compare every view, and the pick test.
 
 All take paths (a scene directory, a capture directory), so anything can call them: the
-runs' shared stage 5 and final replay, the agent's tools, and ``r2s2r pick``.
+runs' shared stage 5 and final replay, the agent's tools, and ``r2s2r pick``. Every
+scene's simulation runs as this module sets it: where PhysX runs
+(:func:`physics_device`), gravity (:func:`gravity`) and the rendering preset
+(:data:`RENDERING_MODE`).
 """
 
 from __future__ import annotations
@@ -17,9 +20,33 @@ from typing import Any
 import numpy as np
 
 from r2s2r.paths import REPO_ROOT
+from r2s2r.structs import SceneSpec
 
 ISAAC_SCRIPTS = REPO_ROOT / "scripts" / "isaaclab"
 SETTLE_SECONDS = 2.0  # simulated time for the objects to come to rest
+# Isaac Lab's rendering preset (the scripts' ``--rendering_mode`` default):
+# "balanced" blends earlier frames into each image, so a cloth that moved leaves a
+# ghost where it lay for many frames; "performance" renders each frame by itself.
+# DLSS, which upscales from earlier frames too, is replaced after launch
+# (:func:`r2s2r.sim.isaaclab.scene.render_frames_alone`).
+RENDERING_MODE = "performance"
+
+
+def physics_device(scene: SceneSpec, device: str) -> str:
+    """Where PhysX runs ``scene``: on ``device`` if it has a cloth (only the GPU
+    simulates one), else on the CPU. One scene of a few objects steps several times
+    faster there, and GPU PhysX mis-solves contacts on an articulated object's links:
+    what rests on a lid or a book's cover creeps up and tumbles off within seconds."""
+    return device if any(obj.cloth for obj in scene.objects) else "cpu"
+
+
+def gravity(scene: SceneSpec) -> tuple[float, float, float]:
+    """Gravity in the robot base frame, along the support's normal: the table is
+    level, while the base (or its estimate) leans a few tenths of a degree, enough for
+    a round object to roll away."""
+    normal = np.asarray(scene.T_base_support, float)[:3, 2]
+    g = -9.81 * normal / np.linalg.norm(normal)
+    return float(g[0]), float(g[1]), float(g[2])
 
 
 def _run_isaac(script: str, args: list[str], log_path: Path) -> None:
