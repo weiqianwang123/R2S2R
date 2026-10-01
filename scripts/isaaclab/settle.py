@@ -4,8 +4,9 @@ at the start of the static period, and save the settled scene.
     OMNI_KIT_ACCEPT_EULA=YES python scripts/isaaclab/settle.py SCENE_DIR CAPTURE_DIR \
         --out OUT_DIR --headless [--seconds 2]
 
-Writes ``OUT_DIR/scene.json`` (object poses where they came to rest; the report under
-``provenance.settle``), ``OUT_DIR/settle.json`` (how far each object moved) and
+Writes ``OUT_DIR/scene.json`` (object poses where they came to rest, the support's
+colour from the capture's depth frames; the report under ``provenance.settle``),
+``OUT_DIR/settle.json`` (how far each object moved) and
 ``OUT_DIR/objects/<name>/`` (each object as one USD file with physcoder's
 ``metadata.yaml``, which the scene refers to; a cloth's settled surface and URDF too).
 """

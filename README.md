@@ -5,7 +5,7 @@ from one exterior camera, the wrist camera or both, with its joint states, every
 its base frame. Out: an Isaac Lab scene of the objects on their support, in that base
 frame, rigid, articulated or cloth (a lid, a door, a towel: the agentic method models
 joints and cloth), each with a URDF and a USD, a mass and a friction, settled under
-gravity.
+gravity, on a support in the colour the cameras saw.
 Two methods, **fixed** and **agentic**, share the inputs, the run directory, the last
 stages and the viewer. MuJoCo worlds stand in for the real world in local tests.
 
@@ -135,7 +135,8 @@ src/r2s2r/
     model.py         a robot's MuJoCo model: pose, kinematics, IK, gripper
     mask.py          the robot cut out of depth, its model at the recorded joints
   sim/
-    isaac.py         Isaac Lab in its own process: settle, replay, pick
+    isaac.py         Isaac Lab in its own process: settle, replay, pick; where PhysX
+                     runs, gravity, the rendering preset, the support's colour
     isaaclab/        inside Isaac Lab: scene, replay and settle, pick
     compare.py       replay renders against the real frames, with numbers
   testbed/           MuJoCo as the real world, for local tests
