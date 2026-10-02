@@ -18,6 +18,8 @@ from r2s2r.paths import CACHE_DIR
 
 # mujoco_menagerie, fetched by scripts/setup/fetch_mujoco_assets.sh.
 MENAGERIE_DIR = CACHE_DIR / "mujoco_menagerie"
+# robotiq/isaacsim_assets, fetched by scripts/setup/fetch_robotiq_isaac.sh.
+ROBOTIQ_ISAAC_DIR = CACHE_DIR / "robotiq_isaacsim_assets"
 FOLLOWER_MODES = ("equality", "simulate")
 
 

@@ -16,6 +16,7 @@ git clone --recurse-submodules https://github.com/weiqianwang123/R2S2R.git && cd
 bash scripts/setup/install.sh          # .venv (uv, Python 3.11): r2s2r, Isaac Sim 5.1, Isaac Lab
 bash scripts/setup/link_simfoundry_resources.sh  # a SimFoundry install's models and conda envs
 bash scripts/setup/fetch_mujoco_assets.sh        # MuJoCo robots and objects
+bash scripts/setup/fetch_robotiq_isaac.sh        # Robotiq's 2F-85 for Isaac (git-lfs)
 source .venv/bin/activate              # and the Codex CLI on the PATH
 ```
 
@@ -148,7 +149,8 @@ src/r2s2r/
 scripts/
   isaaclab/          replay.py, settle.py, pick.py: Isaac Lab entry points
   tools/             SAM3, Hunyuan3D, CoACD, FoundationStereo jobs for the conda envs
-  setup/             install.sh, link_simfoundry_resources.sh, fetch_mujoco_assets.sh
+  setup/             install.sh, link_simfoundry_resources.sh, fetch_mujoco_assets.sh,
+                     fetch_robotiq_isaac.sh
 tests/               pytest, no GPU, SimFoundry or Codex needed (MuJoCo renders: marker gl)
 docs/                this README's images: robots/, demo/, viewer.png
 third_party/SimFoundry  our SimFoundry fork (branch r2s2r), a submodule

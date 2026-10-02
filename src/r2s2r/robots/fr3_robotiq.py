@@ -5,10 +5,10 @@ MuJoCo: mujoco_menagerie's ``franka_fr3/fr3.xml`` with the Robotiq attached to
 link7 (:func:`~r2s2r.robots.droid_franka.attach_robotiq`).
 
 Isaac Lab (2.3) has no FR3 asset. The FR3 shares the Panda's kinematics (the same DH
-parameters), so this uses Isaac's Panda + Robotiq like ``droid_franka``, the Robotiq
-re-mounted where the MuJoCo model has it, and the joint limits set to the FR3's
-(:data:`JOINT_LIMITS`, the MJCF's ranges). Isaac's link meshes and inertias are
-therefore the Panda's.
+parameters), so this uses Isaac's Panda with Robotiq's own 2F-85 like
+``droid_franka`` (:func:`~r2s2r.robots.droid_franka.fit_robotiq`), and the joint limits
+set to the FR3's (:data:`JOINT_LIMITS`, the MJCF's ranges). Isaac's link meshes and
+inertias are therefore the Panda's.
 """
 
 from __future__ import annotations
@@ -49,13 +49,13 @@ def mjcf() -> Any:
 
 
 def isaac_post_spawn(robot_prim: str) -> None:
-    """Re-mount the Robotiq as on DROID and give Isaac's Panda joints the FR3's
-    limits."""
+    """Fit the Robotiq as on DROID (:func:`~r2s2r.robots.droid_franka.fit_robotiq`)
+    and give Isaac's Panda joints the FR3's limits."""
     # pylint: disable=import-outside-toplevel
     import isaaclab.sim as sim_utils
     from pxr import Usd, UsdPhysics
 
-    droid_franka.mount_robotiq(robot_prim)
+    droid_franka.fit_robotiq(robot_prim)
     stage = sim_utils.get_current_stage()
     joints = {
         prim.GetName(): UsdPhysics.RevoluteJoint(prim)
