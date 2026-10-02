@@ -202,7 +202,7 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
         fit = _json(path)
         if not (isinstance(fit, dict) and fit.get("mesh")):
             continue
-        summary = {
+        summary: dict[str, Any] = {
             "iou": fit.get("mean_iou"),
             "overlays": [
                 {
@@ -239,17 +239,18 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
         mesh = mesh.resolve()
         preview = mesh.parent / "preview.png"
         # The latest fit of this mesh, else the latest whose directory names the object.
-        fit = next((f for m, _, f in reversed(fits) if m == str(mesh)), None) or next(
-            (f for _, where, f in reversed(fits) if name in where), {}
-        )
+        found = [f for m, _, f in fits if m == str(mesh)] or [
+            f for _, where, f in fits if name in where
+        ]
+        fitted: dict[str, Any] = found[-1] if found else {}
         out.append(
             {
                 "name": name,
                 "glb": _rel(ws, mesh) if mesh.exists() else None,
                 "up": up,
                 "preview": _rel(ws, preview) if preview.exists() else None,
-                "iou": fit.get("iou"),
-                "overlays": fit.get("overlays", []),
+                "iou": fitted.get("iou"),
+                "overlays": fitted.get("overlays", []),
                 # An articulated object is shown whole (all its parts, its joints
                 # movable) from the objects file.
                 "joints": joints,
