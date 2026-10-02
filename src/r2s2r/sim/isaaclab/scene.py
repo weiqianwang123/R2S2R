@@ -69,6 +69,12 @@ PHYSICS_DT = 0.005  # seconds per physics step
 # (N m/rad, N/m) where the scene has them when the objects are kinematic.
 JOINT_DAMPING = 1.0
 JOINT_HOLD_STIFFNESS = 1e4
+# A free object's PhysX position iterations (PhysX's default: 16 for a body, 32 for an
+# articulation); a contact is solved with the more of its two bodies'. At 16 a 15 g
+# toy the gripper squeezed shook between the pads, and when they opened was flung off
+# (up to 6 m/s) or carried away in 11 of 24 replays; at 24 or 32 in none, at no cost
+# in speed.
+OBJECT_POSITION_ITERATIONS = 32
 CLOTH_MESH = "mesh"  # a cloth USD's surface, under its default prim
 CLOTH_CONTACT_GAP = 0.002  # m: a cloth's contacts start this far beyond its surface
 AA_FXAA = 2  # ``/rtx/post/aa/op``: anti-aliasing from the frame alone
@@ -405,7 +411,10 @@ def object_cfg(
         prim_path=prim_path,
         spawn=sim_utils.UsdFileCfg(
             usd_path=obj.usd,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=kinematic,
+                solver_position_iteration_count=OBJECT_POSITION_ITERATIONS,
+            ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=pos, rot=rot),
     )
