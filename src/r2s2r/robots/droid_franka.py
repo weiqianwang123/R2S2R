@@ -99,11 +99,17 @@ def mjcf() -> Any:
 
 def isaac_cfg() -> Any:
     """Isaac Lab's Panda with the Robotiq 2F-85 (stiff arm PD, gravity off), the
-    gripper's drive :data:`ISAAC_GRIPPER_DRIVE`."""
+    gripper's drive :data:`ISAAC_GRIPPER_DRIVE`, no self-collisions."""
     # pylint: disable=import-outside-toplevel
     from isaaclab_assets.robots.franka import FRANKA_ROBOTIQ_GRIPPER_CFG
 
     cfg = FRANKA_ROBOTIQ_GRIPPER_CFG.copy()
+    # Isaac Lab's config collides the robot's links with each other, and the
+    # gripper's touch the hand's: held at DROID's home, the wrist stood 32 mrad
+    # (Isaac's Robotiq) or 60 mrad (Robotiq's) from its target, the flange 2-4
+    # mm off, where the real arm stands on it. Robotiq's own asset turns
+    # self-collisions off too.
+    cfg.spawn.articulation_props.enabled_self_collisions = False
     drive = copy.deepcopy(cfg.actuators["gripper_drive"])
     for name, value in ISAAC_GRIPPER_DRIVE.items():
         setattr(drive, name, value)
@@ -114,8 +120,8 @@ def isaac_cfg() -> Any:
 def fit_robotiq(robot_prim: str) -> None:
     """Swap the spawned robot's Robotiq for Robotiq's (:data:`ROBOTIQ_ISAAC_USD`): its
     own articulation root and weld to the world removed, so its joints join the robot's,
-    welded instead to the hand frame :data:`ROBOTIQ_BASE_Z` out along link7's z axis;
-    then :func:`grip_pads`."""
+    welded instead to the hand frame :data:`ROBOTIQ_BASE_Z` out along link7's z axis,
+    its bodies given the robot's rigid-body settings; then :func:`grip_pads`."""
     # pylint: disable=import-outside-toplevel
     import isaaclab.sim as sim_utils
     from pxr import Gf, PhysxSchema, Usd, UsdGeom, UsdPhysics
@@ -175,6 +181,11 @@ def fit_robotiq(robot_prim: str) -> None:
     weld.CreateLocalRot0Attr().Set(Gf.Quatf(float(w), float(x), float(y), float(z)))
     weld.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
     weld.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+    # The robot's rigid-body settings (gravity off, as the arm's PD expects)
+    # reach only what was spawned with it, not the bodies added here.
+    sim_utils.modify_rigid_body_properties(
+        str(holder.GetPath()), isaac_cfg().spawn.rigid_props
+    )
     grip_pads(robot_prim)
 
 
