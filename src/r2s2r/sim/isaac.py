@@ -31,8 +31,8 @@ ON_SUPPORT = 0.005  # m: a point this near the support's plane lies on it
 # Isaac Lab's rendering preset (the scripts' ``--rendering_mode`` default):
 # "balanced" blends earlier frames into each image, so a cloth that moved leaves a
 # ghost where it lay for many frames; "performance" renders each frame by itself.
-# DLSS, which upscales from earlier frames too, is replaced after launch
-# (:func:`r2s2r.sim.isaaclab.scene.render_frames_alone`).
+# DLSS, which upscales from earlier frames too, is replaced by FXAA as the
+# simulation starts (:func:`r2s2r.sim.isaaclab.scene.simulation_cfg`).
 RENDERING_MODE = "performance"
 
 

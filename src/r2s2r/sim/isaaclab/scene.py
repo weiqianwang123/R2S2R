@@ -28,7 +28,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable
 
-import carb
 import isaaclab.sim as sim_utils
 import numpy as np
 import omni.physics.tensors as physics_tensors
@@ -77,11 +76,13 @@ JOINT_HOLD_STIFFNESS = 1e4
 OBJECT_POSITION_ITERATIONS = 32
 CLOTH_MESH = "mesh"  # a cloth USD's surface, under its default prim
 CLOTH_CONTACT_GAP = 0.002  # m: a cloth's contacts start this far beyond its surface
-AA_FXAA = 2  # ``/rtx/post/aa/op``: anti-aliasing from the frame alone
 # The sun's intensity: a flat matte surface facing up renders in its own colour
 # (a cloth and a wooden table within about 15/255 of what the camera saw; at 2000
 # they rendered 50-80 brighter, a light blue cloth almost white).
 SUN_INTENSITY = 800.0
+# The sun's angular size, the real one's (deg): a wider sun's soft shadows are
+# sampled once a pixel, leaving speckle where they fall (5 deg did, on the robot).
+SUN_ANGLE = 0.53
 
 
 def _pose(T: NDArray) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -544,7 +545,7 @@ def build_scene_cfg(
         "sun_light",
         AssetBaseCfg(
             prim_path="/World/SunLight",
-            spawn=sim_utils.DistantLightCfg(intensity=SUN_INTENSITY, angle=5.0),
+            spawn=sim_utils.DistantLightCfg(intensity=SUN_INTENSITY, angle=SUN_ANGLE),
             init_state=AssetBaseCfg.InitialStateCfg(rot=(0.9239, 0.0, 0.3827, 0.0)),
         ),
     )
@@ -561,16 +562,17 @@ def build_scene_cfg(
 def simulation_cfg(scene: SceneSpec, device: str) -> SimulationCfg:
     """The simulation ``scene`` runs in: :data:`PHYSICS_DT` steps, PhysX where
     :func:`~r2s2r.sim.isaac.physics_device` puts it (``device`` for a cloth, else the
-    CPU), gravity along the support's normal (:func:`~r2s2r.sim.isaac.gravity`)."""
+    CPU), gravity along the support's normal (:func:`~r2s2r.sim.isaac.gravity`), each
+    frame anti-aliased by itself (FXAA)."""
     return SimulationCfg(
-        dt=PHYSICS_DT, device=physics_device(scene, device), gravity=gravity(scene)
+        dt=PHYSICS_DT,
+        device=physics_device(scene, device),
+        gravity=gravity(scene),
+        # Not DLSS, which the rendering preset turns on as the context starts:
+        # every frame rendered at half size and blended with earlier ones (the
+        # views about 3x less sharp).
+        render=sim_utils.RenderCfg(antialiasing_mode="FXAA"),
     )
-
-
-def render_frames_alone() -> None:
-    """Anti-alias every rendered frame by itself (FXAA), not with DLSS, which upscales
-    from earlier frames too (see :data:`~r2s2r.sim.isaac.RENDERING_MODE`)."""
-    carb.settings.get_settings().set("/rtx/post/aa/op", AA_FXAA)
 
 
 class Session:
@@ -592,7 +594,6 @@ class Session:
         cameras: Iterable[tuple[CameraSpec, NDArray]] = (),
     ) -> None:
         self.robot_spec = robot_spec
-        render_frames_alone()
         self.sim = SimulationContext(simulation_cfg(spec, device))
         self.scene = make_scene(
             build_scene_cfg(spec, robot_spec, kinematic_objects, cameras), robot_spec
