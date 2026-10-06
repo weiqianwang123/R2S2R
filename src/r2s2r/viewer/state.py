@@ -26,6 +26,7 @@ from r2s2r.pipeline.stages import (
     support_file,
 )
 from r2s2r.tools.geometry import load_support
+from r2s2r.tools.objects import DYNAMICS_KEYS
 from r2s2r.workspace import RUN_FILENAME, Workspace
 
 ACTIVE_S = 15 * 60  # a running stage that wrote nothing for longer has stopped
@@ -195,8 +196,7 @@ def _support(ws: Workspace, d: Path, objects_dir: Path) -> dict[str, Any] | None
 def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
     """The objects file's objects (or, before it exists, every generated mesh), each
     with its preview, its up axis and its latest fit; an articulated one with its
-    number of joints and the objects file to show it whole from (``model``); whether
-    it is a cloth."""
+    number of joints and the objects file to show it whole from (``model``)."""
     fits = []  # (mesh, fit directory, summary), oldest first
     for path in sorted(d.rglob("fit.json"), key=lambda p: p.stat().st_mtime):
         fit = _json(path)
@@ -227,15 +227,14 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
                     mesh if mesh.is_absolute() else d / mesh,
                     str(obj.get("up", "z")),
                     len(obj.get("joints") or []),
-                    obj.get("cloth") is not None,
                 )
             )
     else:  # generated meshes are y-up
         previews = sorted(d.rglob("preview.png"), key=lambda p: p.stat().st_mtime)
         latest = {p.parent.name: p.parent / "mesh.glb" for p in previews}
-        meshes = [(name, mesh, "y", 0, False) for name, mesh in latest.items()]
+        meshes = [(name, mesh, "y", 0) for name, mesh in latest.items()]
     out = []
-    for name, mesh, up, joints, cloth in meshes:
+    for name, mesh, up, joints in meshes:
         mesh = mesh.resolve()
         preview = mesh.parent / "preview.png"
         # The latest fit of this mesh, else the latest whose directory names the object.
@@ -255,7 +254,6 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
                 # movable) from the objects file.
                 "joints": joints,
                 "model": _rel(ws, d / "objects.json") if joints else None,
-                "cloth": cloth,
             }
         )
     return out
@@ -263,8 +261,8 @@ def _objects(ws: Workspace, d: Path) -> list[dict[str, Any]]:
 
 def _physics(d: Path) -> list[dict[str, Any]]:
     """Every object's mass, friction and why (stage 4's ``output.json``, else what its
-    objects file has set so far), with an articulated object's joints and a cloth's
-    material."""
+    objects file has set so far), with an articulated object's joints and their
+    dynamics."""
     spec = _json(d / "objects.json")
     written = {
         o.get("name"): o
@@ -291,11 +289,11 @@ def _physics(d: Path) -> list[dict[str, Any]]:
                     "type": j.get("type"),
                     "limits": j.get("limits"),
                     "position": j.get("position"),
+                    **{key: j.get(key) for key in DYNAMICS_KEYS},
                     "why": _joint_why(o.get("joints"), j.get("name")),
                 }
                 for j in written.get(name, {}).get("joints") or []
             ],
-            "cloth": written.get(name, {}).get("cloth"),
         }
         for name, o in rows
     ]

@@ -72,8 +72,6 @@ module = [
     "isaaclab.*",
     "isaaclab_assets.*",
     "pxr.*",
-    "omni.*",
-    "carb",
     "torch.*",
     "mujoco.*",
 ]

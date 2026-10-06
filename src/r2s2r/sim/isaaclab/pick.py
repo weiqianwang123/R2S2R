@@ -79,7 +79,6 @@ def run_pick(
     target: str,
     out_dir: str | Path,
     video_camera: str | None = "ext1",
-    device: str = "cuda:0",
 ) -> dict[str, Any]:
     """Let the scene settle, run :func:`~r2s2r.testbed.policy.pick_up`, score by how
     far ``target`` rose; ``result.json``, ``commands.json`` and the video (from the
@@ -92,17 +91,11 @@ def run_pick(
         if c.role == video_camera and c.T_base_cam is not None
     ]
     session = Session(
-        with_object_usds(spec, out_dir),
-        get_robot(spec.embodiment),
-        False,
-        device,
-        video_cams,
+        with_object_usds(spec, out_dir), get_robot(spec.embodiment), False, video_cams
     )
 
     def positions() -> dict[str, NDArray[np.float64]]:
-        out = {name: T[:3, 3] for name, T in session.object_poses().items()}
-        out.update({n: p.mean(axis=0) for n, p in session.cloth_points().items()})
-        return out
+        return {name: T[:3, 3] for name, T in session.object_poses().items()}
 
     # sim.reset() leaves the USD's joint state; start from the scene's instead,
     # then let the objects come to rest under physics.

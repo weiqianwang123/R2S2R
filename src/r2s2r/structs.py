@@ -310,9 +310,25 @@ class DepthView:
     image: NDArray[np.uint8] | None = None  # RGB at the depth's resolution
 
 
+@dataclass(frozen=True)
+class JointDynamics:
+    """How an articulated object's joint moves when nothing holds it. ``damping`` (N m
+    s/rad; N s/m for a prismatic joint) slows a part in proportion to its speed;
+    ``friction`` (N m; N) is the effort a part needs before it moves at all, so a part
+    whose load stays below it stays where it is left (a stiff lid, a drawer on its
+    runners); ``stiffness`` (N m/rad; N/m) pulls the part back toward ``rest`` (rad;
+    m), as a book's spine pulls its cover shut or a door closer its door. The defaults
+    are a free joint."""
+
+    damping: float = 0.0
+    friction: float = 0.0
+    stiffness: float = 0.0
+    rest: float = 0.0
+
+
 @dataclass
 class ObjectSpec:
-    """One object, rigid, articulated or cloth, placed in the robot base frame."""
+    """One object, rigid or articulated, placed in the robot base frame."""
 
     name: str
     category: str
@@ -323,23 +339,33 @@ class ObjectSpec:
     mass: float | None = None
     friction: float | None = None
     # The object as one USD file for Isaac Lab (its rigid body or articulation,
-    # colliders and friction material, or a cloth's deformable surface and material;
-    # written by settling), with ``metadata.yaml``
-    # beside it. Paths as for ``asset_path``.
+    # colliders and friction material; written by settling in Isaac Lab), with
+    # ``metadata.yaml`` beside it. Paths as for ``asset_path``.
     usd: str | None = None
     # An articulated object's joint positions (rad or m) by the URDF's joint names: as
     # recorded, or where settling left them; None for a rigid object.
     joints: dict[str, float] | None = None
-    # A cloth's material (``thickness`` m, ``youngs_modulus`` Pa, ``poissons_ratio``);
-    # its visual mesh is its surface as it lies, unstretched there, bending back toward
-    # flat. None for a body.
-    cloth: dict[str, float] | None = None
+    # An articulated object's joints' dynamics by the same names (a joint left out is
+    # free: :class:`JointDynamics`'s defaults); None for a rigid object.
+    joint_dynamics: dict[str, JointDynamics] | None = None
+
+    def dynamics(self, joint: str) -> JointDynamics:
+        """Joint ``joint``'s dynamics (a free joint's when the scene gives none)."""
+        return (self.joint_dynamics or {}).get(joint, JointDynamics())
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ObjectSpec:
-        """Inverse of ``asdict``."""
+        """Inverse of ``asdict``. A scene from before cloths were dropped still
+        loads when it has none."""
         d = dict(d)
+        if d.pop("cloth", None) is not None:
+            raise ValueError(f"{d.get('name')}: a cloth; cloths are not supported")
         d["T_base_obj"] = _array(d["T_base_obj"])
+        if d.get("joint_dynamics") is not None:
+            d["joint_dynamics"] = {
+                joint: JointDynamics(**values)
+                for joint, values in d["joint_dynamics"].items()
+            }
         return cls(**d)
 
 

@@ -11,7 +11,7 @@ from http.server import ThreadingHTTPServer
 import cv2
 import numpy as np
 import pytest
-from conftest import hinged_box, rgbd_capture, towel_mesh
+from conftest import hinged_box, rgbd_capture
 
 from r2s2r.structs import Capture
 from r2s2r.tools.objects import assemble
@@ -221,7 +221,7 @@ def test_articulated_objects_show_their_joints(tmp_path):
     ]
     (joint,) = state["physics"][0]["joints"]
     assert joint["limits"] == [-1.9, 0.0] and joint["why"] == reason
-    assert state["physics"][0]["cloth"] is None
+    assert joint["damping"] is None  # the objects file gives no dynamics: free
 
     for path in (s3 / "objects.json", s4 / "scene"):
         glb = scene_glb(path, "box")
@@ -233,23 +233,6 @@ def test_articulated_objects_show_their_joints(tmp_path):
         assert joint["axis"] == pytest.approx([1, 0, 0])
         assert joint["position"] == pytest.approx(-0.8)
         assert "support" not in [n.get("name") for n in gltf["nodes"]]
-
-
-def test_a_cloth_shows_as_one(tmp_path):
-    """A cloth: marked as one in the objects, its material in the physics."""
-    ws = _run(tmp_path)
-    cloth = {"thickness": 0.002, "youngs_modulus": 5e5}
-    towel = {"name": "towel", "mesh": "towel.obj", "T_base_obj": np.eye(4).tolist()}
-    for stage in ("s3_objects", "s4_scene"):
-        d = ws.root / stage
-        d.mkdir()
-        towel_mesh().export(d / "towel.obj")
-        objects = {"objects": [{**towel, "mass": 0.02, "cloth": cloth}]}
-        (d / "objects.json").write_text(json.dumps(objects))
-    state = run_state(ws)
-    assert [(o["cloth"], o["joints"]) for o in state["objects"]] == [(True, 0)]
-    (row,) = state["physics"]
-    assert row["cloth"] == cloth and row["mass"] == 0.02 and not row["joints"]
 
 
 def test_server_serves_the_run_and_nothing_else(tmp_path):

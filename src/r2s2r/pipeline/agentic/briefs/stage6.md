@@ -1,13 +1,13 @@
 # Stage 6: refine against the recording
 
 The scene of stage 4 (`../s4_scene/objects.json`, assembled in `../s4_scene/scene`) has
-been settled under physics: `../s5_settle/scene`, with how far each object moved in
-`../s5_settle/scene/settle.json` (and each articulated object's joints:
-`joints_moved`; joints are passive, so a part left hanging open falls shut; a cloth
-drapes onto what is under it, and how far it moved). Now compare it with everything the robot recorded, and
-make it right. Work in this directory.
+been settled under physics in {{sim}}: `../s5_settle/scene`, with how far each object
+moved in `../s5_settle/scene/settle.json` (and each articulated object's joints:
+`joints_moved`; a joint moves as its dynamics say, so a part its friction does not hold
+falls, and a spring pulls its part toward its rest). Now compare it with everything the
+robot recorded, and make it right. Work in this directory.
 
-Your main tool is `r2s2r tool replay SCENE_DIR --out DIR`: Isaac Lab replays the static
+Your main tool is `r2s2r tool replay SCENE_DIR --out DIR`: {{sim}} replays the static
 period with the robot at each recorded state and renders every camera at every frame.
 `DIR/compare/frames/` has, per frame, the real image with the objects' outlines | the
 sim render | a blend | the depth residual (black 0, white 5 cm or more, blue unknown),

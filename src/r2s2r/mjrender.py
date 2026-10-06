@@ -104,9 +104,10 @@ class CameraRenderer:
         self._renderers.clear()
 
 
-def add_mesh(spec: Any, body: Any, name: str, visual: VisualMesh) -> None:
+def add_mesh(spec: Any, body: Any, name: str, visual: VisualMesh, **geom: Any) -> Any:
     """Add ``visual`` to ``body`` of an ``MjSpec`` as a mesh geom, textured if it has a
-    texture and UVs."""
+    texture and UVs; ``geom`` sets the geom's other attributes (say, that it does not
+    collide). Returns the geom."""
     mesh = visual.mesh
     uv = getattr(mesh.visual, "uv", None)
     kwargs: dict[str, Any] = {}
@@ -126,11 +127,12 @@ def add_mesh(spec: Any, body: Any, name: str, visual: VisualMesh) -> None:
         userface=np.asarray(mesh.faces).reshape(-1).tolist(),
         **kwargs,
     )
-    body.add_geom(
+    return body.add_geom(
         type=mujoco.mjtGeom.mjGEOM_MESH,
         meshname=name,
         material=f"{name}_mat" if kwargs else "",
         rgba=[1, 1, 1, 1] if kwargs else [0.75, 0.75, 0.75, 1],
+        **geom,
     )
 
 

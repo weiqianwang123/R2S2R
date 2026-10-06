@@ -30,24 +30,15 @@ that move, and the joints that move them; ``mesh`` is then the part that does no
                     "origin": [x, y, z],                 # a point on the axis, and
                     "axis": [x, y, z],                   # its direction (object frame)
                     "limits": [0.0, 1.9],                # rad or m
-                    "position": 0.0}]                    # as recorded
+                    "position": 0.0,                     # as recorded
+                    "damping": 0.01, "friction": 0.0,    # optional: how it moves
+                    "stiffness": 0.0, "rest": 0.0}]      # (r2s2r.structs.JointDynamics)
 
 Everything is as recorded: the parts' meshes where they were, the joints' origins and
 axes in the object's frame (metres, after ``scale``), at their recorded positions.
-Assembly turns that into a URDF whose joints are zero where they are at their origins.
-Part and joint names are lower case, digits and underscores; ``base`` and ``visual``
-are taken.
-
-A cloth (a towel, a napkin) is a thin surface that drapes: its ``mesh`` is the surface
-as it lies (an open triangle mesh, no thickness, one piece whose triangles share their
-vertices: one UV chart), unstretched as it lies but bending back toward flat, and its
-material is given::
-
-        "cloth": {"thickness": 0.002,                    # m
-                  "youngs_modulus": 5e5,                 # Pa: how hard it stretches
-                  "poissons_ratio": 0.3}                 # optional (0 to 0.5)
-
-with ``mass`` the whole cloth's (else ``CLOTH_AREAL_DENSITY`` per square metre).
+Assembly turns that into a URDF whose joints are zero where they are at their origins,
+and puts each joint's dynamics in the scene (a joint without them is free). Part and
+joint names are lower case, digits and underscores; ``base`` and ``visual`` are taken.
 """
 
 from __future__ import annotations
@@ -55,7 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -78,7 +69,7 @@ from r2s2r.assets import (
 )
 from r2s2r.mjrender import CameraRenderer, add_camera, add_mesh, mujoco
 from r2s2r.paths import ENV_MESH, ENV_SIMFOUNDRY, SIMFOUNDRY_DIR
-from r2s2r.structs import FrameRecord, ObjectSpec, SceneSpec
+from r2s2r.structs import FrameRecord, JointDynamics, ObjectSpec, SceneSpec
 from r2s2r.tools.envjobs import run_env_job
 from r2s2r.tools.geometry import UP_ROTATIONS, load_mesh, load_support
 from r2s2r.tools.segment import slug
@@ -96,8 +87,7 @@ logger = logging.getLogger(__name__)
 
 HUNYUAN_REPO = SIMFOUNDRY_DIR / "deps" / "Hunyuan3D-2.1"
 DEFAULT_DENSITY = 500.0  # kg/m^3, when an object has no mass
-CLOTH_AREAL_DENSITY = 0.2  # kg/m^2, when a cloth has no mass
-CLOTH_POISSONS_RATIO = 0.3
+DYNAMICS_KEYS = ("damping", "friction", "stiffness", "rest")  # a joint's, optional
 
 
 # ----------------------------------------------------------------------- generate
@@ -289,6 +279,7 @@ def articulation_problems(obj: dict[str, Any]) -> list[str]:
             problems.append(f"{label}: limits must be [lower, upper], lower < upper")
         elif not lower - 1e-6 <= position <= upper + 1e-6:
             problems.append(f"{label}: position {position} is outside its limits")
+        problems += _dynamics_problems(joint, label)
     if not problems:
         try:
             link_frames(joints)
@@ -297,37 +288,30 @@ def articulation_problems(obj: dict[str, Any]) -> list[str]:
     return problems
 
 
-def cloth_problems(obj: dict[str, Any]) -> list[str]:
-    """What is wrong with an object's ``cloth`` (see the module doc)."""
-    cloth = obj.get("cloth")
-    if cloth is None:
-        return []
-    name = obj.get("name", "?")
-    if not isinstance(cloth, dict):
-        return [f"{name}: cloth must be an object of material numbers"]
-    problems = []
-    if obj.get("parts") or obj.get("joints") or obj.get("collision"):
-        problems.append(f"{name}: a cloth has no parts, joints or collision parts")
+def joint_dynamics(joint: dict[str, Any]) -> JointDynamics:
+    """A joint's dynamics from its entry in an objects file (a free joint's where it
+    gives none)."""
+    free = JointDynamics()
+    return JointDynamics(
+        **{key: float(joint.get(key, getattr(free, key))) for key in DYNAMICS_KEYS}
+    )
+
+
+def _dynamics_problems(joint: dict[str, Any], label: str) -> list[str]:
+    """What is wrong with a joint's dynamics (see the module doc)."""
     try:
-        material = _cloth_material(cloth)
-    except (KeyError, TypeError, ValueError):
-        return problems + [f"{name}: cloth needs thickness and youngs_modulus"]
-    if not 0 < material["thickness"] < 0.05:
-        problems.append(f"{name}: cloth thickness must be in (0, 0.05) m")
-    if material["youngs_modulus"] <= 0:
-        problems.append(f"{name}: cloth youngs_modulus must be positive")
-    if not 0 <= material["poissons_ratio"] < 0.5:
-        problems.append(f"{name}: cloth poissons_ratio must be in [0, 0.5)")
+        dynamics = joint_dynamics(joint)
+    except (TypeError, ValueError):
+        return [f"{label}: {', '.join(DYNAMICS_KEYS)} must be numbers"]
+    problems = [
+        f"{label}: {key} must not be negative"
+        for key in ("damping", "friction", "stiffness")
+        if getattr(dynamics, key) < 0
+    ]
+    lower, upper = (float(v) for v in joint["limits"])
+    if dynamics.stiffness > 0 and not lower - 1e-6 <= dynamics.rest <= upper + 1e-6:
+        problems.append(f"{label}: rest {dynamics.rest} is outside its limits")
     return problems
-
-
-def _cloth_material(cloth: dict[str, Any]) -> dict[str, float]:
-    """A cloth's material numbers, the Poisson's ratio defaulted."""
-    return {
-        "thickness": float(cloth["thickness"]),
-        "youngs_modulus": float(cloth["youngs_modulus"]),
-        "poissons_ratio": float(cloth.get("poissons_ratio", CLOTH_POISSONS_RATIO)),
-    }
 
 
 def link_frames(
@@ -390,11 +374,9 @@ def assemble(
     CoACD's convex decomposition, ``hull``: one convex hull, ``none``: none, for looking
     only), per link; inertia of the convex hull at the given mass (else
     ``DEFAULT_DENSITY``), shared among the links by convex volume; a URDF, made
-    simulation-ready (a flat base for an object resting on the support). A cloth: its
-    surface into ``visual.obj``, no collision parts (its surface collides, in
-    simulation), mass the given one (else ``CLOTH_AREAL_DENSITY``), a box's inertia,
-    no flat base. The scene's provenance names the run's method and where the
-    collision parts came from: ``"given"``, ``collision`` or ``"none"`` (a cloth), per
+    simulation-ready (a flat base for an object resting on the support); an articulated
+    object's joints' dynamics in the scene. The scene's provenance names the run's
+    method and where the collision parts came from: ``"given"`` or ``collision``, per
     object when they differ.
     """
     if collision not in ("coacd", "hull", "none"):
@@ -415,22 +397,16 @@ def assemble(
             raise ValueError(
                 f"{name}: T_base_obj must be a rigid transform (put scale in 'scale')"
             )
-        problems = articulation_problems(obj) + cloth_problems(obj)
+        problems = articulation_problems(obj)
         if problems:
             raise ValueError("; ".join(problems))
         frames, joints, positions = link_frames(obj["joints"])
+        dynamics = {j["name"]: joint_dynamics(j) for j in obj["joints"]}
         obj_dir = out_dir / "objects" / name
         if obj_dir.exists():
             shutil.rmtree(obj_dir)
         obj_dir.mkdir(parents=True)
         scaling = np.diag([*obj["scale"], 1.0])
-        if obj.get("cloth") is not None:
-            cloth, report[name] = _cloth(
-                obj, name, T_base_obj, T_base_support, obj_dir, scaling
-            )
-            objects.append(cloth)
-            sources[name] = "none"  # the cloth surface itself collides
-            continue
         sources[name] = "given" if obj["collision"] else collision
         seen = {}  # every link's mesh as recorded, scaled, in the object frame
         for link, source in [(ROOT_LINK, obj["mesh"])] + [
@@ -480,6 +456,7 @@ def assemble(
                 mass=mass,
                 friction=obj.get("friction"),
                 joints=positions or None,
+                joint_dynamics=dynamics or None,
             )
         )
         hulls = [h for link in hulls_of.values() for h in link]
@@ -502,6 +479,7 @@ def assemble(
                             "type": j.kind,
                             "limits": list(j.limits),
                             "position": positions[j.name],
+                            **asdict(dynamics[j.name]),
                         }
                         for j in joints
                     }
@@ -588,68 +566,6 @@ def _collision(
 def _lowest_point(mesh: trimesh.Trimesh, T_support_obj: NDArray[np.float64]) -> float:
     """How far ``mesh``'s lowest point is above the support (m)."""
     return round(float(transform_points(T_support_obj, mesh.vertices)[:, 2].min()), 4)
-
-
-def _cloth(
-    obj: dict[str, Any],
-    name: str,
-    T_base_obj: NDArray[np.float64],
-    T_base_support: NDArray[np.float64],
-    obj_dir: Path,
-    scaling: NDArray[np.float64],
-) -> tuple[ObjectSpec, dict[str, Any]]:
-    """A cloth's scene object and report: its surface scaled into ``visual.obj``, a
-    URDF that only shows it (the cloth's own surface collides, in simulation), its
-    material."""
-    mesh = load_mesh(obj["mesh"])
-    welded = trimesh.Trimesh(mesh.vertices, mesh.faces)  # merges duplicated vertices
-    # body_count is a cached property, not a method
-    # pylint: disable-next=comparison-with-callable
-    if len(welded.vertices) < len(mesh.vertices) or welded.body_count > 1:
-        raise ValueError(
-            f"{name}: a cloth's surface must be one piece whose triangles share their "
-            "vertices (one UV chart: a seam splits the cloth)"
-        )
-    mesh.apply_transform(scaling)
-    mesh.export(obj_dir / f"{VISUAL}.obj")
-    area = float(mesh.area)
-    mass = float(obj.get("mass") or CLOTH_AREAL_DENSITY * area)
-    size = np.asarray(mesh.extents, float)
-    urdf = obj_dir / f"{name}.urdf"
-    write_object_urdf(
-        urdf,
-        name,
-        [
-            UrdfLink(
-                name=ROOT_LINK,
-                visual=f"{VISUAL}.obj",
-                mass=mass,
-                com=mesh.bounds.mean(axis=0),
-                inertia=np.diag(mass / 12 * (size @ size - size**2)),  # a box's
-                collisions=[],
-            )
-        ],
-    )
-    material = _cloth_material(obj["cloth"])
-    spec = ObjectSpec(
-        name=name,
-        category=obj.get("category", name),
-        asset_path=str(urdf),
-        T_base_obj=T_base_obj,
-        mass=mass,
-        friction=obj.get("friction"),
-        cloth=material,
-    )
-    report = {
-        "size_m": np.round(size, 4).tolist(),
-        "area_m2": round(area, 4),
-        "mass_kg": round(mass, 4),
-        "lowest_point_above_support_m": _lowest_point(
-            mesh, invert(T_base_support) @ T_base_obj
-        ),
-        "cloth": material,
-    }
-    return spec, report
 
 
 def _stem(link: str) -> str:

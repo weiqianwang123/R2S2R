@@ -32,7 +32,7 @@ from numpy.typing import NDArray
 from r2s2r.mjrender import CV_TO_MJ, CameraRenderer, add_camera, geom_mesh, mujoco
 from r2s2r.paths import CACHE_DIR, PHYSCODER_ASSETS
 from r2s2r.robots import get_robot
-from r2s2r.robots.model import RobotModel, in_subtree
+from r2s2r.robots.model import RobotModel, in_subtree, prepare_robot
 from r2s2r.robots.spec import MENAGERIE_DIR, RobotSpec
 from r2s2r.structs import CameraSpec, Capture
 from r2s2r.transforms import (
@@ -93,14 +93,7 @@ class MujocoWorld:
         self.target, self.instruction = target, instruction
         self.layout, self.source = layout, source
         self.robot = robot
-        robot.position_control(mjspec)
-        # A real arm's controller compensates gravity; the objects feel it. (Set before
-        # compiling: MuJoCo counts the compensated bodies then.)
-        base = mjspec.joint(robot.arm_joints[0]).parent
-        while base.parent.name != mjspec.worldbody.name:
-            base = base.parent
-        for body in (base, *base.find_all(mujoco.mjtObj.mjOBJ_BODY)):
-            body.gravcomp = 1.0
+        prepare_robot(mjspec, robot)
         sizes = np.array([mjspec.camera(c).resolution for c in cameras])
         max_size = (int(sizes[:, 0].max()), int(sizes[:, 1].max()))
         add_camera(mjspec, max_size)

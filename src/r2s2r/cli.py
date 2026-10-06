@@ -10,7 +10,7 @@ Reconstruction, a run of a method on a capture (see :mod:`r2s2r.pipeline`), and 
 tools a method (or anyone) can use on a run::
 
     r2s2r run CAPTURE_DIR --method fixed|agentic --out RUN_DIR [--cameras ext1 wrist]
-        [--stages 2 3 4 5 6] [--force]
+        [--sim isaac|mujoco] [--stages 2 3 4 5 6] [--force]
         fixed: [--frame-selection codex] [--max-frames 12] [--retry-frames 3]
                [--codex-reasoning medium] [--override HYDRA_OVERRIDE ...]
         agentic: [--model gpt-6-astra] [--reasoning xhigh]
@@ -26,7 +26,8 @@ truth and running the pick test in MuJoCo and Isaac Lab::
     r2s2r pick (SCENE_DIR | --oracle) --capture CAPTURE_DIR --out OUT_DIR
         [--video-camera ext1] [--sims mujoco isaaclab]
 
-The Isaac Lab side runs as scripts, since the Omniverse app must start first
+A run's scenes settle and replay in its simulator (``--sim``, :mod:`r2s2r.sim`): MuJoCo
+in this process, Isaac Lab as scripts, since the Omniverse app must start first
 (``scripts/isaaclab/``).
 """
 
@@ -44,7 +45,7 @@ from r2s2r.pipeline.fixed import FixedMethod
 from r2s2r.pipeline.fixed.simfoundry import FRAME_SELECTIONS, SimFoundryConfig
 from r2s2r.pipeline.run import Method, run
 from r2s2r.pipeline.stages import PRODUCTS, STAGE_DIRS, STAGES
-from r2s2r.sim import isaac
+from r2s2r.sim import SIMS, isaac
 from r2s2r.structs import SCENE_FILENAME, Capture, SceneSpec
 from r2s2r.tools.cli import add_tool_parser, print_json
 
@@ -69,7 +70,7 @@ METHODS: dict[str, Callable[[argparse.Namespace], Method]] = {
     "fixed": _fixed,
     "agentic": _agentic,
 }
-SIMS = ("mujoco", "isaaclab")  # where the pick test runs
+PICK_SIMS = ("mujoco", "isaaclab")  # where the pick test runs
 
 
 def _droid_capture(args: argparse.Namespace) -> None:
@@ -91,7 +92,17 @@ def _droid_capture(args: argparse.Namespace) -> None:
 def _run(args: argparse.Namespace) -> None:
     stages = tuple(args.stages) if args.stages else None
     method = METHODS[args.method](args)
-    print_json(run(args.source, args.out, method, stages, args.force, args.cameras))
+    print_json(
+        run(
+            args.source,
+            args.out,
+            method,
+            stages,
+            args.force,
+            args.cameras,
+            args.sim,
+        )
+    )
 
 
 def _mujoco_capture(args: argparse.Namespace) -> None:
@@ -219,6 +230,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--cameras", nargs="+", help="only these cameras (roles), for a new run"
     )
+    p.add_argument(
+        "--sim",
+        choices=SIMS,
+        help="where the scenes settle and replay, for a new run (default: isaac)",
+    )
     fixed = p.add_argument_group("fixed")
     fixed.add_argument(
         "--frame-selection",
@@ -277,8 +293,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--sims",
         nargs="+",
-        choices=SIMS,
-        default=list(SIMS),
+        choices=PICK_SIMS,
+        default=list(PICK_SIMS),
         help="where to run it (Isaac Lab needs its install)",
     )
     p.set_defaults(func=_pick)

@@ -2,10 +2,12 @@
 
 Real-to-sim from a robot's own cameras. In: what the robot records, calibrated images
 from one exterior camera, the wrist camera or both, with its joint states, every pose in
-its base frame. Out: an Isaac Lab scene of the objects on their support, in that base
-frame, rigid, articulated or cloth (a lid, a door, a towel: the agentic method models
-joints and cloth), each with a URDF and a USD, a mass and a friction, settled under
-gravity, on a support in the colour the cameras saw.
+its base frame (a real robot's, or one simulated in MuJoCo). Out: a scene of the objects
+on their support, in that base frame, for Isaac Lab or MuJoCo (`--sim`), rigid or
+articulated (a lid, a door, a drawer: the agentic method models joints, and how each
+moves: its damping, its dry friction, a spring toward a rest), each with a URDF (and a
+USD, for Isaac Lab), a mass and a friction, settled under gravity, on a support in the
+colour the cameras saw.
 Two methods, **fixed** and **agentic**, share the inputs, the run directory, the last
 stages and the viewer. MuJoCo worlds stand in for the real world in local tests.
 
@@ -25,7 +27,7 @@ SimFoundry's conda envs run SAM3, Hunyuan3D-2.1, CoACD and FoundationStereo.
 ```bash
 r2s2r capture droid EPISODE --calib CALIB --out CAP    # raw DROID episode, KarlP/droid calibration
 r2s2r capture mujoco --world panda_table --out CAP      # or physcoder_box_block
-r2s2r run CAP --method fixed --out RUN                  # or agentic; --cameras ext2 wrist
+r2s2r run CAP --method fixed --out RUN                  # or agentic; --cameras ext2 wrist; --sim mujoco
 r2s2r viewer RUN                                        # live, http://localhost:8765
 r2s2r eval RUN --capture CAP                            # MuJoCo capture: vs its ground truth
 r2s2r pick RUN/s5_settle/scene --capture CAP --out PICK # MuJoCo capture: pick test, also in Isaac Lab
@@ -46,8 +48,8 @@ flowchart LR
   inp --> s2["s2_frames<br/>SimFoundry stages 3-8, 10-12:<br/>Codex frame selection, support plane,<br/>decomposition, Hunyuan3D-2.1,<br/>poses, sim-ready, PyBullet"]
   s2 --> s3["s3_objects<br/>multi-view refinement:<br/>support refit, existence,<br/>orientation, footprint registration"]
   s3 --> s4["s4_scene<br/>shared assemble tool,<br/>hulls and masses from SimFoundry"]
-  s4 --> s5["s5_settle<br/>settle in Isaac Lab"]
-  s5 --> fr["final_replay<br/>the recording replayed<br/>in Isaac Lab, every view"]
+  s4 --> s5["s5_settle<br/>settle in Isaac Lab or MuJoCo"]
+  s5 --> fr["final_replay<br/>the recording replayed<br/>in the same simulator, every view"]
   class cap,inp,s5,fr shared
   classDef shared stroke-dasharray: 5 4
 ```
@@ -62,10 +64,10 @@ flowchart LR
   cap["capture<br/>droid or mujoco"] --> inp["inputs/<br/>frames, robot-free depth"]
   inp --> s2["s2_frames<br/>astra: 4-8 frames,<br/>support plane and frame"]
   s2 --> s3["s3_objects<br/>astra: best view per object,<br/>Hunyuan3D-2.1 mesh,<br/>multi-view silhouette fit"]
-  s3 --> s4["s4_scene<br/>astra: mass, friction;<br/>shared assemble tool"]
-  s4 --> s5["s5_settle<br/>settle in Isaac Lab"]
-  s5 --> s6["s6_refine<br/>astra: Isaac Lab replay tool,<br/>fix the geometry"]
-  s6 --> fr["final_replay<br/>the recording replayed<br/>in Isaac Lab, every view"]
+  s3 --> s4["s4_scene<br/>astra: mass, friction,<br/>joint dynamics;<br/>shared assemble tool"]
+  s4 --> s5["s5_settle<br/>settle in Isaac Lab or MuJoCo"]
+  s5 --> s6["s6_refine<br/>astra: replay tool,<br/>fix the geometry"]
+  s6 --> fr["final_replay<br/>the recording replayed<br/>in the same simulator, every view"]
   class cap,inp,s5,fr shared
   classDef shared stroke-dasharray: 5 4
 ```
@@ -135,10 +137,13 @@ src/r2s2r/
     spec.py          RobotSpec: models, arm joints, gripper, tool centre point
     model.py         a robot's MuJoCo model: pose, kinematics, IK, gripper
     mask.py          the robot cut out of depth, its model at the recorded joints
-  sim/
-    isaac.py         Isaac Lab in its own process: settle, replay, pick; where PhysX
-                     runs, gravity, the rendering preset, the support's colour
+  sim/               settle and replay in either simulator (__init__.py picks it)
+    world.py         what both do the same: gravity, settling, the support's colour,
+                     the replay's frames and numbers
+    isaac.py         Isaac Lab in its own process: settle, replay, pick
     isaaclab/        inside Isaac Lab: scene, replay and settle, pick
+    mujoco.py        MuJoCo in this process: settle, replay
+    mjscene.py       a scene in MuJoCo: robot, support, objects with their joints
     compare.py       replay renders against the real frames, with numbers
   testbed/           MuJoCo as the real world, for local tests
     worlds.py        panda_table, physcoder_box_block, with ground truth

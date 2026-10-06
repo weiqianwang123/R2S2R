@@ -12,6 +12,7 @@ from r2s2r.structs import (
     CameraSpec,
     Capture,
     FrameRecord,
+    JointDynamics,
     ObjectSpec,
     SceneSpec,
     read_depth,
@@ -158,3 +159,33 @@ def _jsonable(value):
     if isinstance(value, list):
         return [_jsonable(v) for v in value]
     return value
+
+
+def test_a_scene_keeps_its_joints_dynamics(tmp_path):
+    """An articulated object's joints' dynamics come back as written; a joint without
+    any is free; a scene saved before cloths were dropped loads when it has none, and
+    one with a cloth is refused."""
+    sprung = JointDynamics(damping=0.02, friction=0.05, stiffness=0.3, rest=-0.1)
+    box = ObjectSpec(
+        "box",
+        "box",
+        str(tmp_path / "box.urdf"),
+        np.eye(4),
+        joints={"hinge": -0.8, "slide": 0.0},
+        joint_dynamics={"hinge": sprung},
+    )
+    scene = SceneSpec("t", "franka_panda", [box], np.eye(4), {}, "c", 0, np.zeros(7))
+    scene.save(tmp_path / "scene")
+    (loaded,) = SceneSpec.load(tmp_path / "scene").objects
+    assert loaded.dynamics("hinge") == sprung
+    assert loaded.dynamics("slide") == JointDynamics()
+    path = tmp_path / "scene/scene.json"
+    saved = json.loads(path.read_text())
+    saved["objects"][0].pop("joint_dynamics")
+    saved["objects"][0]["cloth"] = None  # an older scene's
+    path.write_text(json.dumps(saved))
+    assert SceneSpec.load(tmp_path / "scene").objects[0].joint_dynamics is None
+    saved["objects"][0]["cloth"] = {"thickness": 0.002}
+    path.write_text(json.dumps(saved))
+    with pytest.raises(ValueError, match="cloths are not supported"):
+        SceneSpec.load(tmp_path / "scene")

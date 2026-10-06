@@ -1,7 +1,8 @@
 """Replay a capture's robot in a reconstructed scene, and settle a scene, in Isaac Lab.
 
 Import after ``isaaclab.app.AppLauncher`` has started (``scripts/isaaclab/replay.py``,
-``scripts/isaaclab/settle.py``).
+``scripts/isaaclab/settle.py``). What every simulator does the same is in
+:mod:`r2s2r.sim.world`.
 
 :func:`replay` checks the reconstruction against every view: over the static period, the
 robot is set to the recorded joints and gripper opening at each step the capture has
@@ -10,27 +11,21 @@ cameras renders RGB and depth, a static camera where it is calibrated and a movi
 (wrist) camera at the frame's recorded pose.
 
 :func:`settle` lets a scene's objects come to rest (an articulated object's joints
-too, a cloth drapes), the robot held as it was at the start of the static period, and
-keeps each object's USD (and physcoder's ``metadata.yaml``) with the settled scene,
-and the support's colour from the capture's frames.
+too), the robot held as it was at the start of the static period, and keeps each
+object's USD (and physcoder's ``metadata.yaml``) with the settled scene, and the
+support's colour from the capture's frames.
 """
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import torch
-from numpy.typing import NDArray
-from scipy.spatial.transform import Rotation
 
-from r2s2r.assets import VISUAL, urdf_visual_meshes
 from r2s2r.robots import get_robot
-from r2s2r.sim.isaac import SETTLE_SECONDS, support_color
 from r2s2r.sim.isaaclab.scene import (
     Session,
     camera_key,
@@ -39,8 +34,15 @@ from r2s2r.sim.isaaclab.scene import (
     with_object_usds,
     write_metadata,
 )
-from r2s2r.structs import CameraSpec, Capture, ObjectSpec, SceneSpec, write_depth
-from r2s2r.transforms import invert, matrix_to_pos_quat, transform_points
+from r2s2r.sim.world import (
+    SETTLE_SECONDS,
+    frames_at,
+    replay_steps,
+    settled,
+    write_render,
+)
+from r2s2r.structs import CameraSpec, Capture, SceneSpec
+from r2s2r.transforms import matrix_to_pos_quat
 
 RENDER_PASSES = 2  # renders after moving a camera, so the image catches up
 
@@ -51,7 +53,6 @@ class ReplayConfig:
 
     cameras: tuple[str, ...] | None = None  # roles or serials; None: every camera
     every: int = 1  # render every n-th step that has frames
-    device: str = "cuda:0"
 
 
 class _Recorded(Session):
@@ -61,7 +62,6 @@ class _Recorded(Session):
         self,
         spec: SceneSpec,
         capture: Capture,
-        device: str,
         cameras: dict[str, CameraSpec],
         kinematic_objects: bool,
     ) -> None:
@@ -77,7 +77,7 @@ class _Recorded(Session):
             for s, cam in cameras.items()
         ]
         robot = get_robot(capture.embodiment)
-        super().__init__(spec, robot, kinematic_objects, device, poses)
+        super().__init__(spec, robot, kinematic_objects, poses)
         self.index = {int(s): i for i, s in enumerate(traj.steps.tolist())}
 
     def set_state(self, i: int) -> None:
@@ -102,19 +102,8 @@ def replay(
     a USD are converted into ``out_dir/objects/``."""
     cfg = config or ReplayConfig()
     out_dir = Path(out_dir)
-    (out_dir / "frames").mkdir(parents=True, exist_ok=True)
     cameras = {s: capture.cameras[s] for s in capture.resolve_cameras(cfg.cameras)}
-    frame_steps = sorted(
-        {
-            f.step
-            for f in capture.frames
-            if f.camera in cameras and capture.in_static(f.step)
-        }
-    )
-    render_steps = frame_steps[:: max(1, cfg.every)]
-    session = _Recorded(
-        with_object_usds(spec, out_dir), capture, cfg.device, cameras, True
-    )
+    session = _Recorded(with_object_usds(spec, out_dir), capture, cameras, True)
     log: dict[str, Any] = {
         "scene": spec.name,
         "capture": str(capture.root),
@@ -123,7 +112,7 @@ def replay(
         "objects": {name: [] for name in session.names.values()},
         "arm_error_rad": [],
     }
-    for step in render_steps:
+    for step in replay_steps(capture, cameras, cfg.every):
         i = session.index[step]
         session.set_state(i)
         session.step_physics(1)
@@ -138,31 +127,19 @@ def replay(
     return log
 
 
-@dataclass
-class SettleConfig:
-    """Knobs of :func:`settle`."""
-
-    seconds: float = SETTLE_SECONDS
-    device: str = "cuda:0"
-
-
 def settle(
     spec: SceneSpec,
     capture: Capture,
     out_dir: str | Path,
-    config: SettleConfig | None = None,
+    seconds: float = SETTLE_SECONDS,
 ) -> tuple[SceneSpec, dict[str, Any]]:
-    """Let the objects come to rest under gravity, the robot held at its state at the
-    start of the static period.
+    """Let the objects come to rest under gravity for ``seconds``, the robot held at
+    its state at the start of the static period (:func:`~r2s2r.sim.world.settled`).
 
     Each object's USD goes to ``out_dir/objects/<name>/<name>.usd`` with physcoder's
-    ``metadata.yaml`` beside it (for the settled pose); a cloth's settled surface and
-    URDF go there too, and its ``asset_path`` points at them. Returns the scene with
-    the objects where they came to rest (and their USDs) and the support's colour as
-    the capture's depth frames show it (:func:`~r2s2r.sim.isaac.support_color`), and
-    how far each object moved.
+    ``metadata.yaml`` beside it (for the settled pose). Returns the settled scene, with
+    the USDs, and how far each object moved.
     """
-    cfg = config or SettleConfig()
     out_dir = Path(out_dir).resolve()
     spec = replace(
         spec,
@@ -171,81 +148,18 @@ def settle(
             for obj in spec.objects
         ],
     )
-    session = _Recorded(spec, capture, cfg.device, {}, False)
-    start = capture.static_steps[0]
-    session.set_state(session.index.get(start, 0))
+    session = _Recorded(spec, capture, {}, False)
+    session.set_state(session.index.get(capture.static_steps[0], 0))
     before, joints_before = session.object_poses(), session.object_joints()
-    session.step_physics(int(round(cfg.seconds / session.dt)))
+    session.step_physics(int(round(seconds / session.dt)))
     after, joints_after = session.object_poses(), session.object_joints()
-    cloth_after = session.cloth_points()
-    report: dict[str, Any] = {
-        "seconds": cfg.seconds,
-        "robot_step": start,
-        "objects": {},
-    }
-    objects = []
-    for obj in spec.objects:
-        if obj.cloth:
-            cloth, report["objects"][obj.name] = _settled_cloth(
-                obj, cloth_after[obj.name], out_dir
-            )
-            assert cloth.usd is not None
-            write_metadata(cloth.usd, cloth.T_base_obj, spec.T_base_support)
-            objects.append(cloth)
-            continue
-        T0, T1 = before[obj.name], after[obj.name]
-        turn = Rotation.from_matrix(T0[:3, :3].T @ T1[:3, :3]).magnitude()
-        report["objects"][obj.name] = {
-            "moved_m": round(float(np.linalg.norm(T1[:3, 3] - T0[:3, 3])), 4),
-            "turned_deg": round(float(np.degrees(turn)), 2),
-            "dropped_m": round(float(T0[2, 3] - T1[2, 3]), 4),
-        }
-        joints = joints_after.get(obj.name)
-        if joints:  # how far each joint moved (rad or m)
-            report["objects"][obj.name]["joints_moved"] = {
-                j: round(q - joints_before[obj.name][j], 4) for j, q in joints.items()
-            }
-        assert obj.usd is not None
-        write_metadata(obj.usd, T1, spec.T_base_support)
-        objects.append(replace(obj, T_base_obj=T1, joints=joints))
-    try:
-        colour: tuple[float, float, float] | None = support_color(
-            capture, spec.T_base_support, spec.support_extent
-        )
-    except ValueError as exc:  # no depth on the support; it stays as it was
-        colour = spec.support_color
-        report["support_color"] = str(exc)
-    settled = replace(
-        spec,
-        objects=objects,
-        provenance={**spec.provenance, "settle": report},
-        support_color=colour,
+    scene, report = settled(
+        spec, capture, seconds, (before, after), (joints_before, joints_after)
     )
-    return settled, report
-
-
-def _settled_cloth(
-    obj: ObjectSpec, after: NDArray, out_dir: Path
-) -> tuple[ObjectSpec, dict[str, Any]]:
-    """A cloth as it came to rest: its surface (base frame ``after``) as its new
-    visual mesh, in ``out_dir/objects/<name>/``, and how far it moved from the surface
-    it was placed as."""
-    obj_dir = out_dir / "objects" / obj.name
-    mesh = urdf_visual_meshes(obj.asset_path)[0].mesh  # a cloth has one
-    before = transform_points(obj.T_base_obj, mesh.vertices)
-    mesh.vertices = transform_points(invert(obj.T_base_obj), after)
-    mesh.export(obj_dir / f"{VISUAL}.obj")
-    urdf = obj_dir / Path(obj.asset_path).name
-    if urdf != Path(obj.asset_path).resolve():  # its visual is the one beside it
-        shutil.copy(obj.asset_path, urdf)
-    settled = replace(obj, asset_path=str(urdf))
-    settled = replace(settled, usd=str(object_usd(settled, obj_dir)))
-    moved = np.linalg.norm(after - before, axis=1)
-    return settled, {
-        "moved_m": round(float(moved.max()), 4),  # its furthest point
-        "mean_moved_m": round(float(moved.mean()), 4),
-        "dropped_m": round(float((before[:, 2] - after[:, 2]).mean()), 4),
-    }
+    for obj in scene.objects:
+        assert obj.usd is not None
+        write_metadata(obj.usd, obj.T_base_obj, scene.T_base_support)
+    return scene, report
 
 
 def _render(
@@ -258,9 +172,7 @@ def _render(
     """Render every camera with a frame at ``step``; moving cameras go to the frame's
     recorded pose first."""
     scene = session.scene
-    frames = {
-        f.camera: f for f in capture.frames if f.step == step and f.camera in cameras
-    }
+    frames = frames_at(capture, cameras, step)
     for serial, frame in frames.items():
         cam = cameras[serial]
         if not cam.is_static:
@@ -281,25 +193,5 @@ def _render(
         data = scene[camera_key(cam)].data.output
         rgb = data["rgb"][0, ..., :3].cpu().numpy()[window]
         depth = data["distance_to_image_plane"][0, ..., 0].cpu().numpy()[window]
-        depth = np.where(np.isfinite(depth), depth, 0.0)
-        stem = f"frames/{step:04d}_{cam.role}"
-        cv2.imwrite(
-            str(out_dir / f"{stem}_sim.png"), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        )
-        write_depth(out_dir / f"{stem}_sim_depth.png", depth)
-        out.append(
-            {
-                "step": step,
-                "camera": serial,
-                "role": cam.role,
-                "sim_rgb": f"{stem}_sim.png",
-                "sim_depth": f"{stem}_sim_depth.png",
-                "real_rgb": str(capture.root / frame.left_image),
-                "real_depth": (
-                    None
-                    if frame.depth_image is None
-                    else str(capture.root / frame.depth_image)
-                ),
-            }
-        )
+        out.append(write_render(capture, cam, frame, rgb, depth, out_dir))
     return out

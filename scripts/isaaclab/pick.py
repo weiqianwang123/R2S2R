@@ -42,7 +42,6 @@ if __name__ == "__main__":
         args.target,
         args.out,
         video_camera=args.video_camera,
-        device=args.device,
     )
     # Everything is written; SimulationApp.close() can hang after headless rendering.
     sys.stdout.flush()

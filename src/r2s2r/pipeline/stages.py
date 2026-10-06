@@ -12,9 +12,10 @@ stage  directory       product
 4      ``s4_scene``    ``scene/``: a simulation-ready scene (SceneSpec) with its
                        objects inside; ``output.json``: ``objects`` (mass, friction,
                        why)
-5      ``s5_settle``   ``scene/``: the scene settled in Isaac Lab, its objects stage
-                       4's; ``output.json``: how far each moved. The same for every
-                       method (:mod:`r2s2r.pipeline.run`)
+5      ``s5_settle``   ``scene/``: the scene settled in the run's simulator (Isaac
+                       Lab or MuJoCo), its objects stage 4's; ``output.json``: how far
+                       each moved. The same for every method
+                       (:mod:`r2s2r.pipeline.run`)
 6      ``s6_refine``   ``scene/`` and ``report.md`` (a method may leave it out)
 =====  ==============  ==============================================================
 
@@ -34,7 +35,7 @@ import numpy as np
 
 from r2s2r.structs import SceneSpec
 from r2s2r.tools.geometry import UP_ROTATIONS, load_support
-from r2s2r.tools.objects import articulation_problems, cloth_problems
+from r2s2r.tools.objects import articulation_problems
 from r2s2r.transforms import is_rigid
 from r2s2r.workspace import Workspace
 
@@ -152,7 +153,7 @@ def check_objects(_: Workspace, d: Path) -> list[str]:
         for part in obj.get("parts") or []:
             if not part.get("mesh") or not (base / part["mesh"]).exists():
                 problems.append(f"{name}: part {part.get('name')}'s mesh not found")
-        problems += articulation_problems(obj) + cloth_problems(obj)
+        problems += articulation_problems(obj)
     support = spec.get("support")
     if isinstance(support, str):
         problems += check_support(base / support)

@@ -48,7 +48,6 @@ def main() -> None:
     config = ReplayConfig(
         cameras=tuple(args.cameras) if args.cameras else None,
         every=args.every,
-        device=args.device,
     )
     log = replay(spec, capture, args.out, config)
     (args.out / "replay.json").write_text(json.dumps(log, indent=1), encoding="utf-8")

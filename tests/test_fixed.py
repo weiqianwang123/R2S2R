@@ -379,7 +379,8 @@ def test_cli_makes_the_fixed_method(tmp_path, monkeypatch):
         ]
     )
     assert len(made) == 1
-    source, out, method, stages, force, cameras = made[0]
+    source, out, method, stages, force, cameras, simulator = made[0]
     assert isinstance(method, FixedMethod) and stages == ("2", "3")
     assert (source, out, force, cameras) == (tmp_path, tmp_path / "run", False, None)
+    assert simulator is None  # a new run's default, a resumed run's own
     assert method.config == SimFoundryConfig("hybrid", 6, 0, "low", ["a=b", "c=d"])

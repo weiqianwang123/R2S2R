@@ -31,6 +31,7 @@ from r2s2r.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 MIN_FRAMES, MAX_FRAMES = 4, 8
+SIM_NAMES = {"isaac": "Isaac Lab", "mujoco": "MuJoCo"}  # r2s2r.sim.SIMS, as briefs say
 
 
 @dataclass
@@ -215,6 +216,7 @@ def render_brief(name: str, ws: Workspace) -> str:
         "static_last": str(cap.static_steps[1] - 1),
         "frame_counts": f"Frames to reconstruct from: {counts}.",
         "depth_note": depth_note,
+        "sim": SIM_NAMES[ws.sim],
     }
     for key, value in values.items():
         text = text.replace("{{" + key + "}}", value)

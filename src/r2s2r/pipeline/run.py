@@ -1,6 +1,7 @@
 """Running a method on a capture: the run's directory, every stage's status in
-``run.json``, the stage every method shares (5: the scene settles in Isaac Lab) and the
-final replay of the scene against the recording.
+``run.json``, the stage every method shares (5: the scene settles in the run's
+simulator, Isaac Lab or MuJoCo: :mod:`r2s2r.sim`) and the final replay of the scene
+against the recording, in the same simulator.
 
 A method does stages 2, 3 and 4, and 6 if it has one (:mod:`r2s2r.pipeline.stages` says
 what each leaves); it is anything with
@@ -14,7 +15,7 @@ A stage is skipped when it is done: its product passes both checks, and it and e
 product before it are newer than the one before. ``run.json``, rewritten whole at every
 change::
 
-    {"method": "agentic", "capture": "inputs/capture",
+    {"method": "agentic", "sim": "isaac" | "mujoco", "capture": "inputs/capture",
      "stages": {"2": {"status": "running" | "done" | "failed", "started": epoch,
                       "seconds": s, "error": "..." (failed), ...what the method
                       recorded}},
@@ -31,6 +32,7 @@ import time
 from pathlib import Path
 from typing import Any, Protocol
 
+from r2s2r import sim
 from r2s2r.pipeline.stages import (
     PRODUCTS,
     SETTLE,
@@ -40,9 +42,8 @@ from r2s2r.pipeline.stages import (
     fresh,
     newer_than_previous,
 )
-from r2s2r.sim import isaac
 from r2s2r.structs import CAPTURE_FILENAME, Capture
-from r2s2r.workspace import RUN_FILENAME, Workspace
+from r2s2r.workspace import DEFAULT_SIM, RUN_FILENAME, Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +96,12 @@ def open_run(
     out: str | Path | None,
     method: str,
     cameras: list[str] | None = None,
+    simulator: str | None = None,
 ) -> Workspace:
     """The run to work in: ``source`` itself when it is a run; else a new run of
-    ``method`` on the capture ``source`` at ``out`` (with only ``cameras``, if given),
-    or the run already there."""
+    ``method`` on the capture ``source`` at ``out`` (with only ``cameras``, if given;
+    its scenes simulated in ``simulator``, Isaac Lab by default), or the run already
+    there."""
     source = Path(source).resolve()
     if (source / RUN_FILENAME).exists():
         if out is not None and Path(out).resolve() != source:
@@ -111,11 +114,15 @@ def open_run(
     else:
         raise FileNotFoundError(f"{source} is neither a capture nor a run")
     if not (root / RUN_FILENAME).exists():
-        return Workspace.create(Capture.load(source), root, method, cameras)
+        return Workspace.create(
+            Capture.load(source), root, method, cameras, simulator or DEFAULT_SIM
+        )
     ws = Workspace.load(root)
     made_by = ws.read_run().get("method")
     if made_by != method:
         raise ValueError(f"{root} is a run of the {made_by} method, not {method}")
+    if simulator is not None and simulator != ws.sim:
+        raise ValueError(f"{root} simulates its scenes in {ws.sim}, not {simulator}")
     if cameras and set(ws.capture.resolve_cameras(cameras)) != set(ws.capture.cameras):
         roles = [c.role for c in ws.capture.cameras.values()]
         raise ValueError(f"{root} was made with the cameras {roles}, not {cameras}")
@@ -129,11 +136,12 @@ def run(
     stages: tuple[str, ...] | None = None,
     force: bool = False,
     cameras: list[str] | None = None,
+    simulator: str | None = None,
 ) -> dict[str, Any]:
     """Run ``stages`` (default: all of the run's) of ``method``, in order, in the run
     :func:`open_run` gives; then, if the last is 5 or 6, replay the final scene. Done
     stages are skipped unless ``force``. Returns ``run.json``."""
-    ws = open_run(source, out, method.name, cameras)
+    ws = open_run(source, out, method.name, cameras, simulator)
     own = run_stages(method)
     wanted = [k for k in STAGES if k in (stages or own)]
     if stages and set(stages) - set(own):
@@ -189,7 +197,7 @@ def final_replay(
     start = time.time()
     _record_replay(ws, {"stage": key, "status": "running", "started": round(start, 1)})
     try:
-        summary = isaac.replay(scene, ws.capture.root, out)
+        summary = sim.replay(scene, ws.capture.root, out, ws.sim)
     except BaseException as exc:
         _record_replay(ws, {"stage": key, **_failed(start, exc)})
         raise
@@ -235,9 +243,12 @@ def _run_stage(ws: Workspace, method: Method, key: str) -> None:
 
 
 def _settle(ws: Workspace, stage_dir: Path) -> dict[str, Any]:
-    """Stage 5: stage 4's scene settles in Isaac Lab, the robot held."""
-    report = isaac.settle(
-        ws.root / STAGE_DIRS["4"] / "scene", ws.capture.root, stage_dir / "scene"
+    """Stage 5: stage 4's scene settles in the run's simulator, the robot held."""
+    report = sim.settle(
+        ws.root / STAGE_DIRS["4"] / "scene",
+        ws.capture.root,
+        stage_dir / "scene",
+        ws.sim,
     )
     report["scene"] = "scene/scene.json"
     (stage_dir / "output.json").write_text(

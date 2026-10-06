@@ -8,30 +8,17 @@ import cv2
 import numpy as np
 import pytest
 import trimesh
-from conftest import (
-    RGBD_K,
-    RGBD_SIZE,
-    box_urdf,
-    hinged_box,
-    rgbd_capture,
-    towel_mesh,
-)
+from conftest import RGBD_K, RGBD_SIZE, box_urdf, hinged_box, rgbd_capture
 from scipy.spatial.transform import Rotation
 
 from r2s2r import cli
 from r2s2r.assets import joint_transform, object_points, urdf_visual_meshes
-from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
+from r2s2r.structs import DepthView, JointDynamics, ObjectSpec, SceneSpec
 from r2s2r.tools import check as check_module
 from r2s2r.tools import cli as tools_cli
 from r2s2r.tools.check import check
 from r2s2r.tools.geometry import fit_plane, parse_masks, pattern_search, view_points
-from r2s2r.tools.objects import (
-    CLOTH_AREAL_DENSITY,
-    CLOTH_POISSONS_RATIO,
-    articulation_problems,
-    assemble,
-    cloth_problems,
-)
+from r2s2r.tools.objects import articulation_problems, assemble
 from r2s2r.transforms import invert, look_at, make_transform, transform_points
 from r2s2r.workspace import Workspace
 
@@ -287,55 +274,31 @@ def test_articulation_problems_name_the_bad_names(tmp_path):
         assert any(problem in p for p in articulation_problems({**box, **change}))
 
 
-def test_assemble_a_cloth_keeps_its_surface_and_material(tmp_path):
-    """A towel: its surface as it lies (no collision parts, no resting base), its
-    material, its mass (else an areal density); a bad material, and a surface in
-    pieces, are refused."""
-    capture = rgbd_capture(tmp_path / "capture", CAMERAS)
-    ws = Workspace.create(capture, tmp_path / "run", "agentic")
-    towel_mesh(0.3).export(tmp_path / "towel.obj")
-    towel = {
-        "name": "towel",
-        "mesh": "towel.obj",
-        "T_base_obj": make_transform(np.eye(3), [0.5, 0.0, 0.001]).tolist(),
-        "friction": 0.8,
-        "cloth": {"thickness": 0.002, "youngs_modulus": 5e5},
-    }
-    objects = {
-        "support": {"T_base_support": np.eye(4).tolist(), "extent": [1.0, 1.0]},
-        "objects": [towel],
-    }
+def test_a_joints_dynamics_reach_the_scene(tmp_path):
+    """A joint's damping, friction and spring go into the scene and the report; a
+    joint that gives none is free; negative values, and a spring's rest outside the
+    limits, are refused."""
+    ws, objects, _ = _hinged_box(tmp_path)
+    joint = objects["objects"][0]["joints"][0]
+    sprung = {"damping": 0.02, "friction": 0.05, "stiffness": 0.3, "rest": -0.1}
+    objects["objects"][0]["joints"] = [{**joint, **sprung}]
     (tmp_path / "objects.json").write_text(json.dumps(objects))
-    report = assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "coacd")
+    report = assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "none")
     (obj,) = SceneSpec.load(tmp_path / "scene").objects
-    assert obj.cloth == {
-        "thickness": 0.002,
-        "youngs_modulus": 5e5,
-        "poissons_ratio": CLOTH_POISSONS_RATIO,
-    }
-    assert obj.mass == pytest.approx(CLOTH_AREAL_DENSITY * 0.09)
-    assert report["objects"]["towel"]["area_m2"] == pytest.approx(0.09)
-    assert report["objects"]["towel"]["lowest_point_above_support_m"] == 0.001
-    root = ET.parse(obj.asset_path).getroot()
-    assert not list(root.iter("collision"))
-    visuals = urdf_visual_meshes(obj.asset_path)
-    assert len(visuals) == 1 and np.allclose(visuals[0].mesh.extents, [0.3, 0.3, 0])
-
-    for change, problem in (
-        ({"cloth": {"thickness": 0.0, "youngs_modulus": 5e5}}, "thickness"),
-        ({"cloth": {"thickness": 0.002}}, "needs thickness and youngs_modulus"),
-        ({"cloth": {**towel["cloth"], "poissons_ratio": 0.7}}, "poissons_ratio"),
-        ({"parts": [{"name": "lid", "mesh": "towel.obj"}]}, "a cloth has no parts"),
-        ({"collision": ["hull.obj"]}, "a cloth has no parts"),
-        ({"cloth": 0.002}, "cloth must be an object"),
-        ({"cloth": {"thickness": 0.002, "youngs_modulus": 0}}, "must be positive"),
+    assert obj.joint_dynamics == {"hinge": JointDynamics(**sprung)}
+    assert report["objects"]["box"]["joints"]["hinge"]["stiffness"] == 0.3
+    objects["objects"][0]["joints"] = [joint]
+    (tmp_path / "objects.json").write_text(json.dumps(objects))
+    assemble(ws, tmp_path / "objects.json", tmp_path / "free", "none")
+    (free,) = SceneSpec.load(tmp_path / "free").objects
+    assert free.dynamics("hinge") == JointDynamics()
+    for broken, problem in (
+        ({"damping": -0.1}, "damping must not be negative"),
+        ({"friction": "stiff"}, "must be numbers"),
+        ({"stiffness": 0.3, "rest": 0.5}, "rest 0.5 is outside its limits"),
     ):
-        assert any(problem in p for p in cloth_problems({**towel, **change}))
-
-    halves = [towel_mesh(0.14, 5).apply_translation([x, 0, 0]) for x in (-0.08, 0.08)]
-    trimesh.util.concatenate(halves).export(tmp_path / "towel.obj")
-    with pytest.raises(ValueError, match="one piece"):
-        assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "coacd")
+        objects["objects"][0]["joints"] = [{**joint, **broken}]
+        assert any(problem in p for p in articulation_problems(objects["objects"][0]))
 
 
 def test_check_cli_reads_joint_positions(monkeypatch):

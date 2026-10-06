@@ -8,7 +8,7 @@ Writes ``OUT_DIR/scene.json`` (object poses where they came to rest, the support
 colour from the capture's depth frames; the report under ``provenance.settle``),
 ``OUT_DIR/settle.json`` (how far each object moved) and
 ``OUT_DIR/objects/<name>/`` (each object as one USD file with physcoder's
-``metadata.yaml``, which the scene refers to; a cloth's settled surface and URDF too).
+``metadata.yaml``, which the scene refers to).
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
-from r2s2r.sim.isaac import RENDERING_MODE, SETTLE_SECONDS, settle_summary
+from r2s2r.sim.isaac import RENDERING_MODE
+from r2s2r.sim.world import SETTLE_SECONDS, settle_summary
 
 parser = argparse.ArgumentParser()
 parser.add_argument("scene_dir", type=Path)
@@ -34,7 +35,7 @@ args = parser.parse_args()
 app = AppLauncher(args).app
 
 # pylint: disable=wrong-import-position
-from r2s2r.sim.isaaclab.replay import SettleConfig, settle  # noqa: E402
+from r2s2r.sim.isaaclab.replay import settle  # noqa: E402
 from r2s2r.structs import Capture, SceneSpec  # noqa: E402
 
 
@@ -43,12 +44,7 @@ def main() -> None:
     spec = SceneSpec.load(args.scene_dir)
     capture = Capture.load(args.capture_dir)
     args.out.mkdir(parents=True, exist_ok=True)
-    settled, report = settle(
-        spec,
-        capture,
-        args.out,
-        SettleConfig(seconds=args.seconds, device=args.device),
-    )
+    settled, report = settle(spec, capture, args.out, args.seconds)
     settled.save(args.out)
     (args.out / "settle.json").write_text(
         json.dumps(report, indent=1), encoding="utf-8"

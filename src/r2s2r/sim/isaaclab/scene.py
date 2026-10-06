@@ -15,10 +15,10 @@ Objects are spawned from single-file USDs (:func:`object_usd`): the assembled UR
 converted, its rigid body on the default prim (an articulated object's links under it,
 the first the articulation root), and a physics material with the object's friction
 bound to its colliders. physcoder loads the same files, with the ``metadata.yaml``
-:func:`write_metadata` puts beside them. An articulated object's joints are passive,
-damped; held where the scene has them when the objects are kinematic. A cloth is a
-PhysX surface deformable body (:func:`cloth_usd`), held still as a plain surface when
-the objects are kinematic.
+:func:`write_metadata` puts beside them. An articulated object's joints move as their
+dynamics say (:class:`~r2s2r.structs.JointDynamics`: a drive's damping, and its
+stiffness toward the joint's rest; a dry friction), or are held where the scene has
+them when the objects are kinematic.
 """
 
 from __future__ import annotations
@@ -26,13 +26,11 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 
 import isaaclab.sim as sim_utils
 import numpy as np
-import omni.physics.tensors as physics_tensors
 import torch
-import trimesh
 import yaml
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import (
@@ -47,12 +45,11 @@ from isaaclab.sensors import CameraCfg
 from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
 from numpy.typing import NDArray
-from omni.physx.scripts import deformableUtils, physicsUtils
-from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
-from r2s2r.assets import bottom_offset, urdf_visual_meshes
+from r2s2r.assets import bottom_offset
 from r2s2r.robots.spec import RobotSpec
-from r2s2r.sim.isaac import gravity, physics_device
+from r2s2r.sim.world import gravity, support_extent
 from r2s2r.structs import SUPPORT_THICKNESS, CameraSpec, ObjectSpec, SceneSpec
 from r2s2r.transforms import (
     make_transform,
@@ -61,24 +58,21 @@ from r2s2r.transforms import (
     transform_points,
 )
 
-SUPPORT_EXTENT = (0.6, 0.6)  # for scenes whose support outline is unknown
 METADATA_FILENAME = "metadata.yaml"
 PHYSICS_DT = 0.005  # seconds per physics step
-# An articulated object's joints: damped (N m s/rad, N s/m), else free; held stiffly
-# (N m/rad, N/m) where the scene has them when the objects are kinematic.
-JOINT_DAMPING = 1.0
+# An articulated object's joints held stiffly (N m/rad, N/m; damped N m s/rad, N s/m)
+# where the scene has them when the objects are kinematic.
 JOINT_HOLD_STIFFNESS = 1e4
+JOINT_HOLD_DAMPING = 1.0
 # A free object's PhysX position iterations (PhysX's default: 16 for a body, 32 for an
 # articulation); a contact is solved with the more of its two bodies'. At 16 a 15 g
 # toy the gripper squeezed shook between the pads, and when they opened was flung off
 # (up to 6 m/s) or carried away in 11 of 24 replays; at 24 or 32 in none, at no cost
 # in speed.
 OBJECT_POSITION_ITERATIONS = 32
-CLOTH_MESH = "mesh"  # a cloth USD's surface, under its default prim
-CLOTH_CONTACT_GAP = 0.002  # m: a cloth's contacts start this far beyond its surface
 # The sun's intensity: a flat matte surface facing up renders in its own colour
-# (a cloth and a wooden table within about 15/255 of what the camera saw; at 2000
-# they rendered 50-80 brighter, a light blue cloth almost white).
+# (a light blue cloth and a wooden table within about 15/255 of what the camera saw;
+# at 2000 they rendered 50-80 brighter, the cloth almost white).
 SUN_INTENSITY = 800.0
 # The sun's angular size, the real one's (deg): a wider sun's soft shadows are
 # sampled once a pixel, leaving speckle where they fall (5 deg did, on the robot).
@@ -135,19 +129,18 @@ def make_scene(cfg: InteractiveSceneCfg, robot: RobotSpec) -> InteractiveScene:
 
 # ----------------------------------------------------------------------- objects
 def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
-    """Write ``obj`` as one USD file, ``out_dir/<name>.usd``, and return its path (a
-    cloth's: :func:`cloth_usd`).
+    """Write ``obj`` as one USD file, ``out_dir/<name>.usd``, and return its path.
 
     Isaac's URDF importer writes its layered output under ``out_dir/usd/``; this
     flattens it into a single file with the rigid body (and its mass) on the default
     prim, the visuals and colliders underneath (an articulated object keeps its links,
     and its joints, under the default prim), and a ``PhysicsMaterial`` with the
-    object's friction bound to every collider. Texture paths stay relative, so the
+    object's friction bound to every collider. An articulated object's joints get a
+    force drive with their dynamics' stiffness and damping (:func:`joint_drive`):
+    PhysX applies no gain to a joint without one. Texture paths stay relative, so the
     directory can move.
     """
     out_dir = Path(out_dir).resolve()
-    if obj.cloth:
-        return cloth_usd(obj, out_dir)
     converter = UrdfConverter(
         UrdfConverterCfg(
             asset_path=obj.asset_path,
@@ -158,7 +151,7 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
             force_usd_conversion=True,
             fix_base=False,
             merge_fixed_joints=True,
-            joint_drive=None,
+            joint_drive=joint_drive(obj),
             # The collision meshes are convex parts already (CoACD, SimFoundry).
             collider_type="convex_hull",
         )
@@ -202,79 +195,26 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
     return path
 
 
-def cloth_usd(obj: ObjectSpec, out_dir: Path) -> Path:
-    """Write a cloth as one USD file, ``out_dir/<name>.usd``: its surface (the scene's
-    visual mesh, object frame) as a PhysX surface deformable body, its triangles at
-    rest as it lies (it bends back toward flat), with a material from its ``cloth``
-    numbers, mass and friction."""
-    assert obj.cloth is not None and obj.mass is not None
-    mesh = urdf_visual_meshes(obj.asset_path)[0].mesh  # a cloth has one
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{obj.name}.usd"
-    stage = Usd.Stage.CreateInMemory()  # the file may be open in the running scene
-    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-    root = UsdGeom.Xform.Define(stage, f"/{obj.name}")
-    stage.SetDefaultPrim(root.GetPrim())
-    surface = UsdGeom.Mesh.Define(stage, root.GetPath().AppendChild(CLOTH_MESH))
-    surface.GetPointsAttr().Set(
-        Vt.Vec3fArray.FromNumpy(mesh.vertices.astype(np.float32))
+def joint_drive(obj: ObjectSpec) -> UrdfConverterCfg.JointDriveCfg | None:
+    """The drive the URDF importer gives an articulated object's joints: a force drive
+    toward a position, with each joint's stiffness and damping (None for a rigid
+    object). Its target is the joint's zero; a session sets it to the joint's rest
+    (:func:`joint_targets`)."""
+    if not obj.joints:
+        return None
+    return UrdfConverterCfg.JointDriveCfg(
+        drive_type="force",
+        target_type="position",
+        gains=UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
+            stiffness={j: obj.dynamics(j).stiffness for j in obj.joints},
+            damping={j: obj.dynamics(j).damping for j in obj.joints},
+        ),
     )
-    surface.GetFaceVertexCountsAttr().Set([3] * len(mesh.faces))
-    surface.GetFaceVertexIndicesAttr().Set(mesh.faces.reshape(-1).tolist())
-    surface.CreateDoubleSidedAttr(True)
-    surface.CreateDisplayColorAttr([Gf.Vec3f(*_mean_color(mesh))])
-    if not deformableUtils.set_physics_surface_deformable_body(
-        stage, surface.GetPath()
-    ):
-        raise ValueError(f"{obj.name}: no surface deformable body from its mesh")
-    thickness = obj.cloth["thickness"]
-    collision = PhysxSchema.PhysxCollisionAPI.Apply(surface.GetPrim())
-    collision.CreateRestOffsetAttr(thickness / 2)
-    collision.CreateContactOffsetAttr(thickness / 2 + CLOTH_CONTACT_GAP)
-    material = root.GetPath().AppendChild("ClothMaterial")
-    friction = 0.5 if obj.friction is None else obj.friction
-    deformableUtils.add_surface_deformable_material(
-        stage,
-        material,
-        density=obj.mass / (float(mesh.area) * thickness),
-        static_friction=friction,
-        dynamic_friction=friction,
-        youngs_modulus=obj.cloth["youngs_modulus"],
-        poissons_ratio=obj.cloth["poissons_ratio"],
-        surface_thickness=thickness,
-    )
-    physicsUtils.add_physics_material_to_prim(stage, surface.GetPrim(), material)
-    stage.GetRootLayer().Export(str(path))
-    return path
-
-
-def _mean_color(mesh: trimesh.Trimesh) -> NDArray[np.float64]:
-    """A mesh's average color as USD's linear ``displayColor`` (0 to 1): its
-    texture's, else its vertices' (both sRGB)."""
-    image = getattr(getattr(mesh.visual, "material", None), "image", None)
-    colors = getattr(mesh.visual, "vertex_colors", None)
-    if image is not None:
-        srgb = np.asarray(image.convert("RGB"), float).reshape(-1, 3).mean(0) / 255.0
-    elif colors is not None:
-        srgb = np.asarray(colors, float)[:, :3].mean(0) / 255.0
-    else:
-        srgb = np.full(3, 0.7)
-    return _linear(srgb)
 
 
 def _linear(srgb: NDArray) -> NDArray[np.float64]:
     """sRGB colour (0 to 1) as the linear colour USD takes."""
     return np.asarray(srgb, float) ** 2.2
-
-
-def _freeze_cloth(prim_path: str) -> None:
-    """A spawned cloth as a plain surface: no longer a deformable body, so it stays as
-    it lies (a static collider)."""
-    stage = sim_utils.get_current_stage()
-    prim = stage.GetPrimAtPath(f"{prim_path}/{CLOTH_MESH}")
-    for api in ("OmniPhysicsSurfaceDeformableSimAPI", "OmniPhysicsDeformableBodyAPI"):
-        prim.RemoveAPI(api)
 
 
 def _move_rigid_body(link: Usd.Prim, root: Usd.Prim) -> None:
@@ -367,27 +307,15 @@ def with_object_usds(scene: SceneSpec, out_dir: str | Path) -> SceneSpec:
 
 def object_cfg(
     obj: ObjectSpec, index: int, kinematic: bool
-) -> RigidObjectCfg | ArticulationCfg | AssetBaseCfg:
+) -> RigidObjectCfg | ArticulationCfg:
     """An object from its USD (:func:`object_usd`); ``kinematic`` holds it where it
     is placed (for comparing geometry, not physics), an articulated one with its
-    joints as the scene has them. A cloth is spawned as a plain asset (Isaac Lab has
-    no cloth asset); the session simulates or freezes it."""
+    joints as the scene has them. Otherwise an articulated object's joints move as
+    their dynamics say (:func:`joint_actuators`)."""
     if obj.usd is None:
         raise ValueError(f"{obj.name} has no USD yet (with_object_usds)")
     pos, rot = _pose(obj.T_base_obj)
     prim_path = object_prim_path(index)
-    if obj.cloth:  # matte in its colour; the renderer's default material is glossy
-        colour = _mean_color(urdf_visual_meshes(obj.asset_path)[0].mesh)
-        return AssetBaseCfg(
-            prim_path=prim_path,
-            spawn=sim_utils.UsdFileCfg(
-                usd_path=obj.usd,
-                visual_material=sim_utils.PreviewSurfaceCfg(
-                    diffuse_color=tuple(colour), roughness=1.0
-                ),
-            ),
-            init_state=AssetBaseCfg.InitialStateCfg(pos=pos, rot=rot),
-        )
     if obj.joints:
         return ArticulationCfg(
             prim_path=prim_path,
@@ -400,13 +328,7 @@ def object_cfg(
             init_state=ArticulationCfg.InitialStateCfg(
                 pos=pos, rot=rot, joint_pos=dict(obj.joints)
             ),
-            actuators={
-                "joints": ImplicitActuatorCfg(
-                    joint_names_expr=[".*"],
-                    stiffness=JOINT_HOLD_STIFFNESS if kinematic else 0.0,
-                    damping=JOINT_DAMPING,
-                )
-            },
+            actuators={"joints": joint_actuators(obj, kinematic)},
         )
     return RigidObjectCfg(
         prim_path=prim_path,
@@ -421,11 +343,49 @@ def object_cfg(
     )
 
 
+def joint_actuators(obj: ObjectSpec, kinematic: bool) -> ImplicitActuatorCfg:
+    """An articulated object's joints' drives and friction: each joint's dynamics
+    (its dry friction an effort, as PhysX 5 takes it: the most torque or force it
+    resists with), or a stiff hold when ``kinematic``."""
+    assert obj.joints
+    names = list(obj.joints)
+    if kinematic:
+        return ImplicitActuatorCfg(
+            joint_names_expr=names,
+            stiffness=JOINT_HOLD_STIFFNESS,
+            damping=JOINT_HOLD_DAMPING,
+            friction=0.0,
+            dynamic_friction=0.0,
+        )
+    friction = {j: obj.dynamics(j).friction for j in names}
+    return ImplicitActuatorCfg(
+        joint_names_expr=names,
+        stiffness={j: obj.dynamics(j).stiffness for j in names},
+        damping={j: obj.dynamics(j).damping for j in names},
+        friction=friction,
+        dynamic_friction=friction,
+    )
+
+
+def joint_targets(
+    obj: ObjectSpec, articulation: Articulation, kinematic: bool
+) -> torch.Tensor:
+    """Where an articulated object's drives pull its joints, in its articulation's
+    order: each joint's rest (its spring's; a joint without one feels no pull), or
+    where the scene has it when ``kinematic``."""
+    assert obj.joints
+    values = [
+        obj.joints[j] if kinematic else obj.dynamics(j).rest
+        for j in articulation.joint_names
+    ]
+    return articulation.data.joint_pos.new_tensor(values)[None]
+
+
 # ----------------------------------------------------------------- support, cameras
 def support_cfg(scene: SceneSpec) -> AssetBaseCfg:
     """A static slab whose top face is the reconstructed support plane, in the
     support's colour (blue when the scene has none)."""
-    extent = scene.support_extent or SUPPORT_EXTENT
+    extent = support_extent(scene)
     below = make_transform(np.eye(3), [0.0, 0.0, -SUPPORT_THICKNESS / 2])
     pos, rot = _pose(scene.T_base_support @ below)
     return AssetBaseCfg(
@@ -559,14 +519,15 @@ def build_scene_cfg(
 
 
 # ------------------------------------------------------------------------ session
-def simulation_cfg(scene: SceneSpec, device: str) -> SimulationCfg:
-    """The simulation ``scene`` runs in: :data:`PHYSICS_DT` steps, PhysX where
-    :func:`~r2s2r.sim.isaac.physics_device` puts it (``device`` for a cloth, else the
-    CPU), gravity along the support's normal (:func:`~r2s2r.sim.isaac.gravity`), each
-    frame anti-aliased by itself (FXAA)."""
+def simulation_cfg(scene: SceneSpec) -> SimulationCfg:
+    """The simulation ``scene`` runs in: :data:`PHYSICS_DT` steps, PhysX on the CPU,
+    gravity along the support's normal (:func:`~r2s2r.sim.world.gravity`), each frame
+    anti-aliased by itself (FXAA). A scene of a few objects steps several times faster
+    on the CPU, and GPU PhysX mis-solves contacts on an articulated object's links:
+    what rests on a lid or a book's cover creeps up and tumbles off within seconds."""
     return SimulationCfg(
         dt=PHYSICS_DT,
-        device=physics_device(scene, device),
+        device="cpu",
         gravity=gravity(scene),
         # Not DLSS, which the rendering preset turns on as the context starts:
         # every frame rendered at half size and blended with earlier ones (the
@@ -580,9 +541,9 @@ class Session:
     interactive scene, the robot's arm and gripper joints, the objects by name.
 
     ``robot_spec`` is the scene's embodiment; ``kinematic_objects`` holds the objects
-    where they are placed (a cloth frozen as it lies); ``device`` is where PhysX runs
-    a scene with a cloth (any other runs on the CPU, :func:`simulation_cfg`);
-    ``cameras`` as for :func:`build_scene_cfg`.
+    where they are placed; ``cameras`` as for :func:`build_scene_cfg`. An articulated
+    object starts with its joints where the scene has them, its drives pulling them
+    toward their rest (:func:`joint_targets`).
     """
 
     def __init__(
@@ -590,32 +551,14 @@ class Session:
         spec: SceneSpec,
         robot_spec: RobotSpec,
         kinematic_objects: bool,
-        device: str,
         cameras: Iterable[tuple[CameraSpec, NDArray]] = (),
     ) -> None:
         self.robot_spec = robot_spec
-        self.sim = SimulationContext(simulation_cfg(spec, device))
+        self.sim = SimulationContext(simulation_cfg(spec))
         self.scene = make_scene(
             build_scene_cfg(spec, robot_spec, kinematic_objects, cameras), robot_spec
         )
-        # Cloths by name: their poses (a cloth's frame does not move) and prim paths.
-        env = self.scene.env_prim_paths[0]
-        self._cloths = {
-            obj.name: (obj.T_base_obj, object_prim_path(i, env))
-            for i, obj in enumerate(spec.objects)
-            if obj.cloth
-        }
-        if kinematic_objects:
-            for _, prim_path in self._cloths.values():
-                _freeze_cloth(prim_path)
         self.sim.reset()
-        self._cloth_views: dict[str, Any] = {}
-        if self._cloths and not kinematic_objects:
-            views = physics_tensors.create_simulation_view("torch")
-            self._cloth_views = {  # one per cloth (a view takes one path pattern)
-                name: views.create_surface_deformable_body_view(f"{path}/{CLOTH_MESH}")
-                for name, (_, path) in self._cloths.items()
-            }
         self.dt = self.sim.get_physics_dt()
         self.articulation: Articulation = self.scene["robot"]
         self.arm_ids, _ = self.articulation.find_joints(
@@ -625,11 +568,14 @@ class Session:
             self.articulation, robot_spec
         )
         self.names = {object_key(i): obj.name for i, obj in enumerate(spec.objects)}
-        for obj in self._objects().values():
+        specs = {obj.name: obj for obj in spec.objects}
+        for name, obj in self._objects().items():
             if isinstance(obj, Articulation):  # the joints as the scene has them
                 pos = obj.data.default_joint_pos
                 obj.write_joint_state_to_sim(pos, torch.zeros_like(pos))
-                obj.set_joint_position_target(pos)  # held there when kinematic
+                obj.set_joint_position_target(
+                    joint_targets(specs[name], obj, kinematic_objects)
+                )
 
     def gripper_targets(self, level: float) -> torch.Tensor:
         """The gripper joints' positions at opening ``level`` (0 open, 1 closed)."""
@@ -645,24 +591,12 @@ class Session:
     def _objects(self) -> dict[str, RigidObject | Articulation]:
         """The scene's bodies (rigid or articulated) by name."""
         entities = {**self.scene.rigid_objects, **self.scene.articulations}
-        return {
-            name: entities[key]
-            for key, name in self.names.items()
-            if name not in self._cloths
-        }
-
-    def cloth_points(self) -> dict[str, NDArray[np.float64]]:
-        """Every simulated cloth's surface points (its mesh's vertices, in order) in the
-        robot base frame."""
-        return {
-            name: view.get_simulation_nodal_positions()[0].cpu().numpy().astype(float)
-            for name, view in self._cloth_views.items()
-        }
+        return {name: entities[key] for key, name in self.names.items()}
 
     def object_poses(self) -> dict[str, NDArray[np.float64]]:
         """Every object's pose in the robot base frame (the environment is at the
-        origin); a cloth's frame stays where the scene put it."""
-        out = {name: T for name, (T, _) in self._cloths.items()}
+        origin)."""
+        out = {}
         for name, obj in self._objects().items():
             pos = obj.data.root_pos_w[0].cpu().numpy()
             quat = obj.data.root_quat_w[0].cpu().numpy()

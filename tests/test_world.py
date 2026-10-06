@@ -1,11 +1,11 @@
-"""Tests for sim/isaac.py: where PhysX runs a scene, which way gravity points, and
-the support's colour."""
+"""Tests for sim/world.py, what every simulator does the same: which way gravity
+points, the support's colour, a settling's report."""
 
 import cv2
 import numpy as np
 import pytest
 
-from r2s2r.sim.isaac import gravity, physics_device, support_color
+from r2s2r.sim.world import gravity, settled, support_color
 from r2s2r.structs import (
     CameraSpec,
     Capture,
@@ -32,17 +32,6 @@ def _scene(objects, T_base_support=np.eye(4)):
 
 def _object(name, **kwargs):
     return ObjectSpec(name, name, f"{name}.urdf", np.eye(4), **kwargs)
-
-
-def test_a_scene_runs_on_the_cpu_unless_it_has_a_cloth():
-    """Rigid and articulated objects on the CPU; a cloth needs the GPU."""
-    box = _object("box", joints={"lid_hinge": 0.0})
-    towel = _object(
-        "towel",
-        cloth={"thickness": 0.002, "youngs_modulus": 5e5, "poissons_ratio": 0.3},
-    )
-    assert physics_device(_scene([_object("cup"), box]), "cuda:0") == "cpu"
-    assert physics_device(_scene([box, towel]), "cuda:0") == "cuda:0"
 
 
 def test_gravity_is_along_the_supports_normal():
@@ -96,3 +85,33 @@ def test_a_scene_keeps_its_support_colour(tmp_path):
     )
     coloured.save(tmp_path / "b")
     assert SceneSpec.load(tmp_path / "b").support_color == (0.78, 0.64, 0.36)
+
+
+def test_a_settled_scene_has_its_objects_where_they_came_to_rest(tmp_path):
+    """The objects at their poses and joints after settling; how far each moved,
+    turned and dropped, and each joint; the support colour kept when the capture
+    shows none."""
+    box = _object("box", joints={"hinge": -0.8})
+    scene = _scene([box, _object("cup")])
+    moved = make_transform(np.eye(3), [0.003, 0.0, -0.004])
+    capture = Capture("c", "test", "franka_panda", "", {}, [], (0, 1), root=tmp_path)
+    settled_scene, report = settled(
+        scene,
+        capture,
+        2.0,
+        ({"box": np.eye(4), "cup": np.eye(4)}, {"box": moved, "cup": np.eye(4)}),
+        ({"box": {"hinge": -0.8}}, {"box": {"hinge": -0.75}}),
+    )
+    box_after, cup_after = settled_scene.objects
+    assert np.allclose(box_after.T_base_obj, moved) and box_after.joints == {
+        "hinge": -0.75
+    }
+    assert cup_after.joints is None
+    assert report["objects"]["box"] == {
+        "moved_m": 0.005,
+        "turned_deg": 0.0,
+        "dropped_m": 0.004,
+        "joints_moved": {"hinge": 0.05},
+    }
+    assert settled_scene.provenance["settle"] is report
+    assert "too few pixels" in report["support_color"]

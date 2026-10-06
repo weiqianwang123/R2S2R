@@ -200,8 +200,7 @@ const PANELS = {
     let html = `<div class="grid">${objs.map((o, k) => {
       const src = inRun(o.preview) ? thumbUrl(o.preview, 480) : inRun(o.glb) ? `/preview/${enc(o.glb)}?up=${encodeURIComponent(o.up)}&${Q}` : '';
       const iou = o.iou != null ? `<span class="${iouClass(o.iou)}" title="mean silhouette IoU over the fitted frames">IoU ${fmt(o.iou)}</span>` : '';
-      const joints = o.joints ? `<span class="muted" title="articulated: parts that move">${o.joints} joint${o.joints > 1 ? 's' : ''}</span>`
-        : o.cloth ? '<span class="muted" title="a cloth: its surface drapes in simulation">cloth</span>' : '';
+      const joints = o.joints ? `<span class="muted" title="articulated: parts that move">${o.joints} joint${o.joints > 1 ? 's' : ''}</span>` : '';
       return `<div class="card pick ${S.selected === k ? 'selected' : ''}" data-object="${k}">${src ? `<img src="${src}" data-object="${k}">` : ''}<div class="cap"><b>${esc(o.name)}</b>${joints}${iou}</div></div>`;
     }).join('')}</div>`;
     const o = objs[S.selected];
@@ -221,14 +220,18 @@ const PANELS = {
   physics: () => {
     const rows = S.state.physics;
     if (!rows?.length) return notYet('4');
-    const cloth = (c) => `<div class="phys-item"><b>cloth</b> <span class="muted">${fmt(c.thickness * 1000, 1)} mm thick
-      · Young's modulus ${Number(c.youngs_modulus).toExponential(1)} Pa${c.poissons_ratio != null ? ` · Poisson's ratio ${fmt(c.poissons_ratio)}` : ''}</span></div>`;
+    const dynamics = (j) => (j.type === 'prismatic' ? ['N s/m', 'N', 'N/m'] : ['N m s/rad', 'N m', 'N m/rad'])
+      .map((unit, k) => [['damping', 'friction', 'stiffness'][k], unit])
+      .filter(([key]) => j[key] != null)
+      .map(([key, unit]) => `${key} ${fmt(j[key], 3)} ${unit}`)
+      .concat(j.stiffness ? [`rest ${jointValue(j.type, j.rest ?? 0)}`] : []).join(' · ');
     const joint = (j) => `<div class="phys-item"><b>${esc(j.name)}</b> <span class="muted">${esc(j.type)}
       · ${j.limits ? j.limits.map((v) => jointValue(j.type, v)).join(' to ') : '—'} · recorded ${jointValue(j.type, j.position)}</span>
+      ${dynamics(j) ? `<div class="muted">${dynamics(j)}</div>` : ''}
       ${j.why ? `<p class="why">${esc(j.why)}</p>` : ''}</div>`;
     return rows.map((r) => `<details class="phys"><summary><span class="n">${esc(r.name)}</span>
-      <span class="muted">${fmt(r.mass, 3)} kg · friction ${fmt(r.friction)}${r.joints.length ? ` · ${r.joints.length} joint${r.joints.length > 1 ? 's' : ''}` : ''}${r.cloth ? ' · cloth' : ''}</span></summary>
-      <p>${esc(r.why || 'no reason written')}</p>${r.joints.map(joint).join('')}${r.cloth ? cloth(r.cloth) : ''}</details>`).join('');
+      <span class="muted">${fmt(r.mass, 3)} kg · friction ${fmt(r.friction)}${r.joints.length ? ` · ${r.joints.length} joint${r.joints.length > 1 ? 's' : ''}` : ''}</span></summary>
+      <p>${esc(r.why || 'no reason written')}</p>${r.joints.map(joint).join('')}</details>`).join('');
   },
 };
 
@@ -477,7 +480,7 @@ function applyVisibility() {
 }
 
 // Converted OBJ materials can come out fully metallic, which renders black without an
-// environment map; a cloth is an open surface, seen from both sides.
+// environment map; an open surface is seen from both sides.
 function matte(material) {
   for (const m of [].concat(material)) {
     if ('metalness' in m) { m.metalness = 0; m.roughness = 0.8; }

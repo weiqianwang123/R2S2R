@@ -17,7 +17,7 @@ from r2s2r.pipeline import run as run_module
 from r2s2r.pipeline.agentic import method as agentic
 from r2s2r.pipeline.run import StageFailed, is_done, run
 from r2s2r.pipeline.stages import VALIDATORS
-from r2s2r.sim.isaac import settle_summary
+from r2s2r.sim.world import settle_summary
 from r2s2r.structs import ObjectSpec, SceneSpec
 from r2s2r.transforms import look_at
 from r2s2r.workspace import Workspace
@@ -116,9 +116,11 @@ def test_run_dir_hides_metadata_and_names_frames(tmp_path):
     assert Workspace.find(tmp_path / "run" / "inputs").root == ws.root
     assert ws.read_run() == {
         "method": "agentic",
+        "sim": "isaac",
         "capture": "inputs/capture",
         "stages": {},
     }
+    assert ws.sim == "isaac"
     with pytest.raises(FileExistsError):
         Workspace.create(ws.capture, tmp_path / "run", "agentic")
 
@@ -162,8 +164,6 @@ def test_stage_checks_say_what_is_wrong(tmp_path):
     problems = VALIDATORS["3"](ws, s3)
     assert len(problems) == 2
     assert "lid's mesh not found" in problems[0] and "outside its limits" in problems[1]
-    _objects_product(s3, cloth={"thickness": 0.002})
-    assert VALIDATORS["3"](ws, s3) == ["box: cloth needs thickness and youngs_modulus"]
 
     _scene_product(s4, ws, extra="notes.md")
     assert VALIDATORS["4"](ws, s4) == ["output.json missing"]
@@ -280,29 +280,36 @@ def test_failed_stages_are_recorded(tmp_path):
 
 
 def test_settling_and_final_replay_are_shared(tmp_path, monkeypatch):
-    """Stage 5 settles stage 4's scene (its objects referred to, not copied); the final
-    scene is replayed once, and again only when it changes."""
+    """Stage 5 settles stage 4's scene (its objects referred to, not copied) in the
+    run's simulator; the final scene is replayed there once, and again only when it
+    changes."""
     replays = []
 
-    def settle(scene_dir, capture_dir, out_dir):
+    def settle(scene_dir, capture_dir, out_dir, sim):
         assert capture_dir == tmp_path.resolve() / "run/inputs/capture"
+        assert sim == "mujoco"
         SceneSpec.load(scene_dir).save(out_dir)
         return {"scene": str(out_dir / "scene.json"), "objects": {"box": {}}}
 
-    def replay(scene_dir, capture_dir, out_dir):  # pylint: disable=unused-argument
-        replays.append(scene_dir)
+    def replay(scene_dir, capture_dir, out_dir, sim):  # pylint: disable=unused-argument
+        replays.append((scene_dir, sim))
         _write(out_dir / "compare/compare.json", {"frames": []})
         return {"compare_dir": str(out_dir / "compare"), "sheets": [], "frames": 0}
 
-    monkeypatch.setattr(run_module.isaac, "settle", settle)
-    monkeypatch.setattr(run_module.isaac, "replay", replay)
-    log = run(_capture(tmp_path).root, tmp_path / "run", FakeMethod())
+    monkeypatch.setattr(run_module.sim, "settle", settle)
+    monkeypatch.setattr(run_module.sim, "replay", replay)
+    log = run(
+        _capture(tmp_path).root, tmp_path / "run", FakeMethod(), simulator="mujoco"
+    )
+    assert log["sim"] == "mujoco"
+    with pytest.raises(ValueError, match="simulates its scenes in mujoco"):
+        run(tmp_path / "run", None, FakeMethod(), simulator="isaac")
     assert [log["stages"][k]["status"] for k in "2345"] == ["done"] * 4
     s5 = tmp_path / "run/s5_settle"
     assert json.loads((s5 / "output.json").read_text())["scene"] == "scene/scene.json"
     saved = json.loads((s5 / "scene/scene.json").read_text())
     assert saved["objects"][0]["asset_path"].startswith("../../s4_scene/scene/objects")
-    assert replays == [s5.resolve() / "scene"]
+    assert replays == [(s5.resolve() / "scene", "mujoco")]
     final = log["final_replay"]
     assert final["stage"] == "5" and final["status"] == "done"
     assert final["compare_dir"] == "s5_settle/final_replay/compare"
@@ -314,15 +321,8 @@ def test_settling_and_final_replay_are_shared(tmp_path, monkeypatch):
     run(tmp_path / "run", None, FakeMethod(), ("5",))
     assert len(replays) == 2
 
-    report = {
-        "objects": {
-            "box": {"moved_m": 0.0012, "turned_deg": 0.31},
-            "towel": {"moved_m": 0.0087, "mean_moved_m": 0.002},  # a cloth turns not
-        }
-    }
-    assert settle_summary(report) == (
-        "box moved 0.001 m, turned 0.3 deg, towel moved 0.009 m"
-    )
+    report = {"objects": {"box": {"moved_m": 0.0012, "turned_deg": 0.31}}}
+    assert settle_summary(report) == "box moved 0.001 m, turned 0.3 deg"
 
 
 # ------------------------------------------------------------------ agentic method

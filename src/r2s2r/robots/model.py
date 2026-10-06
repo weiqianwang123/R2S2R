@@ -116,6 +116,19 @@ class GripperPoser:
         return np.array([data.qpos[model.joint(j).qposadr[0]] for j in self.joints])
 
 
+def prepare_robot(mjspec: Any, robot: RobotSpec) -> None:
+    """Make ``robot``'s arm, in ``mjspec`` (a world with the robot in it), hold joint
+    positions and feel no gravity, as a real arm's controller compensates it; the
+    objects feel it. Call before compiling: MuJoCo counts the compensated bodies
+    then."""
+    robot.position_control(mjspec)
+    base = mjspec.joint(robot.arm_joints[0]).parent
+    while base.parent.name != mjspec.worldbody.name:
+        base = base.parent
+    for body in (base, *base.find_all(mujoco.mjtObj.mjOBJ_BODY)):
+        body.gravcomp = 1.0
+
+
 def in_subtree(model: Any, body: int, root: int) -> bool:
     """Whether ``body`` is ``root`` or hangs below it."""
     while body != root:

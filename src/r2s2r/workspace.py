@@ -1,8 +1,8 @@
 """A run's directory, whichever method makes it::
 
     RUN/
-      run.json            the method, the capture, and every stage's status
-                          (:mod:`r2s2r.pipeline.run`)
+      run.json            the method, the simulator, the capture, and every stage's
+                          status (:mod:`r2s2r.pipeline.run`)
       inputs/
         capture/          the capture, copied (only the chosen cameras), its metadata
                           dropped but how its depth was made (a simulated capture's
@@ -41,6 +41,7 @@ RUN_FILENAME = "run.json"
 CAPTURE_DIR = "inputs/capture"
 # Metadata a capture keeps in the run's copy: how its depth was made.
 KEPT_METADATA = ("depth",)
+DEFAULT_SIM = "isaac"  # the simulator of a run that names none (r2s2r.sim.SIMS)
 SHEET_MAX = 24  # thumbnails per contact sheet
 SHEET_WIDTH = 320
 
@@ -61,9 +62,10 @@ class Workspace:
         root: str | Path,
         method: str,
         cameras: list[str] | None = None,
+        sim: str = DEFAULT_SIM,
     ) -> Workspace:
-        """Copy ``capture`` into a new run of ``method`` at ``root`` and index its
-        frames.
+        """Copy ``capture`` into a new run of ``method`` at ``root``, its scenes
+        simulated in ``sim`` (:data:`r2s2r.sim.SIMS`), and index its frames.
 
         Only ``cameras`` (roles or serials; default: all) are kept, and only the files
         their frames refer to are copied. Stereo frames of the static period without
@@ -94,7 +96,9 @@ class Workspace:
             json.dumps(ws.frame_index(), indent=1), encoding="utf-8"
         )
         ws.write_sheets()
-        ws.write_run({"method": method, "capture": CAPTURE_DIR, "stages": {}})
+        ws.write_run(
+            {"method": method, "sim": sim, "capture": CAPTURE_DIR, "stages": {}}
+        )
         return ws
 
     @classmethod
@@ -114,6 +118,12 @@ class Workspace:
         raise FileNotFoundError(f"no {RUN_FILENAME} in {here} or above: pass --ws RUN")
 
     # -------------------------------------------------------------- run.json
+    @property
+    def sim(self) -> str:
+        """The simulator the run's scenes settle and replay in (a run made before
+        there was a choice: Isaac Lab's)."""
+        return str(self.read_run().get("sim", DEFAULT_SIM))
+
     def read_run(self) -> dict[str, Any]:
         """``run.json``."""
         run: dict[str, Any] = json.loads(

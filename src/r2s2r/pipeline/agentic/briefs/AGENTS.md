@@ -78,8 +78,8 @@ may be relative to the directory you run them in.
 - `r2s2r tool assemble OBJECTS_JSON --out SCENE_DIR`: the simulation-ready scene
   (`scene.json`): collision parts (CoACD), inertia, flat bases for resting objects.
 - `r2s2r tool settle SCENE_DIR --out SCENE_DIR2`: the objects come to rest under
-  gravity in Isaac Lab (robot held still); how far each moved.
-- `r2s2r tool replay SCENE_DIR --out DIR`: Isaac Lab replays the static period (the
+  gravity in {{sim}}, this run's simulator (robot held still); how far each moved.
+- `r2s2r tool replay SCENE_DIR --out DIR`: {{sim}} replays the static period (the
   robot at every recorded state, the objects held) and renders every camera at every
   frame; `DIR/compare/` compares each render with the real frame.
 
@@ -112,7 +112,10 @@ then the part that does not, and `mass` is the whole object's:
                  "origin": [x, y, z],                    a point on the axis, and
                  "axis": [x, y, z],                      its direction: object frame, m
                  "limits": [lower, upper],               rad or m
-                 "position": 0.0}]                       where the joint is as recorded
+                 "position": 0.0,                        where the joint is as recorded
+                 "damping": 0.01,                        N m s/rad (N s/m): slows it
+                 "friction": 0.0,                        N m (N): to move it at all
+                 "stiffness": 0.0, "rest": 0.0}]         N m/rad (N/m), toward rest
 ```
 
 Everything is as recorded: the parts' meshes where the parts were, the joints'
@@ -121,20 +124,16 @@ Everything is as recorded: the parts' meshes where the parts were, the joints'
 direction of `axis` and the sign of `position` follow the right-hand rule. Name parts
 and joints in lower case, digits and underscores (`base` and `visual` are taken).
 
-A cloth (a towel, a napkin, a cloth over a bowl) is a thin surface that drapes. Its
-`mesh` is the surface as it lies (an open triangle mesh in metres, no thickness, a few
-hundred to a few thousand triangles, evenly sized, one piece whose triangles share
-their vertices: one UV chart if textured, as a seam would split the cloth). It is
-unstretched as it lies and bends back toward flat; its material says how it behaves,
-and `mass` is the whole cloth's:
-
-```
-     "cloth": {"thickness": 0.002,                      m
-               "youngs_modulus": 5e5,                   Pa: how hard it stretches
-               "poissons_ratio": 0.3}                   optional, 0 to 0.5
-```
-
-In simulation it drapes over what is under it while settling, then holds that shape.
+A joint's dynamics say how its part moves when nothing holds it: `damping` slows it in
+proportion to its speed; `friction` is the torque (force) needed before it moves at all,
+so a part whose load stays below it stays where it is left (a stiff lid, a drawer on its
+runners); `stiffness` pulls it back toward `rest` (within the limits), as a book's spine
+pulls its cover shut or a door closer its door. The recording shows the scene still, so
+they are your estimate of how such an object behaves: compare them with the torque
+gravity puts on the part, its mass times 9.81 times the distance of its centre from the
+axis. A friction above it keeps the part wherever it is left; a spring whose
+`stiffness` times the turn away from `rest` exceeds it pulls the part back from there.
+Leaving them out makes the joint free, which is a guess too.
 
 Relative paths are relative to the objects file. `fit.json` gives `scale`,
 `T_base_obj` and `up` in this form. The support's `extent` is the size of the simulated

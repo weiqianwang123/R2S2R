@@ -7,7 +7,9 @@ import json
 import re
 from typing import Any
 
-from r2s2r.sim import isaac
+from r2s2r import sim
+from r2s2r.sim import SIMS
+from r2s2r.sim.world import SETTLE_SECONDS
 from r2s2r.workspace import Workspace
 
 NUMBER_LIST = re.compile(r"\[\s*((?:-?[\d.eE+-]+,?\s*)+)\]")
@@ -146,12 +148,22 @@ def _assemble(args: argparse.Namespace) -> None:
 
 
 def _settle(args: argparse.Namespace) -> None:
-    print_json(isaac.settle(args.scene, _ws(args).capture.root, args.out, args.seconds))
+    ws = _ws(args)
+    print_json(
+        sim.settle(
+            args.scene, ws.capture.root, args.out, args.sim or ws.sim, args.seconds
+        )
+    )
 
 
 def _replay(args: argparse.Namespace) -> None:
-    capture = _ws(args).capture.root
-    print_json(isaac.replay(args.scene, capture, args.out, args.cameras, args.every))
+    ws = _ws(args)
+    sim_ = args.sim or ws.sim
+    print_json(
+        sim.replay(
+            args.scene, ws.capture.root, args.out, sim_, args.cameras, args.every
+        )
+    )
 
 
 def add_tool_parser(sub: Any) -> None:
@@ -234,13 +246,15 @@ def add_tool_parser(sub: Any) -> None:
     p.add_argument("--max-hulls", type=int, default=16)
     p.add_argument("--out", required=True)
 
-    p = add("settle", _settle, "let the objects come to rest (Isaac Lab)")
+    p = add("settle", _settle, "let the objects come to rest (the run's simulator)")
     p.add_argument("scene")
-    p.add_argument("--seconds", type=float, default=isaac.SETTLE_SECONDS)
+    p.add_argument("--seconds", type=float, default=SETTLE_SECONDS)
+    p.add_argument("--sim", choices=SIMS, help="default: the run's")
     p.add_argument("--out", required=True)
 
-    p = add("replay", _replay, "replay the recording in the scene and compare (Isaac)")
+    p = add("replay", _replay, "replay the recording in the scene and compare")
     p.add_argument("scene")
+    p.add_argument("--sim", choices=SIMS, help="default: the run's")
     p.add_argument("--cameras", nargs="+", help="roles (default: all)")
     p.add_argument("--every", type=int, default=1, help="every n-th frame step")
     p.add_argument("--out", required=True)
