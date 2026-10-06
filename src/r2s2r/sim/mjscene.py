@@ -10,8 +10,8 @@ plane, and colliding as that plane (:func:`_add_support`);
 every object from its URDF at its ``T_base_obj``, a free body (an articulated one with
 its links under it, joined by its joints with their dynamics,
 :class:`~r2s2r.structs.JointDynamics`), its collision parts convex colliders with its
-friction, its visual meshes textured and not colliding. Gravity is along the support's
-normal (:func:`~r2s2r.sim.world.gravity`).
+friction, its visual meshes textured and not colliding; behind it all, a neutral grey
+sky. Gravity is along the support's normal (:func:`~r2s2r.sim.world.gravity`).
 
 MuJoCo's URDF import cannot take the assembled URDFs (it drops the ``collision/``
 directory from mesh paths), so the bodies are built from the URDF here.
@@ -47,6 +47,9 @@ VISUAL_GROUP, COLLISION_GROUP = 2, 3  # rendered by default, and not
 FRICTION_SOLREF = (2 * TIMESTEP, 1.0)
 FRICTION_SOLIMP = (0.99, 0.999, 0.001, 0.5, 2.0)
 SUPPORT_RGBA = (0.2, 0.45, 0.9, 1.0)  # when the scene has no support colour
+# The background, a room's neutral greys from above to below (Isaac Lab's is a dim dome):
+# no geometry, so it gives no depth.
+SKY_RGB = ((0.8, 0.82, 0.84), (0.4, 0.4, 0.42))
 JOINT_KINDS = {
     "revolute": mujoco.mjtJoint.mjJNT_HINGE,
     "prismatic": mujoco.mjtJoint.mjJNT_SLIDE,
@@ -195,6 +198,15 @@ def scene_spec(
         type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL,
         dir=[-0.5, 0.0, -1.0],
         diffuse=[0.5, 0.5, 0.5],
+    )
+    spec.add_texture(
+        name="sky",
+        type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
+        builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
+        rgb1=list(SKY_RGB[0]),
+        rgb2=list(SKY_RGB[1]),
+        width=256,
+        height=1536,
     )
     _add_support(spec, scene)
     for obj in scene.objects:
