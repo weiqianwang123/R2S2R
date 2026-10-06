@@ -1,8 +1,9 @@
 """What every simulator does the same with a reconstructed scene, whichever runs it
 (Isaac Lab, :mod:`r2s2r.sim.isaac`; MuJoCo, :mod:`r2s2r.sim.mujoco`): gravity along the
-support's normal, the support's outline, how long the objects get to come to rest and how far each moved, the
-support's colour from the capture, which of the capture's steps a replay renders, each
-rendered frame written beside the real one, and a replay's numbers.
+support's normal, the support's outline, how long the objects get to come to rest and
+how far each moved, the support's colour from the capture, which of the capture's steps
+a replay renders, each rendered frame written beside the real one, and a replay's
+numbers.
 
 Every pose is in the robot base frame, every simulator's world frame.
 """
