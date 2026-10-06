@@ -18,7 +18,7 @@ from r2s2r.tools import check as check_module
 from r2s2r.tools import cli as tools_cli
 from r2s2r.tools.check import check
 from r2s2r.tools.geometry import fit_plane, parse_masks, pattern_search, view_points
-from r2s2r.tools.objects import articulation_problems, assemble
+from r2s2r.tools.objects import articulation_problems, assemble, physics_problems
 from r2s2r.transforms import invert, look_at, make_transform, transform_points
 from r2s2r.workspace import Workspace
 
@@ -299,6 +299,35 @@ def test_a_joints_dynamics_reach_the_scene(tmp_path):
     ):
         objects["objects"][0]["joints"] = [{**joint, **broken}]
         assert any(problem in p for p in articulation_problems(objects["objects"][0]))
+
+
+def test_ranges_reach_the_scene_and_bad_ones_are_refused(tmp_path):
+    """An object's and its joints' ranges go into the scene and the report; a range
+    that misses its estimate, goes below 0, puts a rest outside the limits or has no
+    estimate is refused."""
+    ws, objects, _ = _hinged_box(tmp_path)
+    box = objects["objects"][0]
+    joint = box["joints"][0]
+    box.update(mass=0.3, mass_range=[0.2, 0.45], friction=0.6)
+    box["joints"] = [{**joint, "damping": 0.01, "damping_range": [0.002, 0.05]}]
+    (tmp_path / "objects.json").write_text(json.dumps(objects))
+    report = assemble(ws, tmp_path / "objects.json", tmp_path / "scene", "none")
+    (obj,) = SceneSpec.load(tmp_path / "scene").objects
+    assert obj.ranges == {"mass": (0.2, 0.45), "hinge.damping": (0.002, 0.05)}
+    assert report["objects"]["box"]["ranges"]["mass"] == [0.2, 0.45]
+    lower, upper = joint["limits"]
+    for broken, problem in (
+        ({"mass_range": [0.35, 0.45]}, "must hold the estimate 0.3"),
+        ({"friction_range": "wide"}, "must be two numbers"),
+        ({"mass": None}, "mass_range needs a mass too"),
+    ):
+        assert any(problem in p for p in physics_problems({**box, **broken}))
+    for broken, problem in (
+        ({"friction_range": [-0.1, 0.1]}, "must lie within [0.0, inf]"),
+        ({"rest_range": [lower - 1.0, upper]}, "must lie within"),
+    ):
+        entry = {**box, "joints": [{**joint, **broken}]}
+        assert any(problem in p for p in articulation_problems(entry))
 
 
 def test_check_cli_reads_joint_positions(monkeypatch):

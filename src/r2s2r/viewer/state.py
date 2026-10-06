@@ -26,7 +26,7 @@ from r2s2r.pipeline.stages import (
     support_file,
 )
 from r2s2r.tools.geometry import load_support
-from r2s2r.tools.objects import DYNAMICS_KEYS
+from r2s2r.tools.objects import DYNAMICS_KEYS, RANGE
 from r2s2r.workspace import RUN_FILENAME, Workspace
 
 ACTIVE_S = 15 * 60  # a running stage that wrote nothing for longer has stopped
@@ -282,6 +282,11 @@ def _physics(d: Path) -> list[dict[str, Any]]:
             "name": name,
             "mass": o.get("mass"),
             "friction": o.get("friction"),
+            "ranges": {
+                key: o.get(f"{key}{RANGE}")
+                or written.get(name, {}).get(f"{key}{RANGE}")
+                for key in ("mass", "friction")
+            },
             "why": o.get("why"),
             "joints": [
                 {
@@ -290,6 +295,7 @@ def _physics(d: Path) -> list[dict[str, Any]]:
                     "limits": j.get("limits"),
                     "position": j.get("position"),
                     **{key: j.get(key) for key in DYNAMICS_KEYS},
+                    "ranges": {key: j.get(f"{key}{RANGE}") for key in DYNAMICS_KEYS},
                     "why": _joint_why(o.get("joints"), j.get("name")),
                 }
                 for j in written.get(name, {}).get("joints") or []

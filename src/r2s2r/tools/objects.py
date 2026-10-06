@@ -12,6 +12,8 @@ An objects file (JSON) describes a scene the way a method's stage 3 leaves it::
          "T_base_obj": 4x4,                    # then this rigid pose (base frame)
          "up": "y",                            # the mesh file's up axis (default z)
          "mass": 0.3, "friction": 0.6,         # kg; optional until assembly
+         "mass_range": [0.2, 0.45],            # optional: where the true value may
+         "friction_range": [0.4, 0.9],         # lie, the estimate within it
          "collision": ["hull_0.obj", ...]}     # optional: convex parts, as the mesh
       ]
     }
@@ -32,13 +34,18 @@ that move, and the joints that move them; ``mesh`` is then the part that does no
                     "limits": [0.0, 1.9],                # rad or m
                     "position": 0.0,                     # as recorded
                     "damping": 0.01, "friction": 0.0,    # optional: how it moves
-                    "stiffness": 0.0, "rest": 0.0}]      # (r2s2r.structs.JointDynamics)
+                    "stiffness": 0.0, "rest": 0.0,       # (r2s2r.structs.JointDynamics)
+                    "damping_range": [0.002, 0.05]}]     # and any of their ranges
 
 Everything is as recorded: the parts' meshes where they were, the joints' origins and
 axes in the object's frame (metres, after ``scale``), at their recorded positions.
 Assembly turns that into a URDF whose joints are zero where they are at their origins,
 and puts each joint's dynamics in the scene (a joint without them is free). Part and
 joint names are lower case, digits and underscores; ``base`` and ``visual`` are taken.
+
+A physical parameter the estimate is unsure of may have a range (``<parameter>_range``:
+low, high, the estimate within it), which the scene keeps
+(:attr:`r2s2r.structs.ObjectSpec.ranges`) for a simulation to draw from.
 """
 
 from __future__ import annotations
@@ -88,6 +95,7 @@ logger = logging.getLogger(__name__)
 HUNYUAN_REPO = SIMFOUNDRY_DIR / "deps" / "Hunyuan3D-2.1"
 DEFAULT_DENSITY = 500.0  # kg/m^3, when an object has no mass
 DYNAMICS_KEYS = ("damping", "friction", "stiffness", "rest")  # a joint's, optional
+RANGE = "_range"  # a parameter's range: its key with this suffix
 
 
 # ----------------------------------------------------------------------- generate
@@ -311,7 +319,58 @@ def _dynamics_problems(joint: dict[str, Any], label: str) -> list[str]:
     lower, upper = (float(v) for v in joint["limits"])
     if dynamics.stiffness > 0 and not lower - 1e-6 <= dynamics.rest <= upper + 1e-6:
         problems.append(f"{label}: rest {dynamics.rest} is outside its limits")
+    for key in DYNAMICS_KEYS:
+        if joint.get(key + RANGE) is not None:
+            problems += _range_problems(
+                joint[key + RANGE],
+                getattr(dynamics, key),
+                f"{label}: {key}{RANGE}",
+                (lower, upper) if key == "rest" else (0.0, np.inf),
+            )
     return problems
+
+
+def physics_problems(obj: dict[str, Any]) -> list[str]:
+    """What is wrong with an object's mass, friction and their ranges (its joints'
+    are :func:`articulation_problems`')."""
+    name, problems = obj.get("name", "?"), []
+    for key in ("mass", "friction"):
+        if obj.get(key + RANGE) is None:
+            continue
+        if obj.get(key) is None:
+            problems.append(f"{name}: {key}{RANGE} needs a {key} too")
+            continue
+        problems += _range_problems(
+            obj[key + RANGE], float(obj[key]), f"{name}: {key}{RANGE}", (0.0, np.inf)
+        )
+    return problems
+
+
+def _range_problems(
+    given: Any, estimate: float, label: str, bounds: tuple[float, float]
+) -> list[str]:
+    """What is wrong with a parameter's range: two numbers, low to high, within
+    ``bounds``, the estimate between them."""
+    try:
+        low, high = (float(v) for v in given)
+    except (TypeError, ValueError):
+        return [f"{label} must be two numbers, [low, high]"]
+    if not low <= estimate <= high:
+        return [f"{label} [{low}, {high}] must hold the estimate {estimate}"]
+    if low < bounds[0] - 1e-9 or high > bounds[1] + 1e-9:
+        return [f"{label} [{low}, {high}] must lie within {list(bounds)}"]
+    return []
+
+
+def object_ranges(obj: dict[str, Any]) -> dict[str, tuple[float, float]]:
+    """An object's ranges from its entry in an objects file, as the scene keeps them
+    (:attr:`r2s2r.structs.ObjectSpec.ranges`)."""
+    entries = [(key, obj.get(key + RANGE)) for key in ("mass", "friction")] + [
+        (f"{joint['name']}.{key}", joint.get(key + RANGE))
+        for joint in obj.get("joints") or []
+        for key in DYNAMICS_KEYS
+    ]
+    return {key: (float(r[0]), float(r[1])) for key, r in entries if r is not None}
 
 
 def link_frames(
@@ -397,7 +456,7 @@ def assemble(
             raise ValueError(
                 f"{name}: T_base_obj must be a rigid transform (put scale in 'scale')"
             )
-        problems = articulation_problems(obj)
+        problems = articulation_problems(obj) + physics_problems(obj)
         if problems:
             raise ValueError("; ".join(problems))
         frames, joints, positions = link_frames(obj["joints"])
@@ -457,6 +516,7 @@ def assemble(
                 friction=obj.get("friction"),
                 joints=positions or None,
                 joint_dynamics=dynamics or None,
+                ranges=object_ranges(obj) or None,
             )
         )
         hulls = [h for link in hulls_of.values() for h in link]
@@ -465,6 +525,7 @@ def assemble(
         report[name] = {
             "size_m": np.round(whole.extents, 4).tolist(),
             "mass_kg": round(mass, 4),
+            "ranges": {k: list(r) for k, r in object_ranges(obj).items()},
             "hulls": len(hulls),
             "hull_volume_share": (  # of the links' convex hulls
                 round(hull_volume / sum(volumes.values()), 3) if hulls else None

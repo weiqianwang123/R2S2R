@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -348,10 +348,41 @@ class ObjectSpec:
     # An articulated object's joints' dynamics by the same names (a joint left out is
     # free: :class:`JointDynamics`'s defaults); None for a rigid object.
     joint_dynamics: dict[str, JointDynamics] | None = None
+    # The physical parameters the reconstruction is unsure of, each with the range
+    # (low, high) its true value may lie in around the estimate above: ``mass``,
+    # ``friction`` and a joint's ``<joint>.<damping|friction|stiffness|rest>``. A
+    # parameter without one is as estimated; interaction data would narrow them.
+    ranges: dict[str, tuple[float, float]] | None = None
 
     def dynamics(self, joint: str) -> JointDynamics:
         """Joint ``joint``'s dynamics (a free joint's when the scene gives none)."""
         return (self.joint_dynamics or {}).get(joint, JointDynamics())
+
+    def sample(self, rng: np.random.Generator) -> ObjectSpec:
+        """This object with every parameter that has a range drawn from it: every
+        factor alike (log-uniformly) where both ends are above 0, else uniformly."""
+        if not self.ranges:
+            return self
+        drawn = {}
+        for key in sorted(self.ranges):
+            low, high = self.ranges[key]
+            drawn[key] = float(
+                np.exp(rng.uniform(np.log(low), np.log(high)))
+                if low > 0
+                else rng.uniform(low, high)
+            )
+        dynamics = dict(self.joint_dynamics or {})
+        for key, value in drawn.items():
+            if "." in key:
+                joint, parameter = key.rsplit(".", 1)
+                now = dynamics.get(joint, JointDynamics())
+                dynamics[joint] = replace(now, **{parameter: value})
+        return replace(
+            self,
+            mass=drawn.get("mass", self.mass),
+            friction=drawn.get("friction", self.friction),
+            joint_dynamics=dynamics or None,
+        )
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ObjectSpec:
@@ -365,6 +396,10 @@ class ObjectSpec:
             d["joint_dynamics"] = {
                 joint: JointDynamics(**values)
                 for joint, values in d["joint_dynamics"].items()
+            }
+        if d.get("ranges") is not None:
+            d["ranges"] = {
+                k: (float(lo), float(hi)) for k, (lo, hi) in d["ranges"].items()
             }
         return cls(**d)
 

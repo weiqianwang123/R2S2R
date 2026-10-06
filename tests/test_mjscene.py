@@ -95,3 +95,31 @@ def test_the_gripper_closes_at_the_real_ones_speed(tmp_path):
         levels.append(session.gripper_level())
     shut = (np.argmax(np.asarray(levels) > 0.95) + 1) * session.dt
     assert shut == pytest.approx(robot.max_opening / robot.gripper.speed, rel=0.2)
+
+
+def test_a_drawn_objects_physics_is_set_and_the_state_kept(tmp_path):
+    """Set to a draw, the box weighs what it says, its colliders grip with its friction
+    and its lid moves as its joint now says; where everything is stays."""
+    scene = _box_scene(tmp_path)
+    box = replace(scene.objects[0], mass=0.4)
+    session = Session(replace(scene, objects=[box]))
+    session.set_joints("box", {"hinge": -0.8})
+    poses = session.object_poses()
+    drawn = replace(
+        box,
+        mass=0.8,
+        friction=0.9,
+        joint_dynamics={"hinge": JointDynamics(friction=0.5)},
+    )
+    session.set_physics(drawn)
+    m = session.model
+    ids = [b for b in range(m.nbody) if m.body(b).name in ("box", "box/lid")]
+    assert m.body_mass[ids].sum() == pytest.approx(0.8)
+    colliders = [
+        g for g in range(m.ngeom) if m.geom_bodyid[g] in ids and m.geom_group[g] == 3
+    ]
+    assert colliders and all(m.geom_friction[g][0] == 0.9 for g in colliders)
+    np.testing.assert_allclose(session.object_poses()["box"], poses["box"])
+    assert session.object_joints()["box"]["hinge"] == pytest.approx(-0.8)
+    session.step(int(1.5 / session.dt))
+    assert session.object_joints()["box"]["hinge"] < -0.7  # held by the drawn friction

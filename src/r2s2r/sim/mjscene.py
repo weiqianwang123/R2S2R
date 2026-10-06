@@ -399,6 +399,27 @@ class Session:
             )
             self._gripper_goal = g.ctrl_at(0.0)
             self.set_robot(scene.joint_positions, 0.0)
+        # Each object's bodies, their masses and inertias as built, and its colliders.
+        self._bodies = {
+            name: [
+                b
+                for b in range(m.nbody)
+                if m.body(b).name == name or m.body(b).name.startswith(f"{name}/")
+            ]
+            for name in self.objects
+        }
+        self._mass0 = {n: m.body_mass[ids].copy() for n, ids in self._bodies.items()}
+        self._inertia0 = {
+            n: m.body_inertia[ids].copy() for n, ids in self._bodies.items()
+        }
+        self._colliders = {
+            name: [
+                g
+                for g in range(m.ngeom)
+                if m.geom_bodyid[g] in ids and m.geom_group[g] == COLLISION_GROUP
+            ]
+            for name, ids in self._bodies.items()
+        }
         for name, obj in self.objects.items():
             self.place(name, obj.T_base_obj)
             if obj.joints:
@@ -498,6 +519,31 @@ class Session:
                 self.data.qpos[jq] = positions[joint]
             self.data.qvel[jd] = (velocities or {}).get(joint, 0.0)
         mujoco.mj_forward(self.model, self.data)
+
+    def set_physics(self, obj: ObjectSpec) -> None:
+        """Object ``obj.name``'s mass, friction and joints' dynamics as ``obj`` gives
+        them (a draw from its ranges, say): its links' masses and inertias scaled
+        alike, its colliders' sliding friction. The simulation's state stays."""
+        m, d = self.model, self.data
+        ids = self._bodies[obj.name]
+        if obj.mass is not None:
+            scale = obj.mass / float(self._mass0[obj.name].sum())
+            m.body_mass[ids] = self._mass0[obj.name] * scale
+            m.body_inertia[ids] = self._inertia0[obj.name] * scale
+        friction = DEFAULT_FRICTION if obj.friction is None else obj.friction
+        m.geom_friction[self._colliders[obj.name], 0] = friction
+        for joint, (jq, jd, _) in self._joints.get(obj.name, {}).items():
+            dynamics = obj.dynamics(joint)
+            m.dof_damping[jd] = dynamics.damping
+            m.dof_frictionloss[jd] = dynamics.friction
+            m.jnt_stiffness[m.joint(f"{obj.name}/{joint}").id] = dynamics.stiffness
+            m.qpos_spring[jq] = dynamics.rest
+        # The constants that follow from the masses, computed at qpos0: the state
+        # kept aside meanwhile.
+        state = d.qpos.copy(), d.qvel.copy(), d.act.copy()
+        mujoco.mj_setConst(m, d)
+        d.qpos[:], d.qvel[:], d.act[:] = state
+        mujoco.mj_forward(m, d)
 
     def object_poses(self) -> dict[str, NDArray[np.float64]]:
         """Every object's ``T_base_obj``."""

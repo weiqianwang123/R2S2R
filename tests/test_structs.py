@@ -3,7 +3,7 @@ images, scenes that move with their assets."""
 
 import json
 import shutil
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import numpy as np
 import pytest
@@ -189,3 +189,35 @@ def test_a_scene_keeps_its_joints_dynamics(tmp_path):
     path.write_text(json.dumps(saved))
     with pytest.raises(ValueError, match="cloths are not supported"):
         SceneSpec.load(tmp_path / "scene")
+
+
+def test_an_objects_ranges_are_kept_and_drawn_from(tmp_path):
+    """The ranges come back as written; a draw lies within them, the same for the
+    same seed, and leaves what has no range as estimated."""
+    box = ObjectSpec(
+        "box",
+        "box",
+        str(tmp_path / "box.urdf"),
+        np.eye(4),
+        mass=0.3,
+        friction=0.6,
+        joints={"hinge": 0.0},
+        joint_dynamics={"hinge": JointDynamics(damping=0.01, stiffness=0.2)},
+        ranges={"mass": (0.2, 0.45), "hinge.friction": (0.0, 0.05)},
+    )
+    scene = SceneSpec("t", "franka_panda", [box], np.eye(4), {}, "c", 0, np.zeros(7))
+    scene.save(tmp_path / "scene")
+    (loaded,) = SceneSpec.load(tmp_path / "scene").objects
+    assert loaded.ranges == box.ranges
+    draws = [loaded.sample(np.random.default_rng(seed)) for seed in range(20)]
+    assert all(0.2 <= d.mass <= 0.45 for d in draws)
+    assert all(0.0 <= d.dynamics("hinge").friction <= 0.05 for d in draws)
+    assert len({round(d.mass, 6) for d in draws}) == 20  # they differ
+    assert all(d.friction == 0.6 and d.dynamics("hinge").damping == 0.01 for d in draws)
+    assert all(d.dynamics("hinge").stiffness == 0.2 for d in draws)
+    again = loaded.sample(np.random.default_rng(3))
+    assert (
+        again.mass == draws[3].mass and again.joint_dynamics == draws[3].joint_dynamics
+    )
+    plain = replace(loaded, ranges=None)
+    assert plain.sample(np.random.default_rng(0)) is plain

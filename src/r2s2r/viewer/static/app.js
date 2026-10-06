@@ -220,17 +220,18 @@ const PANELS = {
   physics: () => {
     const rows = S.state.physics;
     if (!rows?.length) return notYet('4');
+    const span = (r) => (r ? ` (${fmt(r[0], 3)} to ${fmt(r[1], 3)})` : '');
     const dynamics = (j) => (j.type === 'prismatic' ? ['N s/m', 'N', 'N/m'] : ['N m s/rad', 'N m', 'N m/rad'])
       .map((unit, k) => [['damping', 'friction', 'stiffness'][k], unit])
       .filter(([key]) => j[key] != null)
-      .map(([key, unit]) => `${key} ${fmt(j[key], 3)} ${unit}`)
-      .concat(j.stiffness ? [`rest ${jointValue(j.type, j.rest ?? 0)}`] : []).join(' · ');
+      .map(([key, unit]) => `${key} ${fmt(j[key], 3)}${span(j.ranges?.[key])} ${unit}`)
+      .concat(j.stiffness ? [`rest ${jointValue(j.type, j.rest ?? 0)}${span(j.ranges?.rest)}`] : []).join(' · ');
     const joint = (j) => `<div class="phys-item"><b>${esc(j.name)}</b> <span class="muted">${esc(j.type)}
       · ${j.limits ? j.limits.map((v) => jointValue(j.type, v)).join(' to ') : '—'} · recorded ${jointValue(j.type, j.position)}</span>
       ${dynamics(j) ? `<div class="muted">${dynamics(j)}</div>` : ''}
       ${j.why ? `<p class="why">${esc(j.why)}</p>` : ''}</div>`;
     return rows.map((r) => `<details class="phys"><summary><span class="n">${esc(r.name)}</span>
-      <span class="muted">${fmt(r.mass, 3)} kg · friction ${fmt(r.friction)}${r.joints.length ? ` · ${r.joints.length} joint${r.joints.length > 1 ? 's' : ''}` : ''}</span></summary>
+      <span class="muted">${fmt(r.mass, 3)}${span(r.ranges?.mass)} kg · friction ${fmt(r.friction)}${span(r.ranges?.friction)}${r.joints.length ? ` · ${r.joints.length} joint${r.joints.length > 1 ? 's' : ''}` : ''}</span></summary>
       <p>${esc(r.why || 'no reason written')}</p>${r.joints.map(joint).join('')}</details>`).join('');
   },
 };

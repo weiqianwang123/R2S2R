@@ -96,7 +96,8 @@ The scene as you build it, before assembly (JSON):
      "scale": 0.052,                     or [sx, sy, sz]: applied to the mesh file first
      "T_base_obj": 4x4,                  then this rigid pose, in the base frame
      "up": "y",                          the mesh file's up axis (z if left out)
-     "mass": 0.3, "friction": 0.6}       kg; needed from assembly on
+     "mass": 0.3, "friction": 0.6,       kg; needed from assembly on
+     "mass_range": [0.2, 0.45]}          (optional) where the true value may lie
   ]
 }
 ```
@@ -115,7 +116,8 @@ then the part that does not, and `mass` is the whole object's:
                  "position": 0.0,                        where the joint is as recorded
                  "damping": 0.01,                        N m s/rad (N s/m): slows it
                  "friction": 0.0,                        N m (N): to move it at all
-                 "stiffness": 0.0, "rest": 0.0}]         N m/rad (N/m), toward rest
+                 "stiffness": 0.0, "rest": 0.0,          N m/rad (N/m), toward rest
+                 "friction_range": [0.0, 0.05]}]         (optional) as for the object
 ```
 
 Everything is as recorded: the parts' meshes where the parts were, the joints'
@@ -134,6 +136,15 @@ gravity puts on the part, its mass times 9.81 times the distance of its centre f
 axis. A friction above it keeps the part wherever it is left; a spring whose
 `stiffness` times the turn away from `rest` exceeds it pulls the part back from there.
 Leaving them out makes the joint free, which is a guess too.
+
+Every physical value here is an estimate; where you are unsure of one, give its range
+too (`<name>_range`: [low, high], your estimate inside it): `mass_range`,
+`friction_range`, and a joint's `damping_range`, `friction_range`, `stiffness_range` or
+`rest_range`. Make it as wide as your doubt and no wider: narrow for what the recording
+shows (a size measured from depth), wide for what it cannot (how stiff a hinge is, how
+slippery a surface). The scene keeps the ranges and a simulation draws each episode's
+values from them (log-uniformly when both ends are above 0), so a policy must cope with
+the whole range. A value without one is taken as exact.
 
 Relative paths are relative to the objects file. `fit.json` gives `scale`,
 `T_base_obj` and `up` in this form. The support's `extent` is the size of the simulated

@@ -9,7 +9,8 @@ Turn the objects of stage 3 into a simulation-ready scene. Work in this director
    whole object's; check its joints' limits once more (what a real one of its kind
    allows), and give each joint its dynamics, from how a real one of its kind moves
    when let go (see the objects file in `../AGENTS.md`): does its part stay where it is
-   left, fall, or spring back, and how quickly.
+   left, fall, or spring back, and how quickly. Where a value is a guess, give its
+   range too (`<name>_range`, see `../AGENTS.md`), as wide as you are unsure.
 3. Check the poses: an object standing on the support must touch it (lowest point at
    about 0 in the support frame), objects must not intersect each other, and every
    object must stand within the support's `extent` (enlarge the extent if not; it is
@@ -26,7 +27,8 @@ Write `output.json`:
 {
   "scene": "scene/scene.json",
   "objects": {"mug": {"mass": 0.3, "friction": 0.6, "why": "..."},
-              "box": {"mass": 0.2, "friction": 0.6, "why": "...",
+              "box": {"mass": 0.2, "mass_range": [0.15, 0.3], "friction": 0.6,
+                      "why": "... and why each range is as wide as it is",
                       "joints": {"hinge": "why its limits and dynamics are what they
                                            are"}}},
   "notes": "..."
