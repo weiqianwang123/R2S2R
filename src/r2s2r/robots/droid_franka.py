@@ -54,28 +54,53 @@ ROBOTIQ_ISAAC_USD = (
     / "Robotiq_2F_85_config_physics_parallel_grip.usda"
 )
 ROBOTIQ_PRIM = "Robotiq_2F_85"  # where fit_robotiq puts it, under the robot prim
-# The Robotiq's drive (finger_joint) in Isaac Lab. Isaac Lab's (stiffness 17,
-# damping 0.02, effort limit 1650) cannot open the closed linkage again: closed in the
-# air it reopens only half way, holding a 58 mm block it does not let go, and it drifts
-# shut while the arm moves. Stiffer, it opens fully; its torque capped near the real
-# 2F-85's grip force (up to 235 N), it does not crush into light objects.
-ISAAC_GRIPPER_DRIVE = {"stiffness": 100.0, "damping": 5.0, "effort_limit_sim": 20.0}
 # The pads of Robotiq's 2F-85. The asset gives them no physics material, so they would
 # take the scene's default (0.5, averaged with an object's).
 ISAAC_PAD_LINKS = ("left_fingertip", "right_fingertip")
-# The pads' friction, as silicone on wood or plastic; the higher of it and an object's
-# holds, as in MuJoCo, whose 2F-85 pads have 0.7 and 0.6.
+# The pads' friction, as silicone on wood or plastic, in both simulators: in Isaac Lab
+# the higher of it and an object's holds; in MuJoCo the pads' own does (their priority;
+# mujoco_menagerie gives them 0.7 and 0.6).
 PAD_FRICTION = 1.0
+# The real 2F-85 as the lab's DROID robot drives it: its shim sets force and speed at
+# half the 2F-85's ranges (20-235 N, 20-150 mm/s; the registers map onto them
+# linearly).
+GRIP_FORCE = 127.5  # N each pad squeezes with
+GRIP_SPEED = 0.085  # m/s the opening changes at
+# The most the fingers' drive pushes with, MuJoCo's tendon force and Isaac Lab's
+# finger_joint torque alike (the same linkage, the same servo stiffness): a 40 mm object
+# squeezed with GRIP_FORCE, a 10 mm one with 76 N and a 70 mm one with 143 N, as the
+# linkage and servo give (mujoco_menagerie's 5 squeezed 45 N).
+GRIP_DRIVE_LIMIT = 14.4
+# Isaac's finger_joint turns 0.82 rad across the 85 mm opening: this fast, the opening
+# changes at GRIP_SPEED.
+ISAAC_DRIVER_SPEED = 0.82 * GRIP_SPEED / 0.085
+# The Robotiq's drive (finger_joint) in Isaac Lab. Isaac Lab's (stiffness 17,
+# damping 0.02, effort limit 1650) cannot open the closed linkage again: closed in the
+# air it reopens only half way, holding a 58 mm block it does not let go, and it drifts
+# shut while the arm moves. Stiffer, it opens fully, as hard and as fast as the real
+# one (unlimited, it shut in 0.15 s).
+ISAAC_GRIPPER_DRIVE = {
+    "stiffness": 100.0,
+    "damping": 5.0,
+    "effort_limit_sim": GRIP_DRIVE_LIMIT,
+    "velocity_limit_sim": ISAAC_DRIVER_SPEED,
+}
 
 
 def attach_robotiq(spec: Any, link7: str) -> Any:
     """``spec`` (an arm's ``mujoco.MjSpec``) with the Robotiq 2F-85 on the flange of its
     body ``link7``, as on DROID: :data:`FLANGE_OFFSET` out, turned :data:`ROBOTIQ_YAW`,
-    its names prefixed :data:`PREFIX`."""
+    its names prefixed :data:`PREFIX`; its pads at :data:`PAD_FRICTION`, its squeeze
+    the real one's (:data:`GRIP_DRIVE_LIMIT`)."""
     # pylint: disable=import-outside-toplevel
     from r2s2r.mjrender import mujoco
 
     gripper = mujoco.MjSpec.from_file(str(MENAGERIE_DIR / "robotiq_2f85" / "2f85.xml"))
+    for side in ("left", "right"):
+        for k in (1, 2):
+            gripper.geom(f"{side}_pad{k}").friction[0] = PAD_FRICTION
+    tendon = gripper.actuator("fingers_actuator")
+    tendon.forcerange = [-GRIP_DRIVE_LIMIT, GRIP_DRIVE_LIMIT]
     frame = spec.body(link7).add_frame(
         pos=[0.0, 0.0, FLANGE_OFFSET],
         quat=[np.cos(ROBOTIQ_YAW / 2), 0.0, 0.0, np.sin(ROBOTIQ_YAW / 2)],
@@ -236,6 +261,7 @@ DROID_FRANKA = RobotSpec(
         ctrl=(0.0, 255.0),
         # Isaac's 2F-85 is a closed loop with passive joints: set the driver only.
         isaac_driver="finger_joint",
+        speed=GRIP_SPEED,
     ),
     tcp_body=f"{PREFIX}base",
     tcp_offset=ROBOTIQ_TCP,

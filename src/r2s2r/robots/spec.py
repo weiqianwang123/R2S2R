@@ -38,6 +38,10 @@ class GripperSpec:
     (open, closed) position, set linearly with the opening; None sets the driver alone,
     open at its lower soft limit and closed at its upper one, and lets the linkage
     follow in simulation.
+
+    ``speed`` (m/s) is how fast the real gripper's opening changes, as its controller
+    moves it; a simulation commanding a new opening moves its target there at that
+    speed (None: at once, as fast as its actuator).
     """
 
     driver: str
@@ -48,6 +52,7 @@ class GripperSpec:
     ctrl: tuple[float, float]
     isaac_driver: str
     isaac_joints: Mapping[str, tuple[float, float]] | None = None
+    speed: float | None = None
 
     def __post_init__(self) -> None:
         if self.followers not in FOLLOWER_MODES:

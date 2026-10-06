@@ -79,3 +79,19 @@ def test_the_robot_is_set_and_driven(tmp_path):
     session.step(int(1.5 / session.dt))
     assert np.abs(session.arm_q() - target).max() < 0.02
     assert session.gripper_level() > 0.5
+
+
+def test_the_gripper_closes_at_the_real_ones_speed(tmp_path):
+    """Commanded shut from open, the gripper's opening closes over about the time the
+    real one takes at its speed (max_opening / speed), not at once."""
+    robot = robot_or_skip("fr3_robotiq")
+    scene = replace(_box_scene(tmp_path), embodiment=robot.name)
+    session = Session(scene, robot)
+    session.set_robot(np.asarray(robot.home_q), 0.0)
+    session.command(np.asarray(robot.home_q), 1.0)
+    levels = []
+    for _ in range(int(2.0 / session.dt)):
+        session.step()
+        levels.append(session.gripper_level())
+    shut = (np.argmax(np.asarray(levels) > 0.95) + 1) * session.dt
+    assert shut == pytest.approx(robot.max_opening / robot.gripper.speed, rel=0.2)

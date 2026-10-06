@@ -187,6 +187,63 @@ def test_fr3_and_droid_franka_put_the_tcp_in_the_same_place():
         assert np.allclose(T_fr3[:3, :3], T_panda[:3, :3], atol=1e-3)
 
 
+@pytest.mark.parametrize("name", ["droid_franka", "fr3_robotiq"])
+def test_the_robotiq_squeezes_as_the_real_one_with_rubber_pads(name):
+    """Closed on a fixed 40 mm block, the pads press with the real 2F-85's force as the
+    lab drives it (droid_franka.GRIP_FORCE; their mean: the arm holds the gripper a
+    little off a fixed block); the pads have its rubber's friction."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.mjrender import mujoco
+    from r2s2r.robots.model import prepare_robot
+
+    robot = robot_or_skip(name)
+    spec = robot.mjcf()
+    prepare_robot(spec, robot)
+    model = RobotModel(robot)
+    model.set(np.asarray(robot.home_q), 0.0)
+    pads = {
+        side: model.data.geom_xpos[model.model.geom(f"gripper/{side}_pad1").id]
+        for side in ("left", "right")
+    }
+    across = (pads["right"] - pads["left"]) / np.linalg.norm(
+        pads["right"] - pads["left"]
+    )
+    R = np.linalg.qr(np.column_stack([across, np.eye(3)[:, :2]]))[0]
+    R[:, 0] = across
+    quat = np.zeros(4)
+    mujoco.mju_mat2Quat(quat, (R * np.sign(np.linalg.det(R))).ravel())
+    spec.worldbody.add_geom(
+        name="block",
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=[0.02, 0.02, 0.02],
+        pos=(pads["left"] + pads["right"]) / 2,
+        quat=quat,
+    )
+    m = spec.compile()
+    d = mujoco.MjData(m)
+    arm = [m.joint(j).qposadr[0] for j in robot.arm_joints]
+    d.qpos[arm] = robot.home_q
+    gripper = m.actuator(robot.gripper.actuator).id
+    d.ctrl[[a for a in range(m.nu) if a != gripper]] = robot.home_q
+    d.ctrl[gripper] = robot.gripper.ctrl_at(1.0)
+    for _ in range(int(3.0 / m.opt.timestep)):
+        mujoco.mj_step(m, d)
+    block, force = m.geom("block").id, np.zeros(6)
+    squeeze = {}
+    for side in ("left", "right"):
+        ids = {m.geom(f"gripper/{side}_pad{k}").id for k in (1, 2)}
+        assert all(m.geom_friction[g][0] == droid_franka.PAD_FRICTION for g in ids)
+        squeeze[side] = 0.0
+        for i in range(d.ncon):
+            c = d.contact[i]
+            if {c.geom1, c.geom2} & ids and block in (c.geom1, c.geom2):
+                mujoco.mj_contactForce(m, d, i, force)
+                squeeze[side] += force[0]
+    assert np.mean(list(squeeze.values())) == pytest.approx(
+        droid_franka.GRIP_FORCE, rel=0.1
+    )
+
+
 def test_fr3_joint_limits_match_the_mjcf():
     """The limits Isaac's Panda joints get are the FR3 MJCF's ranges."""
     model = RobotModel(robot_or_skip("fr3_robotiq"))

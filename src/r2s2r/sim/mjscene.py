@@ -46,6 +46,7 @@ VISUAL_GROUP, COLLISION_GROUP = 2, 3  # rendered by default, and not
 # should hold creep shut under its weight, the same at any friction.
 FRICTION_SOLREF = (2 * TIMESTEP, 1.0)
 FRICTION_SOLIMP = (0.99, 0.999, 0.001, 0.5, 2.0)
+IMPRATIO = 10.0  # friction's stiffness over the normal's (see scene_spec)
 SUPPORT_RGBA = (0.2, 0.45, 0.9, 1.0)  # when the scene has no support colour
 # The background, a room's neutral greys from above to below (Isaac Lab's is a dim dome):
 # no geometry, so it gives no depth.
@@ -191,6 +192,10 @@ def scene_spec(
     # Several contact points between convex meshes, not one: on one, a book's flat
     # bottom balanced on a point and sank 2 cm into the table.
     spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    # Friction as MuJoCo advises for grasping: an elliptic cone, stiff (IMPRATIO). A
+    # block the gripper squeezed crept out under a steady pull 4 times as fast without.
+    spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+    spec.option.impratio = IMPRATIO
     spec.visual.headlight.ambient = [0.4, 0.4, 0.4]
     spec.visual.headlight.diffuse = [0.4, 0.4, 0.4]
     spec.worldbody.add_light(
@@ -384,6 +389,15 @@ class Session:
             self.gripper_dofadr = np.array(
                 [m.joint(j).dofadr[0] for j in self.gripper.joints], int
             )
+            # The gripper's control moves to its goal at the real gripper's speed: this
+            # much a second (None: at once).
+            g = robot.gripper
+            self._gripper_rate = (
+                None
+                if g.speed is None
+                else abs(g.ctrl[1] - g.ctrl[0]) * g.speed / robot.max_opening
+            )
+            self._gripper_goal = g.ctrl_at(0.0)
             self.set_robot(scene.joint_positions, 0.0)
         for name, obj in self.objects.items():
             self.place(name, obj.T_base_obj)
@@ -402,15 +416,19 @@ class Session:
         d.qpos[self.gripper_qadr] = self.gripper.positions(level)
         d.qvel[self.gripper_dofadr] = 0.0
         self.command(q, level)
+        d.ctrl[self.gripper_actuator] = self._gripper_goal
         mujoco.mj_forward(self.model, d)
 
     def command(self, q: NDArray, level: float) -> None:
         """The arm's actuators' targets ``q`` (within its joints' ranges) and the
-        gripper's opening ``level``."""
+        gripper's opening ``level``, which its control moves to at the gripper's
+        speed as the session steps."""
         assert self.robot is not None, "the session has no robot"
         lo, hi = self.model.actuator_ctrlrange[self.arm_actuators].T
         self.data.ctrl[self.arm_actuators] = np.clip(q, lo, hi)
-        self.data.ctrl[self.gripper_actuator] = self.robot.gripper.ctrl_at(level)
+        self._gripper_goal = self.robot.gripper.ctrl_at(level)
+        if self._gripper_rate is None:
+            self.data.ctrl[self.gripper_actuator] = self._gripper_goal
 
     def arm_q(self) -> NDArray[np.float64]:
         """The arm's joints."""
@@ -433,6 +451,11 @@ class Session:
                 self.data.qpos[self.gripper_qadr].copy(),
             )
         for _ in range(n):
+            if self.robot is not None and self._gripper_rate is not None:
+                ctrl = self.data.ctrl[self.gripper_actuator]
+                most = self._gripper_rate * self.dt
+                ctrl += np.clip(self._gripper_goal - ctrl, -most, most)
+                self.data.ctrl[self.gripper_actuator] = ctrl
             mujoco.mj_step(self.model, self.data)
             if held is not None:
                 self.data.qpos[self.arm_qadr], self.data.qpos[self.gripper_qadr] = held

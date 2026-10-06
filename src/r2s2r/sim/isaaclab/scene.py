@@ -45,7 +45,7 @@ from isaaclab.sensors import CameraCfg
 from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
 from numpy.typing import NDArray
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from r2s2r.assets import bottom_offset
 from r2s2r.robots.spec import RobotSpec
@@ -135,7 +135,8 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
     flattens it into a single file with the rigid body (and its mass) on the default
     prim, the visuals and colliders underneath (an articulated object keeps its links,
     and its joints, under the default prim), and a ``PhysicsMaterial`` with the
-    object's friction bound to every collider. An articulated object's joints get a
+    object's friction bound to every collider, the higher of two bodies' frictions
+    holding where they touch, as in MuJoCo. An articulated object's joints get a
     force drive with their dynamics' stiffness and damping (:func:`joint_drive`):
     PhysX applies no gain to a joint without one. Texture paths stay relative, so the
     directory can move.
@@ -186,6 +187,11 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
         physics.CreateStaticFrictionAttr(float(obj.friction))
         physics.CreateDynamicFrictionAttr(float(obj.friction))
         physics.CreateRestitutionAttr(0.0)
+        # The higher of two touching bodies' frictions, as MuJoCo takes it (PhysX's
+        # own default averages them).
+        PhysxSchema.PhysxMaterialAPI.Apply(
+            material.GetPrim()
+        ).CreateFrictionCombineModeAttr("max")
         for prim in _colliders(root):
             UsdShade.MaterialBindingAPI.Apply(prim).Bind(
                 material, UsdShade.Tokens.strongerThanDescendants, "physics"
