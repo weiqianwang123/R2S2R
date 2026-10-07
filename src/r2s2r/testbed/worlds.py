@@ -6,8 +6,9 @@ A :class:`MujocoWorld` is one compiled ``MjSpec`` posed through the robot's
 are the same model) and simulated with the robot's arm on position control and its
 gravity compensated, as a real arm's controller does. The builders:
 
-- :func:`panda_table`: a Franka Panda with the Franka Hand on a wooden table with three
-  Google Scanned Objects, an exterior camera ``ext1`` and a wrist camera on the hand;
+- :func:`fr3_table`: the lab's FR3 with its Robotiq 2F-85 on a wooden table with three
+  Google Scanned Objects, an exterior camera ``ext1`` and a wrist camera on the
+  gripper;
 - :func:`physcoder_box_block`: physcoder's UR5e + Robotiq 2F-140 scene
   (``box_block.xml``, used by path) with a seeded layout of its box and block, its
   MJCF ``wrist`` camera, and ``ext1`` at physcoder's real front camera pose.
@@ -92,7 +93,7 @@ class MujocoWorld:
         self.objects, self.support, self.cameras = objects, support, cameras
         self.target, self.instruction = target, instruction
         self.layout, self.source = layout, source
-        self.robot = robot
+        self.robot, self.arm = robot, robot.arm  # one arm
         prepare_robot(mjspec, robot)
         sizes = np.array([mjspec.camera(c).resolution for c in cameras])
         max_size = (int(sizes[:, 0].max()), int(sizes[:, 1].max()))
@@ -111,8 +112,8 @@ class MujocoWorld:
         self.arm_actuators = np.array(
             [by_joint[m.joint(j).id] for j in robot.arm_joints]
         )
-        self.gripper_actuator = m.actuator(robot.gripper.actuator).id
-        self.driver_qadr = m.joint(robot.gripper.driver).qposadr[0]
+        self.gripper_actuator = m.actuator(self.arm.gripper.actuator).id
+        self.driver_qadr = m.joint(self.arm.gripper.driver).qposadr[0]
         # Clearance is between what the arm moves and everything off the robot, but
         # for what is this close at the home pose already: the arm's mount (the
         # shoulder turning above its plate).
@@ -139,7 +140,7 @@ class MujocoWorld:
         """Arm joint targets and gripper opening (0 open, 1 closed) for the
         actuators."""
         self.data.ctrl[self.arm_actuators] = q
-        self.data.ctrl[self.gripper_actuator] = self.robot.gripper.ctrl_at(level)
+        self.data.ctrl[self.gripper_actuator] = self.arm.gripper.ctrl_at(level)
 
     def step(self, seconds: float) -> None:
         """Simulate ``seconds``."""
@@ -152,7 +153,7 @@ class MujocoWorld:
 
     def gripper_level(self) -> float:
         """The gripper's opening from its driver joint, 0 open to 1 closed."""
-        return self.robot.gripper.level_of(self.data.qpos[self.driver_qadr])
+        return self.arm.gripper.level_of(self.data.qpos[self.driver_qadr])
 
     def body_pose(self, name: str) -> NDArray[np.float64]:
         """``T_base_body``."""
@@ -319,7 +320,7 @@ def _vertices(model: Any, g: int) -> NDArray[np.float64]:
     return np.asarray(mesh.vertices, float)
 
 
-# ------------------------------------------------------------------ panda_table
+# -------------------------------------------------------------------- fr3_table
 @dataclass(frozen=True)
 class GsoObject:
     """A Google Scanned Object placed upright on the table."""
@@ -331,21 +332,20 @@ class GsoObject:
     mass: float
 
 
-PANDA_OBJECTS = (
+TABLE_OBJECTS = (
     GsoObject("crayon_box", "Crayola_Crayons_24_count", (0.52, -0.02), 20.0, 0.12),
     GsoObject("blue_mug", "Cole_Hardware_Mug_Classic_Blue", (0.60, 0.22), -30.0, 0.35),
     GsoObject("android_figure", "Android_Figure_Orange", (0.48, -0.25), 60.0, 0.10),
 )
 TABLE_CENTER, TABLE_SIZE, TABLE_HEIGHT = (0.35, 0.0), (1.2, 1.2), 0.75
-GRIPPER_KP = 1000.0  # the Franka Hand's position gain: ~7 N per finger on 3 cm
 
 
-def panda_table() -> MujocoWorld:
+def fr3_table() -> MujocoWorld:
     """A graspable crayon box between a mug and a figurine on a wooden table (its top
-    is z = 0), an exterior camera front-left of it and a camera on the hand."""
-    robot = get_robot("franka_panda")
+    is z = 0), an exterior camera front-left of it and a camera on the gripper."""
+    robot = get_robot("fr3_robotiq")
     spec = robot.mjcf()
-    spec.modelname = "panda_table"
+    spec.modelname = "fr3_table"
     spec.option.timestep = 0.002
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     spec.option.impratio = 10.0
@@ -353,12 +353,8 @@ def panda_table() -> MujocoWorld:
     spec.visual.headlight.ambient = [0.4, 0.4, 0.4]
     spec.visual.headlight.diffuse = [0.15, 0.15, 0.15]
     spec.visual.headlight.specular = [0.05, 0.05, 0.05]
-    grip = spec.actuator(robot.gripper.actuator)
-    grip.gainprm[0] = 0.04 * GRIPPER_KP / 255.0
-    grip.biasprm[1] = -GRIPPER_KP
-    grip.biasprm[2] = -0.05 * GRIPPER_KP
-    # Beside the hand, looking along its approach axis; the fingertips are in view.
-    spec.body("hand").add_camera(
+    # Beside the gripper, looking along its approach axis; the fingertips are in view.
+    spec.body(robot.arm.tcp_body).add_camera(
         name="wrist",
         pos=[0.06, 0.0, 0.02],
         quat=rotation_to_quat(CV_TO_MJ).tolist(),
@@ -372,20 +368,20 @@ def panda_table() -> MujocoWorld:
         **_intrinsics(1280, 720, 910.0),
     )
     _add_table(spec)
-    for obj in PANDA_OBJECTS:
+    for obj in TABLE_OBJECTS:
         _add_gso_object(spec, obj)
     return MujocoWorld(
-        "panda_table",
+        "fr3_table",
         {},
         robot,
         spec,
-        objects=[WorldObject(o.name, "table") for o in PANDA_OBJECTS],
+        objects=[WorldObject(o.name, "table") for o in TABLE_OBJECTS],
         support="table_top",
         cameras=("ext1", "wrist"),
         target="crayon_box",
         instruction="pick up the crayon box beside the blue mug and the orange "
         "android figure",
-        layout={"objects": [asdict(o) for o in PANDA_OBJECTS]},
+        layout={"objects": [asdict(o) for o in TABLE_OBJECTS]},
         source={"menagerie": str(MENAGERIE_DIR), "gso": str(GSO_DIR)},
     )
 
@@ -659,7 +655,7 @@ def physcoder_source() -> dict[str, Any]:
 
 # -------------------------------------------------------------------- registry
 WORLDS: dict[str, Callable[..., MujocoWorld]] = {
-    "panda_table": panda_table,
+    "fr3_table": fr3_table,
     "physcoder_box_block": physcoder_box_block,
 }
 

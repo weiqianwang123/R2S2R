@@ -41,7 +41,7 @@ TARGET = (0.5, 0.0, 0.04)  # where the cameras look
 def _scene(tmp_path, xy):
     urdf = box_urdf(tmp_path, (0.06, 0.06, 0.08))
     obj = ObjectSpec("box", "box", str(urdf), make_transform(np.eye(3), [*xy, 0.0]))
-    return SceneSpec("t", "franka_panda", [obj], np.eye(4), {}, "c", 0, np.zeros(7))
+    return SceneSpec("t", "fr3_robotiq", [obj], np.eye(4), {}, "c", 0, np.zeros(7))
 
 
 def _render(scene, T):
@@ -68,9 +68,7 @@ def test_compare_replay_scores_the_depth_and_outlines_the_objects(tmp_path):
     frame = FrameRecord(
         0, "c", "rgb/0.png", None, T, np.zeros(7), 0.0, "rgb/0_depth.png"
     )
-    capture = Capture(
-        "t", "test", "franka_panda", "", {"c": cam}, [frame], (0, 1), root
-    )
+    capture = Capture("t", "test", "fr3_robotiq", "", {"c": cam}, [frame], (0, 1), root)
 
     replay_dir = tmp_path / "replay"
     (replay_dir / "frames").mkdir(parents=True)
@@ -125,7 +123,7 @@ def test_a_long_replay_s_contact_sheet_shows_evenly_spaced_frames(tmp_path):
     n = SHEET_ROWS + 6
     frames = [FrameRecord(s, "c", "0.png", None, T, np.zeros(7), 0.0) for s in range(n)]
     cam = CameraSpec("c", "wrist", 320, 240, K, is_static=False)
-    capture = Capture("t", "test", "franka_panda", "", {"c": cam}, frames, (0, n), root)
+    capture = Capture("t", "test", "fr3_robotiq", "", {"c": cam}, frames, (0, n), root)
     log = {
         "frames": [
             {"step": s, "camera": "c", "role": "wrist", "sim_rgb": "0.png"}

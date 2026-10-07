@@ -36,7 +36,7 @@ def _at(obj, xyz):
 def _scene(objects):
     return SceneSpec(
         name="t",
-        embodiment="franka_panda",
+        embodiment="fr3_robotiq",
         objects=objects,
         T_base_support=np.eye(4),
         cameras={},

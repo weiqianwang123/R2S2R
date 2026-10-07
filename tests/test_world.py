@@ -20,7 +20,7 @@ from r2s2r.transforms import make_transform
 def _scene(objects, T_base_support=np.eye(4)):
     return SceneSpec(
         name="t",
-        embodiment="franka_panda",
+        embodiment="fr3_robotiq",
         objects=objects,
         T_base_support=T_base_support,
         cameras={},
@@ -69,12 +69,12 @@ def test_the_support_takes_the_colour_of_the_pixels_on_its_plane(tmp_path):
 
 def test_a_scene_keeps_its_support_colour(tmp_path):
     """Saved and loaded with the scene; a scene without one has none."""
-    scene = SceneSpec("t", "franka_panda", [], np.eye(4), {}, "c", 0, np.zeros(7))
+    scene = SceneSpec("t", "fr3_robotiq", [], np.eye(4), {}, "c", 0, np.zeros(7))
     scene.save(tmp_path / "a")
     assert SceneSpec.load(tmp_path / "a").support_color is None
     coloured = SceneSpec(
         "t",
-        "franka_panda",
+        "fr3_robotiq",
         [],
         np.eye(4),
         {},
@@ -94,7 +94,7 @@ def test_a_settled_scene_has_its_objects_where_they_came_to_rest(tmp_path):
     box = _object("box", joints={"hinge": -0.8})
     scene = _scene([box, _object("cup")])
     moved = make_transform(np.eye(3), [0.003, 0.0, -0.004])
-    capture = Capture("c", "test", "franka_panda", "", {}, [], (0, 1), root=tmp_path)
+    capture = Capture("c", "test", "fr3_robotiq", "", {}, [], (0, 1), root=tmp_path)
     settled_scene, report = settled(
         scene,
         capture,

@@ -36,7 +36,7 @@ def _capture(frames_per_camera, static=(0, 100)):
                     gripper_position=0.0,
                 )
             )
-    return Capture("c", "test", "franka_panda", "", cameras, frames, static, root=None)
+    return Capture("c", "test", "fr3_robotiq", "", cameras, frames, static, root=None)
 
 
 def test_budget_is_shared_between_cameras():
@@ -88,7 +88,7 @@ def test_scene_asset_paths_are_relative_on_disk(tmp_path):
     usd = tmp_path / "run/s5_settle/scene/objects/box/box.usd"
     scene = SceneSpec(
         "t",
-        "franka_panda",
+        "fr3_robotiq",
         [ObjectSpec("box", "box", str(urdf), np.eye(4), usd=str(usd))],
         np.eye(4),
         {},
@@ -134,7 +134,7 @@ def test_a_static_cameras_pose_is_given_once(tmp_path):
     payload = {
         "name": "c",
         "source": "rig",
-        "embodiment": "franka_panda",
+        "embodiment": "fr3_robotiq",
         "instruction": "",
         "cameras": {k: asdict(v) for k, v in cameras.items()},
         "frames": frames,
@@ -174,7 +174,7 @@ def test_a_scene_keeps_its_joints_dynamics(tmp_path):
         joints={"hinge": -0.8, "slide": 0.0},
         joint_dynamics={"hinge": sprung},
     )
-    scene = SceneSpec("t", "franka_panda", [box], np.eye(4), {}, "c", 0, np.zeros(7))
+    scene = SceneSpec("t", "fr3_robotiq", [box], np.eye(4), {}, "c", 0, np.zeros(7))
     scene.save(tmp_path / "scene")
     (loaded,) = SceneSpec.load(tmp_path / "scene").objects
     assert loaded.dynamics("hinge") == sprung
@@ -205,7 +205,7 @@ def test_an_objects_ranges_are_kept_and_drawn_from(tmp_path):
         joint_dynamics={"hinge": JointDynamics(damping=0.01, stiffness=0.2)},
         ranges={"mass": (0.2, 0.45), "hinge.friction": (0.0, 0.05)},
     )
-    scene = SceneSpec("t", "franka_panda", [box], np.eye(4), {}, "c", 0, np.zeros(7))
+    scene = SceneSpec("t", "fr3_robotiq", [box], np.eye(4), {}, "c", 0, np.zeros(7))
     scene.save(tmp_path / "scene")
     (loaded,) = SceneSpec.load(tmp_path / "scene").objects
     assert loaded.ranges == box.ranges

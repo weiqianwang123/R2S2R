@@ -87,7 +87,7 @@ def test_refine_scene_moves_misplaced_object(tmp_path):
     cam = CameraSpec("0", "ext1", 160, 120, K, T_base_cam=T_base_cam)
     scene = SceneSpec(
         name="synthetic",
-        embodiment="droid_franka",
+        embodiment="fr3_robotiq",
         objects=[ObjectSpec("box", "box", str(urdf), wrong)],
         T_base_support=make_transform(np.eye(3), [0.45, 0.0, 0.0]),
         cameras={"0": cam},
@@ -129,7 +129,7 @@ def test_refine_scene_levels_the_support_and_the_views(tmp_path):
     sf_plane = Rotation.from_euler("x", 2.0, degrees=True).as_matrix()
     scene = SceneSpec(
         name="synthetic",
-        embodiment="droid_franka",
+        embodiment="fr3_robotiq",
         objects=[
             ObjectSpec(
                 "box", "box", str(urdf), _yaw(np.deg2rad(42.0), [0.55, 0.0, 0.0])

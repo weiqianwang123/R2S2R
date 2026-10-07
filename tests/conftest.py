@@ -18,7 +18,7 @@ import trimesh
 from numpy.typing import NDArray
 
 from r2s2r.assets import joint_transform
-from r2s2r.robots import franka_panda, get_robot, ur5e_2f140
+from r2s2r.robots import dual_x5, fr3_robotiq, get_robot, ur5e_2f140
 from r2s2r.robots.spec import MENAGERIE_DIR, RobotSpec
 from r2s2r.structs import (
     CameraSpec,
@@ -37,12 +37,11 @@ CLOSE_STEP = 8  # gripper starts closing here
 LATENCY_MS = 41
 RGBD_K = intrinsics_matrix(300.0, 300.0, 159.5, 119.5)
 RGBD_SIZE = (320, 240)
-HOME_Q = np.array(franka_panda.HOME_Q)
+HOME_Q = np.array(fr3_robotiq.HOME_Q)
 ROBOT_ASSETS = {
-    "franka_panda": MENAGERIE_DIR / "franka_emika_panda",
-    "droid_franka": MENAGERIE_DIR / "robotiq_2f85",
     "fr3_robotiq": MENAGERIE_DIR / "franka_fr3",
     "ur5e_2f140": ur5e_2f140.MJCF_PATH,
+    "dual_x5": dual_x5.X5_DIR / "X5A.urdf",
 }
 
 
@@ -173,7 +172,7 @@ def rgbd_capture(
     images: dict[str, np.ndarray] | None = None,
     depths: dict[str, np.ndarray] | None = None,
 ) -> Capture:
-    """A Panda's RGB-D capture at ``root``: ``cameras`` ``{serial: (role, T_base_cam)}``
+    """An FR3's RGB-D capture at ``root``: ``cameras`` ``{serial: (role, T_base_cam)}``
     (a ``wrist`` moves with the hand), ``steps`` frames each, all of the static period;
     grey images at 0.8 m unless ``images`` / ``depths`` ``{serial: array}`` are given.
     Its metadata holds a secret besides how its depth was made."""
@@ -219,7 +218,7 @@ def rgbd_capture(
     capture = Capture(
         "t",
         "test",
-        "franka_panda",
+        "fr3_robotiq",
         "pick",
         specs,
         frames,

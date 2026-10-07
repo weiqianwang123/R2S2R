@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from r2s2r.paths import PHYSCODER_ASSETS
-from r2s2r.robots.spec import GripperSpec, RobotSpec
+from r2s2r.robots.spec import ArmSpec, GripperSpec, RobotSpec
 
 MJCF_PATH = (
     PHYSCODER_ASSETS / "mujoco" / "robots" / "universal_robots" / "ur5e_2f140.xml"
@@ -148,23 +148,27 @@ def isaac_cfg() -> Any:
 UR5E_2F140 = RobotSpec(
     name="ur5e_2f140",
     mjcf=mjcf,
-    arm_joints=ARM_JOINTS,
-    home_q=HOME_Q,
-    gripper=GripperSpec(
-        driver="finger_joint",
-        open=0.0,
-        closed=FINGER_CLOSED,
-        followers="equality",
-        actuator="gripper",
-        ctrl=(0.0, FINGER_CLOSED),
-        isaac_driver="finger_joint",
-        isaac_joints=ISAAC_GRIPPER,
+    arms=(
+        ArmSpec(
+            joints=ARM_JOINTS,
+            home_q=HOME_Q,
+            isaac_joints=ARM_JOINTS,
+            gripper=GripperSpec(
+                driver="finger_joint",
+                open=0.0,
+                closed=FINGER_CLOSED,
+                followers="equality",
+                actuator="gripper",
+                ctrl=(0.0, FINGER_CLOSED),
+                isaac_driver="finger_joint",
+                isaac_joints=ISAAC_GRIPPER,
+            ),
+            tcp_body="wrist_3_link",
+            tcp_offset=TCP_OFFSET,
+            max_opening=0.128,
+        ),
     ),
-    tcp_body="wrist_3_link",
-    tcp_offset=TCP_OFFSET,
-    max_opening=0.128,
     isaac_cfg=isaac_cfg,
-    isaac_arm_joints=ARM_JOINTS,
     position_control=position_control,
     isaac_camera_near=CAMERA_NEAR,
 )

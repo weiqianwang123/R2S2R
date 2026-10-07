@@ -273,7 +273,7 @@ def test_server_serves_the_run_and_nothing_else(tmp_path):
 
 @pytest.mark.gl
 def test_robot_poses_follow_the_trajectory(tmp_path):
-    """One pose per trajectory step per body; the hand moves with the joints."""
+    """One pose per trajectory step per body; the gripper moves with the joints."""
     # pylint: disable=import-outside-toplevel
     from r2s2r.robots import get_robot
     from r2s2r.viewer.robot import robot_glb, robot_poses
@@ -281,10 +281,10 @@ def test_robot_poses_follow_the_trajectory(tmp_path):
     ws = _run(tmp_path)
     robot = get_robot(ws.capture.embodiment)
     glb, bodies = robot_glb(robot)
-    assert glb[:4] == b"glTF" and "hand" in bodies
+    assert glb[:4] == b"glTF" and "gripper/base" in bodies
     ws.capture.trajectory.joint_positions[2, 0] += 0.5  # base joint turned at step 2
     poses = robot_poses(robot, ws.capture, bodies)
-    hand = bodies.index("hand")
+    hand = bodies.index("gripper/base")
     assert len(poses["poses"]) == 3 and len(poses["poses"][0]) == len(bodies)
     assert poses["poses"][0][hand] == poses["poses"][1][hand]
     assert poses["poses"][0][hand][:3] != poses["poses"][2][hand][:3]

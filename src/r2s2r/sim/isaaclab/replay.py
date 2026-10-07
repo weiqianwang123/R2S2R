@@ -84,7 +84,7 @@ class _Recorded(Session):
         """The robot at trajectory row ``i``, and held there."""
         state = self.articulation.data.default_joint_pos.clone()
         state[0, self.arm_ids] = state.new_tensor(self.traj.joint_positions[i])
-        level = float(np.clip(self.traj.gripper_position[i], 0.0, 1.0))
+        level = np.clip(self.traj.gripper_position[i], 0.0, 1.0)
         state[0, self.grip_ids] = self.gripper_targets(level)
         self.articulation.write_joint_state_to_sim(state, torch.zeros_like(state))
         self.articulation.set_joint_position_target(state)

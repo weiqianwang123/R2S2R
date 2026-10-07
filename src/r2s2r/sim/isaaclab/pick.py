@@ -46,7 +46,7 @@ class IsaacLabRobot(RobotInterface):
         self.session = session
         self.on_step = on_step
         self.render_every = render_every
-        driver, _ = session.articulation.find_joints([self.robot.gripper.isaac_driver])
+        driver, _ = session.articulation.find_joints([self.arm.gripper.isaac_driver])
         self.driver = session.grip_ids.index(driver[0])
         self.decimation = max(1, int(round(CONTROL_DT / session.dt)))
         self.steps = 0

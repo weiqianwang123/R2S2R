@@ -103,7 +103,8 @@ class FrameRecord:
     right_image: str | None
     T_base_cam: NDArray[np.float64]  # a static camera's frames may leave it out
     joint_positions: NDArray[np.float64]
-    gripper_position: float  # 0 open, 1 closed
+    # 0 open, 1 closed; one per arm (a number for a one-armed robot)
+    gripper_position: float | list[float]
     # Metric depth of the left image: uint16 PNG, DEPTH_PNG_SCALE meters per unit.
     depth_image: str | None = None
 
@@ -134,7 +135,8 @@ class RobotTrajectory:
     steps: NDArray[np.int64]  # the capture's step indices
     times: NDArray[np.float64]  # seconds since the first step
     joint_positions: NDArray[np.float64]  # (N, dof) arm joints
-    gripper_position: NDArray[np.float64]  # (N,) 0 open, 1 closed
+    # (N,) 0 open, 1 closed; (N, arms) for a robot of more arms than one
+    gripper_position: NDArray[np.float64]
 
     def save(self, path: str | Path) -> None:
         """Write the arrays to ``path`` (``.npz``)."""
@@ -164,7 +166,7 @@ class Capture:
 
     name: str
     source: str  # e.g. "droid", "mujoco"
-    embodiment: str  # e.g. "droid_franka"
+    embodiment: str  # e.g. "fr3_robotiq"
     instruction: str
     cameras: dict[str, CameraSpec]
     frames: list[FrameRecord]

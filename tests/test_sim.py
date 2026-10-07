@@ -23,9 +23,9 @@ CAMERAS = {
 
 
 def _run(tmp_path):
-    """A run of the test capture (the Panda at home), and the hinged box assembled
+    """A run of the test capture (the FR3 at home), and the hinged box assembled
     on its table."""
-    robot_or_skip("franka_panda")
+    robot_or_skip("fr3_robotiq")
     capture = rgbd_capture(tmp_path / "capture", CAMERAS)
     ws = Workspace.create(capture, tmp_path / "run", "agentic", sim="mujoco")
     hinged_box(tmp_path, make_transform(np.eye(3), [0.5, 0.0, 0.0]))

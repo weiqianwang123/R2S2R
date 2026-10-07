@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 
 from r2s2r.robots import get_robot
 from r2s2r.sim.compare import compare_replay
@@ -129,5 +130,6 @@ def _rows(traj: Any) -> dict[int, int]:
     return {int(s): i for i, s in enumerate(traj.steps.tolist())}
 
 
-def _level(gripper: float) -> float:
-    return float(np.clip(gripper, 0.0, 1.0))
+def _level(gripper: ArrayLike) -> NDArray:
+    """A recorded gripper position (one opening per arm) within 0 to 1."""
+    return np.clip(gripper, 0.0, 1.0)

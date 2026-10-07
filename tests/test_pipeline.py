@@ -65,7 +65,7 @@ def _scene_product(d, ws, extra="output.json"):
     frame = ws.frame("ext1@0")
     scene = SceneSpec(
         "t",
-        "franka_panda",
+        "fr3_robotiq",
         [obj],
         np.eye(4),
         ws.capture.cameras,
@@ -356,7 +356,7 @@ def test_agent_is_resumed_until_the_stage_output_is_valid(tmp_path, monkeypatch)
     assert entry["status"] == "done" and entry["started"] > 0
     brief = (tmp_path / "run/s2_frames/BRIEF.md").read_text()
     rules = (tmp_path / "run/AGENTS.md").read_text()
-    assert "{{" not in brief + rules and "franka_panda" in rules
+    assert "{{" not in brief + rules and "fr3_robotiq" in rules
     # Done stages are skipped.
     again = run(tmp_path / "run", None, method, ("2",))
     assert again["stages"]["2"]["resumptions"] == 1

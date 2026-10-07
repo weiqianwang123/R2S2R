@@ -26,7 +26,7 @@ from typing import Any
 
 import numpy as np
 import trimesh
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from r2s2r.assets import VisualMesh, base_color_texture, urdf_origin, urdf_vector
 from r2s2r.mjrender import MAX_SIZE, CameraRenderer, add_camera, add_mesh, mujoco
@@ -332,12 +332,14 @@ def _range(model: Any, joint: str) -> tuple[float, float]:
 
 class Session:
     """A scene running in MuJoCo (:func:`scene_spec`): the model and data, the objects
-    by name (their free joints and joints), the robot's arm and gripper when given,
+    by name (their free joints and joints), the robot's arms and grippers when given,
     and a renderer of calibrated cameras (renders up to ``max_size``); physics steps
     ``timestep`` (:func:`scene_spec`).
 
     Every object starts where the scene has it, an articulated one with its joints as
-    the scene has them; the robot at the scene's recorded arm joints, gripper open.
+    the scene has them; the robot at the scene's recorded arm joints, grippers open.
+    Arm joints are every arm's in turn, gripper openings as a capture records them
+    (a number for a one-armed robot, else one per arm).
     """
 
     def __init__(
@@ -381,24 +383,18 @@ class Session:
             self.arm_actuators = np.array(
                 [by_joint[m.joint(j).id] for j in robot.arm_joints], int
             )
-            self.gripper_actuator = m.actuator(robot.gripper.actuator).id
-            self.gripper = GripperPoser(m, robot)
-            self.gripper_qadr = np.array(
-                [m.joint(j).qposadr[0] for j in self.gripper.joints], int
+            self.grippers = [GripperPoser(m, robot, a) for a in range(len(robot.arms))]
+            self.gripper_actuators = np.array(
+                [m.actuator(arm.gripper.actuator).id for arm in robot.arms], int
             )
-            self.gripper_dofadr = np.array(
-                [m.joint(j).dofadr[0] for j in self.gripper.joints], int
-            )
-            # The gripper's control moves to its goal at the real gripper's speed: this
-            # much a second (None: at once).
-            g = robot.gripper
-            self._gripper_rate = (
-                None
-                if g.speed is None
-                else abs(g.ctrl[1] - g.ctrl[0]) * g.speed / robot.max_opening
-            )
-            self._gripper_goal = g.ctrl_at(0.0)
-            self.set_robot(scene.joint_positions, 0.0)
+            # Every gripper's joints, gripper after gripper.
+            joints = [j for gripper in self.grippers for j in gripper.joints]
+            self.gripper_qadr = np.array([m.joint(j).qposadr[0] for j in joints], int)
+            self.gripper_dofadr = np.array([m.joint(j).dofadr[0] for j in joints], int)
+            # Each gripper's control moves to its goal at the real gripper's speed.
+            self._gripper_rate = np.array([a.gripper_ctrl_rate for a in robot.arms])
+            self._gripper_goal = np.array([a.gripper.ctrl_at(0.0) for a in robot.arms])
+            self.set_robot(scene.joint_positions, np.zeros(len(robot.arms)))
         # Each object's bodies, their masses and inertias as built, and its colliders.
         self._bodies = {
             name: [
@@ -427,39 +423,56 @@ class Session:
         self.camera = CameraRenderer(m, self.data, max_size)
 
     # ------------------------------------------------------------------ robot
-    def set_robot(self, q: NDArray, level: float) -> None:
-        """The robot at arm joints ``q``, gripper opening ``level`` (0 open, 1
+    def set_robot(self, q: NDArray, level: ArrayLike) -> None:
+        """The robot at arm joints ``q``, gripper openings ``level`` (0 open, 1
         closed), at rest, its actuators holding it there."""
         assert self.robot is not None, "the session has no robot"
         d = self.data
         d.qpos[self.arm_qadr] = q
         d.qvel[self.arm_dofadr] = 0.0
-        d.qpos[self.gripper_qadr] = self.gripper.positions(level)
+        d.qpos[self.gripper_qadr] = np.concatenate(
+            [
+                gripper.positions(one)
+                for gripper, one in zip(self.grippers, self.robot.gripper_levels(level))
+            ]
+        )
         d.qvel[self.gripper_dofadr] = 0.0
         self.command(q, level)
-        d.ctrl[self.gripper_actuator] = self._gripper_goal
+        d.ctrl[self.gripper_actuators] = self._gripper_goal
         mujoco.mj_forward(self.model, d)
 
-    def command(self, q: NDArray, level: float) -> None:
-        """The arm's actuators' targets ``q`` (within its joints' ranges) and the
-        gripper's opening ``level``, which its control moves to at the gripper's
-        speed as the session steps."""
+    def command(self, q: NDArray, level: ArrayLike) -> None:
+        """The arms' actuators' targets ``q`` (within their joints' ranges) and the
+        grippers' openings ``level``, which their controls move to at the grippers'
+        speeds as the session steps."""
         assert self.robot is not None, "the session has no robot"
         lo, hi = self.model.actuator_ctrlrange[self.arm_actuators].T
         self.data.ctrl[self.arm_actuators] = np.clip(q, lo, hi)
-        self._gripper_goal = self.robot.gripper.ctrl_at(level)
-        if self._gripper_rate is None:
-            self.data.ctrl[self.gripper_actuator] = self._gripper_goal
+        self._gripper_goal = np.array(
+            [
+                arm.gripper.ctrl_at(one)
+                for arm, one in zip(self.robot.arms, self.robot.gripper_levels(level))
+            ]
+        )
+        # A gripper of no speed is there at once; the others move as the session steps.
+        at_once = np.isinf(self._gripper_rate)
+        self.data.ctrl[self.gripper_actuators[at_once]] = self._gripper_goal[at_once]
 
     def arm_q(self) -> NDArray[np.float64]:
-        """The arm's joints."""
+        """The arms' joints."""
         return self.data.qpos[self.arm_qadr].copy()
 
-    def gripper_level(self) -> float:
-        """The gripper's opening, 0 open to 1 closed, from its driver joint."""
+    def gripper_level(self) -> float | NDArray[np.float64]:
+        """The grippers' openings, 0 open to 1 closed, from their driver joints."""
         assert self.robot is not None, "the session has no robot"
-        q = self.data.qpos[self.model.joint(self.robot.gripper.driver).qposadr[0]]
-        return self.robot.gripper.level_of(float(q))
+        return self.robot.gripper_position(
+            [
+                arm.gripper.level_of(
+                    self.data.qpos[self.model.joint(arm.gripper.driver).qposadr[0]]
+                )
+                for arm in self.robot.arms
+            ]
+        )
 
     # ---------------------------------------------------------------- physics
     def step(self, n: int = 1, hold_robot: bool = False) -> None:
@@ -472,11 +485,11 @@ class Session:
                 self.data.qpos[self.gripper_qadr].copy(),
             )
         for _ in range(n):
-            if self.robot is not None and self._gripper_rate is not None:
-                ctrl = self.data.ctrl[self.gripper_actuator]
+            if self.robot is not None:
+                ctrl = self.data.ctrl[self.gripper_actuators]
                 most = self._gripper_rate * self.dt
                 ctrl += np.clip(self._gripper_goal - ctrl, -most, most)
-                self.data.ctrl[self.gripper_actuator] = ctrl
+                self.data.ctrl[self.gripper_actuators] = ctrl
             mujoco.mj_step(self.model, self.data)
             if held is not None:
                 self.data.qpos[self.arm_qadr], self.data.qpos[self.gripper_qadr] = held

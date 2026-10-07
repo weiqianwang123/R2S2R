@@ -57,10 +57,11 @@ class CommandLog:
 
 
 class RobotInterface(ABC):
-    """A robot arm with a gripper, driven by joint position targets."""
+    """A one-armed robot with a gripper, driven by joint position targets."""
 
     def __init__(self, robot: RobotSpec) -> None:
         self.robot = robot
+        self.arm = robot.arm  # raises for more arms than one
         self.model = RobotModel(robot)  # the robot alone, for kinematics
         self.log = CommandLog()
         self._q_cmd: NDArray[np.float64] | None = None
@@ -184,7 +185,7 @@ def gripper_geometry(model: RobotModel) -> GripperGeometry:
     the tips are their farthest point along its z at either opening; the two sides
     (the geoms moving either way along the closing axis) meet at the empty level."""
     m, d = model.model, model.data
-    roots = [m.jnt_bodyid[m.joint(j).id] for j in model.gripper.joints]
+    roots = [m.jnt_bodyid[m.joint(j).id] for j in model.grippers[0].joints]
     geoms = [
         g
         for g in range(m.ngeom)
@@ -331,7 +332,7 @@ def pick_up(
         scene,
         target,
         geometry,
-        robot.robot.max_opening,
+        robot.arm.max_opening,
         robot.tcp_pose()[:3, :3],
     )
     grasp = plan.T_base_tcp

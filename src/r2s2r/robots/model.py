@@ -1,11 +1,11 @@
-"""A robot's MuJoCo model, posed by its arm joints and gripper opening.
+"""A robot's MuJoCo model, posed by its arm joints and gripper openings.
 
 :class:`RobotModel` compiles a :class:`~r2s2r.robots.spec.RobotSpec`'s MJCF and sets the
-arm joints and the gripper (0 open, 1 closed; the other gripper joints follow the
+arm joints and the grippers (0 open, 1 closed; the other gripper joints follow each
 driver as the spec says), gives the pose of any body, site or camera, and solves
-inverse kinematics for one of them by damped least squares. Every simulator takes joint
-targets, so kinematics lives here, once, from the same model the masker and the viewer
-draw.
+inverse kinematics for one of them by damped least squares, moving one arm. Every
+simulator takes joint targets, so kinematics lives here, once, from the same model the
+masker and the viewer draw.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from scipy.spatial.transform import Rotation
 
 from r2s2r.mjrender import CV_TO_MJ, mujoco
@@ -35,7 +35,8 @@ class IKResult:
 
 
 class GripperPoser:
-    """Every gripper joint's position for an opening (0 open, 1 closed).
+    """The positions of every joint of arm ``arm``'s gripper at an opening (0 open,
+    1 closed).
 
     ``equality`` followers come from the MJCF's joint equalities on the driver
     (joint1 = polynomial of joint2, about their reference positions). ``simulate``
@@ -46,8 +47,8 @@ class GripperPoser:
 
     LEVELS = np.linspace(0.0, 1.0, 9)
 
-    def __init__(self, model: Any, robot: RobotSpec) -> None:
-        self.gripper = robot.gripper
+    def __init__(self, model: Any, robot: RobotSpec, arm: int = 0) -> None:
+        self.gripper = robot.arms[arm].gripper
         driver = model.joint(self.gripper.driver).id
         if self.gripper.followers == "equality":
             self.joints = [self.gripper.driver]
@@ -117,16 +118,17 @@ class GripperPoser:
 
 
 def prepare_robot(mjspec: Any, robot: RobotSpec) -> None:
-    """Make ``robot``'s arm, in ``mjspec`` (a world with the robot in it), hold joint
+    """Make ``robot``'s arms, in ``mjspec`` (a world with the robot in it), hold joint
     positions and feel no gravity, as a real arm's controller compensates it; the
     objects feel it. Call before compiling: MuJoCo counts the compensated bodies
     then."""
     robot.position_control(mjspec)
-    base = mjspec.joint(robot.arm_joints[0]).parent
-    while base.parent.name != mjspec.worldbody.name:
-        base = base.parent
-    for body in (base, *base.find_all(mujoco.mjtObj.mjOBJ_BODY)):
-        body.gravcomp = 1.0
+    for arm in robot.arms:
+        base = mjspec.joint(arm.joints[0]).parent
+        while base.parent.name != mjspec.worldbody.name:
+            base = base.parent
+        for body in (base, *base.find_all(mujoco.mjtObj.mjOBJ_BODY)):
+            body.gravcomp = 1.0
 
 
 def in_subtree(model: Any, body: int, root: int) -> bool:
@@ -142,7 +144,9 @@ class RobotModel:
     """A compiled robot, posed with :meth:`set`.
 
     ``mjspec`` is the robot's ``MjSpec`` when the caller edits it first (say, adds a
-    camera); by default the spec's own.
+    camera); by default the spec's own. Arm joints are every arm's in turn
+    (:attr:`~r2s2r.robots.spec.RobotSpec.arm_joints`); gripper openings as a capture
+    records them, a number for a one-armed robot, else one per arm.
     """
 
     def __init__(self, robot: RobotSpec, mjspec: Any | None = None) -> None:
@@ -156,19 +160,24 @@ class RobotModel:
         ranges = np.array([self.model.jnt_range[j.id] for j in joints])
         self.q_min = np.where(limited, ranges[:, 0], -np.inf)
         self.q_max = np.where(limited, ranges[:, 1], np.inf)
-        self.gripper = GripperPoser(self.model, robot)
-        self.gripper_qadr = np.array(
-            [self.model.joint(j).qposadr[0] for j in self.gripper.joints]
-        )
-        self.T_body_tcp = make_transform(np.eye(3), [0.0, 0.0, robot.tcp_offset])
-        self.set(np.asarray(robot.home_q), 0.0)
+        self.grippers = [
+            GripperPoser(self.model, robot, arm) for arm in range(len(robot.arms))
+        ]
+        self.gripper_qadr = [
+            np.array([self.model.joint(j).qposadr[0] for j in gripper.joints])
+            for gripper in self.grippers
+        ]
+        self.set(np.asarray(robot.home_q), np.zeros(len(robot.arms)))
 
-    def set(self, q: NDArray, level: float | None = None) -> None:
-        """Arm joints ``q`` and, when given, gripper opening ``level``; updates the
+    def set(self, q: NDArray, level: ArrayLike | None = None) -> None:
+        """Arm joints ``q`` and, when given, gripper openings ``level``; updates the
         kinematics."""
         self.data.qpos[self.arm_qadr] = q
         if level is not None:
-            self.data.qpos[self.gripper_qadr] = self.gripper.positions(level)
+            for gripper, qadr, one in zip(
+                self.grippers, self.gripper_qadr, self.robot.gripper_levels(level)
+            ):
+                self.data.qpos[qadr] = gripper.positions(one)
         mujoco.mj_kinematics(self.model, self.data)
         mujoco.mj_comPos(self.model, self.data)
         mujoco.mj_camlight(self.model, self.data)
@@ -178,9 +187,9 @@ class RobotModel:
         x right, y down, z forward)."""
         return self._frame(name, kind)[0]
 
-    def tcp_pose(self) -> NDArray[np.float64]:
-        """``T_base_tcp``."""
-        return self._frame(None, "body")[0]
+    def tcp_pose(self, arm: int = 0) -> NDArray[np.float64]:
+        """``T_base_tcp`` of arm ``arm``."""
+        return self._frame(None, "body", arm)[0]
 
     def ik(
         self,
@@ -194,19 +203,22 @@ class RobotModel:
         damping: float = 0.05,
         max_step: float = 0.2,
         nullspace_gain: float = 0.05,
+        arm: int = 0,
     ) -> IKResult:
-        """Arm joints that put ``frame`` (a body, site or camera by ``kind``; the TCP
-        when None) at ``T_target``.
+        """Arm joints that put ``frame`` (a body, site or camera by ``kind``; arm
+        ``arm``'s TCP when None) at ``T_target``, moving arm ``arm`` only.
 
-        Damped least squares from ``q_seed``, within the joint limits, pulled toward
-        the seed in the nullspace so that consecutive targets give continuous joint
-        paths. The gripper stays as set; the model is left at the solution.
+        Damped least squares from ``q_seed`` (every arm's joints), within the joint
+        limits, pulled toward the seed in the nullspace so that consecutive targets
+        give continuous joint paths. The grippers stay as set; the model is left at the
+        solution.
         """
+        moved = self.robot.arm_slice(arm)
         q_seed = np.asarray(q_seed, dtype=float)
         q = np.clip(q_seed, self.q_min, self.q_max)
         for _ in range(max_iters):
             self.set(q)
-            T, body = self._frame(frame, kind)
+            T, body = self._frame(frame, kind, arm)
             err = np.concatenate(
                 [
                     T_target[:3, 3] - T[:3, 3],
@@ -215,17 +227,17 @@ class RobotModel:
             )
             if np.linalg.norm(err[:3]) < pos_tol and np.linalg.norm(err[3:]) < rot_tol:
                 break
-            J = self._jacobian(T[:3, 3], body)
+            J = self._jacobian(T[:3, 3], body)[:, moved]
             dq = J.T @ np.linalg.solve(J @ J.T + damping**2 * np.eye(6), err)
             # The damped inverse leaks into task space; project with the exact one.
-            null = np.eye(len(q)) - np.linalg.pinv(J) @ J
-            dq += nullspace_gain * null @ (q_seed - q)
+            null = np.eye(len(dq)) - np.linalg.pinv(J) @ J
+            dq += nullspace_gain * null @ (q_seed[moved] - q[moved])
             scale = np.max(np.abs(dq)) / max_step
             if scale > 1.0:
                 dq /= scale
-            q = np.clip(q + dq, self.q_min, self.q_max)
+            q[moved] = np.clip(q[moved] + dq, self.q_min[moved], self.q_max[moved])
         self.set(q)
-        T, _ = self._frame(frame, kind)
+        T, _ = self._frame(frame, kind, arm)
         pos_err = float(np.linalg.norm(T_target[:3, 3] - T[:3, 3]))
         rot_err = float(
             np.linalg.norm(
@@ -234,12 +246,17 @@ class RobotModel:
         )
         return IKResult(q, pos_err, rot_err, pos_err < pos_tol and rot_err < rot_tol)
 
-    def _frame(self, name: str | None, kind: str) -> tuple[NDArray[np.float64], int]:
-        """The frame's pose and the body it moves with."""
+    def _frame(
+        self, name: str | None, kind: str, arm: int = 0
+    ) -> tuple[NDArray[np.float64], int]:
+        """The frame's pose and the body it moves with (arm ``arm``'s TCP for
+        None)."""
         m, d = self.model, self.data
         if name is None:
-            b = m.body(self.robot.tcp_body).id
-            T = make_transform(d.xmat[b].reshape(3, 3), d.xpos[b]) @ self.T_body_tcp
+            spec = self.robot.arms[arm]
+            b = m.body(spec.tcp_body).id
+            T_body_tcp = make_transform(np.eye(3), [0.0, 0.0, spec.tcp_offset])
+            T = make_transform(d.xmat[b].reshape(3, 3), d.xpos[b]) @ T_body_tcp
             return T, b
         if kind == "body":
             b = m.body(name).id
@@ -255,7 +272,8 @@ class RobotModel:
         raise ValueError(f"unknown frame kind {kind!r} {FRAME_KINDS}")
 
     def _jacobian(self, point: NDArray, body: int) -> NDArray[np.float64]:
-        """6 x dof Jacobian (linear rows first) of ``point`` moving with ``body``."""
+        """6 x dof Jacobian (linear rows first, every arm's joints) of ``point``
+        moving with ``body``."""
         jacp = np.zeros((3, self.model.nv))
         jacr = np.zeros((3, self.model.nv))
         mujoco.mj_jac(

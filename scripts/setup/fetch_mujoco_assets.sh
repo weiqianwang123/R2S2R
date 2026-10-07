@@ -1,9 +1,9 @@
 #!/bin/bash
 # Fetch what the MuJoCo testbed needs into ~/.cache/r2s2r (R2S2R_CACHE):
-# the Franka Panda, the Franka FR3 and DROID's Robotiq 2F-85 from mujoco_menagerie, and
-# a few Google Scanned Objects (kevinzakka/mujoco_scanned_objects). Sparse, shallow
-# clones.
-# The UR5e + Robotiq 2F-140 come from physcoder's assets (r2s2r.paths.PHYSCODER_ASSETS).
+# the Franka FR3 and DROID's Robotiq 2F-85 from mujoco_menagerie, and a few Google
+# Scanned Objects (kevinzakka/mujoco_scanned_objects). Sparse, shallow clones.
+# The UR5e + Robotiq 2F-140 come from physcoder's assets (r2s2r.paths.PHYSCODER_ASSETS),
+# RoboDojo's ARX X5 from scripts/setup/fetch_robodojo_x5.sh.
 #
 # Usage: bash scripts/setup/fetch_mujoco_assets.sh [MODEL_NAME...]
 set -euo pipefail
@@ -11,7 +11,7 @@ set -euo pipefail
 CACHE="${R2S2R_CACHE:-$HOME/.cache/r2s2r}"
 MODELS=("$@")
 if [ ${#MODELS[@]} -eq 0 ]; then
-    # The objects of the panda_table world (r2s2r.testbed.worlds.PANDA_OBJECTS).
+    # The objects of the fr3_table world (r2s2r.testbed.worlds.TABLE_OBJECTS).
     MODELS=(Crayola_Crayons_24_count Cole_Hardware_Mug_Classic_Blue Android_Figure_Orange)
 fi
 mkdir -p "${CACHE}"
@@ -26,7 +26,7 @@ sparse_clone() {  # url dir paths...
 }
 
 sparse_clone https://github.com/google-deepmind/mujoco_menagerie.git \
-    "${CACHE}/mujoco_menagerie" franka_emika_panda franka_fr3 robotiq_2f85
+    "${CACHE}/mujoco_menagerie" franka_fr3 robotiq_2f85
 paths=()
 for m in "${MODELS[@]}"; do paths+=("models/${m}"); done
 sparse_clone https://github.com/kevinzakka/mujoco_scanned_objects.git \

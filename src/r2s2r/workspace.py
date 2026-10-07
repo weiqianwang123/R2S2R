@@ -164,7 +164,7 @@ class Workspace:
                     "static": self.capture.in_static(f.step),
                     "image": str(self.image_path(f).relative_to(self.root)),
                     "depth": f.depth_image is not None,
-                    "gripper_closed": round(float(f.gripper_position), 3),
+                    "gripper_closed": np.round(f.gripper_position, 3).tolist(),
                     "width": cam.width,
                     "height": cam.height,
                     "K": cam.K.tolist(),

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fetch Robotiq's own 2F-85 for Isaac Sim (robotiq/isaacsim_assets, CC-BY-4.0) into
-# ~/.cache/r2s2r (R2S2R_CACHE), which r2s2r.robots.droid_franka mounts on the Franka in
+# ~/.cache/r2s2r (R2S2R_CACHE), which r2s2r.robots.fr3_robotiq mounts on the Franka in
 # Isaac Lab: grippers/Robotiq_2F_85 at a pinned commit, a sparse clone with its meshes
 # from Git LFS (needs git-lfs).
 #

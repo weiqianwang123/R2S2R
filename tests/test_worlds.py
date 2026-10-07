@@ -25,8 +25,8 @@ from r2s2r.testbed.record import (  # noqa: E402
 )
 from r2s2r.tools.geometry import view_points  # noqa: E402
 
-PANDA = pytest.mark.skipif(
-    not (MENAGERIE_DIR / "franka_emika_panda").exists() or not worlds.GSO_DIR.exists(),
+FR3 = pytest.mark.skipif(
+    not (MENAGERIE_DIR / "franka_fr3").exists() or not worlds.GSO_DIR.exists(),
     reason="MuJoCo assets not fetched (scripts/setup/fetch_mujoco_assets.sh)",
 )
 PHYSCODER = pytest.mark.skipif(
@@ -45,21 +45,21 @@ OBJECT_KEYS = {
 }
 
 
-@pytest.fixture(name="panda", scope="module")
-def fixture_panda():
-    """panda_table, settled."""
-    world = worlds.build_world("panda_table")
+@pytest.fixture(name="fr3", scope="module")
+def fixture_fr3():
+    """fr3_table, settled."""
+    world = worlds.build_world("fr3_table")
     world.reset()
     yield world
     world.close()
 
 
-@PANDA
-def test_panda_objects_rest_where_placed(panda):
+@FR3
+def test_fr3_objects_rest_where_placed(fr3):
     """The GSO objects settle upright where the layout puts them, on the table, while
     the arm holds its home pose; the ground truth says so with every key."""
-    assert np.allclose(panda.arm_q(), panda.robot.home_q, atol=1e-3)
-    truth = panda.ground_truth()
+    assert np.allclose(fr3.arm_q(), fr3.robot.home_q, atol=1e-3)
+    truth = fr3.ground_truth()
     assert set(truth) == TRUTH_KEYS and truth["target"] == "crayon_box"
     support = truth["support"]
     assert support["height"] == pytest.approx(0.0)
@@ -75,12 +75,12 @@ def test_panda_objects_rest_where_placed(panda):
         assert abs(bottom) < 3e-3 and obj["rests_on"] == "table"
 
 
-@PANDA
+@FR3
 @pytest.mark.gl
-def test_panda_depth_backprojects_onto_the_table(panda):
+def test_fr3_depth_backprojects_onto_the_table(fr3):
     """K, T_base_cam and planar depth agree: table pixels land on z = 0."""
-    cam = panda.camera_spec("ext1")
-    depth = panda.render("ext1")["depth"]
+    cam = fr3.camera_spec("ext1")
+    depth = fr3.render("ext1")["depth"]
     view = DepthView("ext1", 0, depth.astype(float), cam.K, cam.T_base_cam)
     z = view_points(view, max_depth=3.0)[0][:, 2]
     near = z[np.abs(z) < 0.02]
@@ -88,25 +88,26 @@ def test_panda_depth_backprojects_onto_the_table(panda):
     assert abs(np.median(near)) < 0.002
 
 
-@PANDA
+@FR3
 @pytest.mark.gl
-def test_robot_masker_matches_the_world(panda):
+def test_robot_masker_matches_the_world(fr3):
     """Rendering the robot from calibration and joints reproduces what the world's
     cameras see of it."""
-    masker = RobotMasker(get_robot("franka_panda"))
-    m = panda.model
-    for role in panda.cameras:
-        cam = panda.camera_spec(role)
-        body = panda.render(role)["body"]
-        truth = (body >= 0) & (m.body_rootid[np.maximum(body, 0)] == m.body("link0").id)
+    masker = RobotMasker(get_robot("fr3_robotiq"))
+    m = fr3.model
+    for role in fr3.cameras:
+        cam = fr3.camera_spec(role)
+        body = fr3.render(role)["body"]
+        robot = m.body_rootid[m.jnt_bodyid[m.joint("fr3_joint1").id]]
+        truth = (body >= 0) & (m.body_rootid[np.maximum(body, 0)] == robot)
         pred = (
             masker.robot_depth(
                 cam.K,
                 cam.width,
                 cam.height,
-                panda.camera_pose(role),
-                panda.arm_q(),
-                panda.gripper_level(),
+                fr3.camera_pose(role),
+                fr3.arm_q(),
+                fr3.gripper_level(),
             )
             < NO_ROBOT
         )
@@ -170,17 +171,17 @@ def test_a_view_is_tried_closer():
 
 def test_unknown_worlds_and_parameters_are_named():
     """A wrong world or parameter says what is known."""
-    with pytest.raises(ValueError, match="panda_table"):
+    with pytest.raises(ValueError, match="fr3_table"):
         worlds.build_world("kitchen")
     with pytest.raises(ValueError, match="takes no"):
-        worlds.build_world("panda_table", seed=1)
+        worlds.build_world("fr3_table", seed=1)
 
 
 @pytest.mark.gl
 @pytest.mark.parametrize(
     "name, params",
     [
-        pytest.param("panda_table", {}, marks=PANDA),
+        pytest.param("fr3_table", {}, marks=FR3),
         pytest.param("physcoder_box_block", {"block": "corner"}, marks=PHYSCODER),
     ],
 )
@@ -198,7 +199,7 @@ def test_recorded_capture(tmp_path, name, params):
     assert capture.static_steps == (0, len(traj.steps))
     assert np.allclose(traj.joint_positions[0], world.robot.home_q)
     assert np.max(np.abs(np.diff(traj.joint_positions, axis=0))) < 0.02
-    assert np.all(traj.gripper_position == 0.0)
+    assert np.all(traj.gripper_position < 0.01)  # open
     wrist = capture.frames_of("mj_wrist")
     assert len(wrist) > 3 and len(capture.frames_of("mj_ext1")) == len(wrist)
     poses = np.stack([f.T_base_cam for f in wrist])
@@ -224,16 +225,16 @@ def test_recorded_capture(tmp_path, name, params):
     rebuilt.close()
 
 
-@PANDA
+@FR3
 def test_a_changed_world_is_refused(tmp_path):
     """A capture whose layout the world no longer has is not picked in."""
-    world = worlds.build_world("panda_table")
+    world = worlds.build_world("fr3_table")
     truth = world.ground_truth()
     world.close()
     truth["layout"]["objects"][0]["xy"] = [0.1, 0.1]
     capture = Capture(
-        "c", "mujoco", "franka_panda", "", {}, [], (0, 1), Path(tmp_path),
-        metadata={"world": {"name": "panda_table", "params": {}}, "ground_truth": truth},
+        "c", "mujoco", "fr3_robotiq", "", {}, [], (0, 1), Path(tmp_path),
+        metadata={"world": {"name": "fr3_table", "params": {}}, "ground_truth": truth},
     )  # fmt: skip
     with pytest.raises(ValueError, match="no longer has"):
         worlds.world_from_capture(capture)

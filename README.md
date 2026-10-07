@@ -19,6 +19,7 @@ bash scripts/setup/install.sh          # .venv (uv, Python 3.11): r2s2r, Isaac S
 bash scripts/setup/link_simfoundry_resources.sh  # a SimFoundry install's models and conda envs
 bash scripts/setup/fetch_mujoco_assets.sh        # MuJoCo robots and objects
 bash scripts/setup/fetch_robotiq_isaac.sh        # Robotiq's 2F-85 for Isaac (git-lfs)
+bash scripts/setup/fetch_robodojo_x5.sh          # RoboDojo's ARX X5, for its two-armed robot
 source .venv/bin/activate              # and the Codex CLI on the PATH
 ```
 
@@ -26,7 +27,7 @@ SimFoundry's conda envs run SAM3, Hunyuan3D-2.1, CoACD and FoundationStereo.
 
 ```bash
 r2s2r capture droid EPISODE --calib CALIB --out CAP    # raw DROID episode, KarlP/droid calibration
-r2s2r capture mujoco --world panda_table --out CAP      # or physcoder_box_block
+r2s2r capture mujoco --world fr3_table --out CAP        # or physcoder_box_block
 r2s2r run CAP --method fixed --out RUN                  # or agentic; --cameras ext2 wrist; --sim mujoco
 r2s2r viewer RUN                                        # live, http://localhost:8765
 r2s2r eval RUN --capture CAP                            # MuJoCo capture: vs its ground truth
@@ -74,16 +75,17 @@ flowchart LR
 
 ## Robots
 
-| `franka_panda` | `droid_franka` | `fr3_robotiq` | `ur5e_2f140` |
-|:-:|:-:|:-:|:-:|
-| <img src="docs/robots/franka_panda.png" width="200"> | <img src="docs/robots/droid_franka.png" width="200"> | <img src="docs/robots/fr3_robotiq.png" width="200"> | <img src="docs/robots/ur5e_2f140.png" width="200"> |
-| Panda + Franka Hand | Panda + Robotiq 2F-85 | FR3 + Robotiq 2F-85 | UR5e + Robotiq 2F-140 |
-| MuJoCo world `panda_table`: RGB-D `ext1` + `wrist` | DROID: ZED 2 `ext1` `ext2` + ZED Mini `wrist`, stereo | DROID on an FR3: ZED Mini `wrist`, stereo | [PhysCoder](https://github.com/Jaraxxus-Me/physcoder)'s robot and MuJoCo scene: `wrist` (optional `ext1` at its real front camera) |
-| MuJoCo Menagerie, Isaac Lab's Franka | Menagerie, Isaac Lab's Franka + Robotiq | Menagerie's FR3; in Isaac Lab the Panda + Robotiq (same kinematics) with the FR3's joint limits | PhysCoder's MJCF and USD, used by path from its checkout |
+| `fr3_robotiq` | `ur5e_2f140` | `dual_x5` |
+|:-:|:-:|:-:|
+| <img src="docs/robots/fr3_robotiq.png" width="200"> | <img src="docs/robots/ur5e_2f140.png" width="200"> | <img src="docs/robots/dual_x5.png" width="200"> |
+| FR3 + Robotiq 2F-85, the lab's DROID robot | UR5e + Robotiq 2F-140 | [RoboDojo](https://robodojo-benchmark.com)'s two ARX X5 arms with their grippers |
+| DROID: ZED 2 `ext1` `ext2` + ZED Mini `wrist`, stereo (a DROID episode is taken for this robot); MuJoCo world `fr3_table`: RGB-D `ext1` + `wrist` | [PhysCoder](https://github.com/Jaraxxus-Me/physcoder)'s robot and MuJoCo scene: `wrist` (optional `ext1` at its real front camera) | a capture's joints are both arms', left then right, its gripper position one per arm |
+| Menagerie's FR3; in Isaac Lab the Panda + Robotiq (same kinematics) with the FR3's joint limits | PhysCoder's MJCF and USD, used by path from its checkout | RoboDojo's X5A URDF, two of it as one URDF in both simulators, RoboDojo's drives |
 
 A robot is one `RobotSpec` module in [`src/r2s2r/robots/`](src/r2s2r/robots) (its MuJoCo
-and Isaac Lab models, arm joints, gripper, tool centre point), registered in `ROBOTS`
-there; masking, the viewer, Isaac Lab and the pick test take it from the capture.
+and Isaac Lab models; its arms, each with its joints, gripper and tool centre point),
+registered in `ROBOTS` there; masking, the viewer, Isaac Lab and the pick test (one arm)
+take it from the capture.
 
 ## Result
 
@@ -98,8 +100,7 @@ PhysCoder's UR5e scene in MuJoCo, agentic method, from the wrist camera alone:
 
 | method | robot, capture | cameras | time | against the ground truth | replay depth residual |
 |---|---|---|--:|---|---|
-| fixed | Panda, MuJoCo `panda_table` | ext1 + wrist | 15 min | centres 0.6-1.2 cm, sizes up to 2.6 cm | ext1 1 mm, wrist < 1 mm |
-| fixed | DROID Franka, real (IRIS) | ext2 + wrist | 11 min | – | ext2 2 mm, wrist 4 mm |
+| fixed | DROID's Franka, real (IRIS) | ext2 + wrist | 11 min | – | ext2 2 mm, wrist 4 mm |
 | fixed | UR5e, MuJoCo `physcoder_box_block` | wrist | 17 min | the box's floor taken for the table: box lost | wrist 52 mm |
 | agentic | UR5e, MuJoCo `physcoder_box_block` | wrist | 41 min | centres within 0.1 cm, sizes within 0.1 cm | wrist < 1 mm |
 
@@ -146,7 +147,7 @@ src/r2s2r/
     mjscene.py       a scene in MuJoCo: robot, support, objects with their joints
     compare.py       replay renders against the real frames, with numbers
   testbed/           MuJoCo as the real world, for local tests
-    worlds.py        panda_table, physcoder_box_block, with ground truth
+    worlds.py        fr3_table, physcoder_box_block, with ground truth
     record.py        a capture recorded as a real rig would
     evaluate.py      scenes scored against the ground truth
     policy.py        the robot interface and the pick program; pick.py: the test in MuJoCo
@@ -155,7 +156,7 @@ scripts/
   isaaclab/          replay.py, settle.py, pick.py: Isaac Lab entry points
   tools/             SAM3, Hunyuan3D, CoACD, FoundationStereo jobs for the conda envs
   setup/             install.sh, link_simfoundry_resources.sh, fetch_mujoco_assets.sh,
-                     fetch_robotiq_isaac.sh
+                     fetch_robotiq_isaac.sh, fetch_robodojo_x5.sh
 tests/               pytest, no GPU, SimFoundry or Codex needed (MuJoCo renders: marker gl)
 docs/                this README's images: robots/, demo/, viewer.png
 third_party/SimFoundry  our SimFoundry fork (branch r2s2r), a submodule

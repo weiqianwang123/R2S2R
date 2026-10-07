@@ -66,7 +66,7 @@ def robot_poses(
         grips = np.array([f.gripper_position for f in frames])
     poses = []
     for q, g in zip(joints, grips):
-        model.set(q, float(g))
+        model.set(q, g)
         xpos, xquat = model.data.xpos, model.data.xquat
         poses.append(
             [

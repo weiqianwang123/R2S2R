@@ -1,5 +1,5 @@
 """Tests for the robot registry and robots/model.py (skipped per robot without its
-assets), the masker and the viewer's robot on the UR5e."""
+assets), RoboDojo's two arms, the masker and the viewer's robot on the UR5e."""
 
 from pathlib import Path
 
@@ -13,13 +13,18 @@ pytest.importorskip("mujoco")
 # pylint: disable=wrong-import-position
 from r2s2r.robots import (  # noqa: E402
     ROBOTS,
-    droid_franka,
+    dual_x5,
     fr3_robotiq,
     get_robot,
     ur5e_2f140,
 )
-from r2s2r.robots.model import RobotModel  # noqa: E402
-from r2s2r.transforms import intrinsics_matrix, invert, look_at  # noqa: E402
+from r2s2r.robots.model import RobotModel, in_subtree  # noqa: E402
+from r2s2r.transforms import (  # noqa: E402
+    intrinsics_matrix,
+    invert,
+    look_at,
+    transform_points,
+)
 
 
 @pytest.fixture(name="model", scope="module", params=sorted(ROBOTS))
@@ -30,44 +35,51 @@ def fixture_model(request):
 
 def test_registry_names_the_known_robots():
     """Every robot is registered under its name; unknown names list the known ones."""
-    assert set(ROBOTS) == {"franka_panda", "droid_franka", "fr3_robotiq", "ur5e_2f140"}
+    assert set(ROBOTS) == {"fr3_robotiq", "ur5e_2f140", "dual_x5"}
     assert all(get_robot(n).name == n for n in ROBOTS)
-    with pytest.raises(ValueError, match="franka_panda"):
+    with pytest.raises(ValueError, match="fr3_robotiq"):
         get_robot("ur10")
 
 
-def test_robot_compiles_with_its_arm_and_gripper(model):
-    """The spec's joints, actuator and bodies exist; the home pose is within limits."""
+def test_robot_compiles_with_its_arms_and_grippers(model):
+    """The spec's joints, actuators and bodies exist; the home pose is within limits."""
     robot = model.robot
     assert model.arm_qadr.shape == (robot.dof,) == (len(robot.home_q),)
-    dofs = {"franka_panda": 7, "droid_franka": 7, "fr3_robotiq": 7, "ur5e_2f140": 6}
-    assert robot.dof == dofs[robot.name]
-    model.model.actuator(robot.gripper.actuator)
-    model.model.body(robot.tcp_body)
+    dofs = {"fr3_robotiq": [7], "ur5e_2f140": [6], "dual_x5": [6, 6]}
+    assert [len(arm.joints) for arm in robot.arms] == dofs[robot.name]
+    for arm in robot.arms:
+        model.model.actuator(arm.gripper.actuator)
+        model.model.body(arm.tcp_body)
+        assert 0.05 < arm.max_opening < 0.15
     assert np.all(model.q_min <= robot.home_q) and np.all(robot.home_q <= model.q_max)
-    assert 0.05 < robot.max_opening < 0.15
 
 
 def test_gripper_opens_and_closes(model):
-    """Levels 0 and 1 put the driver at its ends, and the fingers apart and together."""
-    gripper = model.robot.gripper
-    driver = model.gripper.joints.index(gripper.driver)
-    assert len(model.gripper.joints) > 1
-    widths = []
-    for level, end, tol in ((0.0, gripper.open, 0.01), (1.0, gripper.closed, 0.03)):
-        assert abs(model.gripper.positions(level)[driver] - end) < tol
-        model.set(np.asarray(model.robot.home_q), level)
-        m, d = model.model, model.data
-        tips = [
-            invert(model.tcp_pose())[:3] @ np.r_[d.geom_xpos[g], 1.0]
+    """Levels 0 and 1 put each driver at its ends, and its fingers (the bodies its
+    joints move) apart and together; the other gripper stays."""
+    robot, m, d = model.robot, model.model, model.data
+    for arm, poser in enumerate(model.grippers):
+        gripper = robot.arms[arm].gripper
+        driver = poser.joints.index(gripper.driver)
+        assert len(poser.joints) > 1
+        moved = [m.jnt_bodyid[m.joint(j).id] for j in poser.joints]
+        fingers = [
+            g
             for g in range(m.ngeom)
-            if any(k in m.body(m.geom_bodyid[g]).name for k in ("finger", "pad"))
+            if any(in_subtree(m, int(m.geom_bodyid[g]), int(b)) for b in moved)
         ]
-        widths.append(np.ptp(np.array(tips)[:, :2], axis=0).max())
-    assert widths[0] > widths[1] + 0.03
+        widths = []
+        for level, end, tol in ((0.0, gripper.open, 0.01), (1.0, gripper.closed, 0.03)):
+            assert abs(poser.positions(level)[driver] - end) < tol
+            levels = np.zeros(len(robot.arms))
+            levels[arm] = level
+            model.set(np.asarray(robot.home_q), robot.gripper_position(levels))
+            tips = transform_points(invert(model.tcp_pose(arm)), d.geom_xpos[fingers])
+            widths.append(np.ptp(tips[:, :2], axis=0).max())
+        assert widths[0] > widths[1] + 0.03
 
 
-@pytest.mark.parametrize("name", ["droid_franka", "fr3_robotiq", "ur5e_2f140"])
+@pytest.mark.parametrize("name", ["fr3_robotiq", "ur5e_2f140"])
 def test_robotiq_tcp_is_between_the_closed_pads(name):
     """Closed, the Robotiq's pads meet at the TCP."""
     model = RobotModel(robot_or_skip(name))
@@ -84,7 +96,7 @@ def test_robotiq_tcp_is_between_the_closed_pads(name):
 def test_ur5e_followers_follow_the_mjcf_equalities():
     """The 2F-140's followers are the MJCF's linear equalities of finger_joint."""
     model = RobotModel(robot_or_skip("ur5e_2f140"))
-    closed = dict(zip(model.gripper.joints, model.gripper.positions(1.0)))
+    closed = dict(zip(model.grippers[0].joints, model.grippers[0].positions(1.0)))
     q = ur5e_2f140.FINGER_CLOSED
     assert closed["finger_joint"] == pytest.approx(q)
     assert closed["right_inner_knuckle_joint"] == pytest.approx(-q)
@@ -97,19 +109,24 @@ def test_ur5e_followers_follow_the_mjcf_equalities():
 
 
 def test_fk_ik_round_trip(model):
-    """IK from the home pose finds poses that FK produced, for the TCP and a body."""
+    """IK from the home pose finds poses that FK produced, for each arm's TCP and a
+    body, moving that arm only."""
     robot = model.robot
     rng = np.random.default_rng(0)
     home = np.asarray(robot.home_q)
-    for _ in range(5):
-        q = home + rng.uniform(-0.3, 0.3, robot.dof)
-        model.set(q, 0.0)
-        T_tcp, T_body = model.tcp_pose(), model.pose(robot.tcp_body)
-        result = model.ik(T_tcp, home)
-        assert result.success and result.pos_error < 1e-4, result
-        model.set(result.q)
-        assert np.allclose(model.tcp_pose(), T_tcp, atol=1e-3)
-        assert model.ik(T_body, home, frame=robot.tcp_body).success
+    for arm, spec in enumerate(robot.arms):
+        others = np.ones(robot.dof, bool)
+        others[robot.arm_slice(arm)] = False
+        for _ in range(5):
+            q = home + rng.uniform(-0.3, 0.3, robot.dof)
+            model.set(q)
+            T_tcp, T_body = model.tcp_pose(arm), model.pose(spec.tcp_body)
+            result = model.ik(T_tcp, home, arm=arm)
+            assert result.success and result.pos_error < 1e-4, result
+            assert np.array_equal(result.q[others], home[others])
+            model.set(result.q)
+            assert np.allclose(model.tcp_pose(arm), T_tcp, atol=1e-3)
+            assert model.ik(T_body, home, frame=spec.tcp_body, arm=arm).success
 
 
 def test_ik_stays_within_joint_limits_and_reports_failure(model):
@@ -142,16 +159,16 @@ def test_simulated_gripper_leaves_a_worlds_other_joints_alone(joint_name):
     # pylint: disable=import-outside-toplevel
     from r2s2r.mjrender import mujoco
 
-    robot = robot_or_skip("droid_franka")
+    robot = robot_or_skip("fr3_robotiq")
     mjspec = robot.mjcf()
     body = mjspec.worldbody.add_body(name="obj", pos=[0.5, 0.0, 0.1])
     body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.02, 0.02, 0.02])
     body.add_freejoint().name = joint_name
     model = RobotModel(robot, mjspec)
-    assert model.gripper.joints == [
+    assert model.grippers[0].joints == [
         model.model.joint(j).name
         for j in range(model.model.njnt)
-        if model.model.joint(j).name.startswith(droid_franka.PREFIX)
+        if model.model.joint(j).name.startswith(fr3_robotiq.PREFIX)
     ]
     adr = model.model.body("obj").jntadr[0]
     qadr = model.model.jnt_qposadr[adr]
@@ -161,42 +178,24 @@ def test_simulated_gripper_leaves_a_worlds_other_joints_alone(joint_name):
     assert np.array_equal(model.data.qpos[qadr : qadr + 7], moved)
 
 
-def test_droid_robotiq_mount_matches_the_mjcf():
+def test_robotiq_mount_matches_the_mjcf():
     """Isaac's re-mount constant is where the MuJoCo model has the Robotiq base."""
-    model = RobotModel(robot_or_skip("droid_franka"))
-    T = invert(model.pose("link7")) @ model.pose(f"{droid_franka.PREFIX}base")
+    model = RobotModel(robot_or_skip("fr3_robotiq"))
+    T = invert(model.pose("fr3_link7")) @ model.pose(f"{fr3_robotiq.PREFIX}base")
     expected = np.eye(4)
-    expected[2, 3] = droid_franka.ROBOTIQ_BASE_Z
+    expected[2, 3] = fr3_robotiq.ROBOTIQ_BASE_Z
     assert np.allclose(T, expected, atol=1e-4)
 
 
-def test_fr3_and_droid_franka_put_the_tcp_in_the_same_place():
-    """The FR3 has the Panda's kinematics and the Robotiq on the same coupling: the same
-    joints give the same TCP pose, within both arms' limits."""
-    fr3 = RobotModel(robot_or_skip("fr3_robotiq"))
-    panda = RobotModel(robot_or_skip("droid_franka"))
-    lower = np.maximum(fr3.q_min, panda.q_min)
-    upper = np.minimum(fr3.q_max, panda.q_max)
-    rng = np.random.default_rng(0)
-    for _ in range(50):
-        q = rng.uniform(lower, upper)
-        fr3.set(q, 0.5)
-        panda.set(q, 0.5)
-        T_fr3, T_panda = fr3.tcp_pose(), panda.tcp_pose()
-        assert np.linalg.norm(T_fr3[:3, 3] - T_panda[:3, 3]) < 1e-3
-        assert np.allclose(T_fr3[:3, :3], T_panda[:3, :3], atol=1e-3)
-
-
-@pytest.mark.parametrize("name", ["droid_franka", "fr3_robotiq"])
-def test_the_robotiq_squeezes_as_the_real_one_with_rubber_pads(name):
+def test_the_robotiq_squeezes_as_the_real_one_with_rubber_pads():
     """Closed on a fixed 40 mm block, the pads press with the real 2F-85's force as the
-    lab drives it (droid_franka.GRIP_FORCE; their mean: the arm holds the gripper a
+    lab drives it (fr3_robotiq.GRIP_FORCE; their mean: the arm holds the gripper a
     little off a fixed block); the pads have its rubber's friction."""
     # pylint: disable=import-outside-toplevel
     from r2s2r.mjrender import mujoco
     from r2s2r.robots.model import prepare_robot
 
-    robot = robot_or_skip(name)
+    robot = robot_or_skip("fr3_robotiq")
     spec = robot.mjcf()
     prepare_robot(spec, robot)
     model = RobotModel(robot)
@@ -223,16 +222,16 @@ def test_the_robotiq_squeezes_as_the_real_one_with_rubber_pads(name):
     d = mujoco.MjData(m)
     arm = [m.joint(j).qposadr[0] for j in robot.arm_joints]
     d.qpos[arm] = robot.home_q
-    gripper = m.actuator(robot.gripper.actuator).id
+    gripper = m.actuator(robot.arm.gripper.actuator).id
     d.ctrl[[a for a in range(m.nu) if a != gripper]] = robot.home_q
-    d.ctrl[gripper] = robot.gripper.ctrl_at(1.0)
+    d.ctrl[gripper] = robot.arm.gripper.ctrl_at(1.0)
     for _ in range(int(3.0 / m.opt.timestep)):
         mujoco.mj_step(m, d)
     block, force = m.geom("block").id, np.zeros(6)
     squeeze = {}
     for side in ("left", "right"):
         ids = {m.geom(f"gripper/{side}_pad{k}").id for k in (1, 2)}
-        assert all(m.geom_friction[g][0] == droid_franka.PAD_FRICTION for g in ids)
+        assert all(m.geom_friction[g][0] == fr3_robotiq.PAD_FRICTION for g in ids)
         squeeze[side] = 0.0
         for i in range(d.ncon):
             c = d.contact[i]
@@ -240,7 +239,7 @@ def test_the_robotiq_squeezes_as_the_real_one_with_rubber_pads(name):
                 mujoco.mj_contactForce(m, d, i, force)
                 squeeze[side] += force[0]
     assert np.mean(list(squeeze.values())) == pytest.approx(
-        droid_franka.GRIP_FORCE, rel=0.1
+        fr3_robotiq.GRIP_FORCE, rel=0.1
     )
 
 
@@ -321,3 +320,61 @@ def test_ur5e_mask_covers_the_robot_not_the_table():
     near_robot = cv2.dilate(on_robot.astype(np.uint8), np.ones((11, 11), np.uint8))
     far = (table > 0) & (near_robot == 0)
     assert far.sum() > 1000 and not mask[far].any()
+
+
+def test_robodojos_arms_stand_where_robodojo_has_them():
+    """In RoboDojo's world frame the arms' bases are where its dual_x5 puts them,
+    facing its +y; at home each gripper points ahead of its arm."""
+    model = RobotModel(robot_or_skip("dual_x5"))
+    for side, x in (("left", -0.3), ("right", 0.3)):
+        T = dual_x5.T_ROBODOJO_BASE @ model.pose(f"{side}_base_link")
+        assert np.allclose(T[:3, 3], [x, -0.45, 0.765])
+        assert np.allclose(T[:3, :3], dual_x5.T_ROBODOJO_BASE[:3, :3])
+        assert np.allclose(T[:3, 0], [0.0, 1.0, 0.0])
+    for arm in range(2):
+        assert np.allclose(model.tcp_pose(arm)[:3, 2], [1.0, 0.0, 0.0])
+
+
+def test_robodojos_grippers_open_and_close_each_its_own():
+    """A gripper position is one opening per arm: the left closed, the right open,
+    each one's joint8 following its joint7; one number for both is refused."""
+    robot = robot_or_skip("dual_x5")
+    model = RobotModel(robot)
+    model.set(np.asarray(robot.home_q), [1.0, 0.0])
+    m, d = model.model, model.data
+    for side, q in (("left", 0.0), ("right", dual_x5.FINGER_OPEN)):
+        for finger in dual_x5.FINGERS:
+            assert d.qpos[m.joint(f"{side}_{finger}").qposadr[0]] == pytest.approx(q)
+    with pytest.raises(ValueError, match="2 grippers"):
+        model.set(np.asarray(robot.home_q), 0.5)
+
+
+def test_robodojos_tcp_is_between_the_pads():
+    """Closed, each gripper's fingers lie either side of its TCP along its y, their
+    tips 8 mm past it along the approach (z), the TCP within their width (x)."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.mjrender import geom_mesh
+
+    robot = robot_or_skip("dual_x5")
+    model = RobotModel(robot)
+    model.set(np.asarray(robot.home_q), [1.0, 1.0])
+    m, d = model.model, model.data
+    for arm, side in enumerate(("left", "right")):
+        T_tcp_base = invert(model.tcp_pose(arm))
+        ys = []
+        for link in ("link7", "link8"):
+            b = m.body(f"{side}_{link}").id
+            T_base_body = np.eye(4)
+            T_base_body[:3, :3], T_base_body[:3, 3] = d.xmat[b].reshape(3, 3), d.xpos[b]
+            points = np.vstack(
+                [
+                    transform_points(T_tcp_base @ T_base_body, geom_mesh(m, g).vertices)
+                    for g in range(m.ngeom)
+                    if m.geom_bodyid[g] == b and m.geom_contype[g]
+                ]
+            )
+            assert points[:, 2].max() == pytest.approx(0.008, abs=1e-3)
+            assert points[:, 0].min() < 0.0 < points[:, 0].max()
+            ys.append(points[:, 1])
+        near, far = sorted(ys, key=np.mean)
+        assert near.max() < 0.001 and far.min() > -0.001

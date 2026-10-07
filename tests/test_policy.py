@@ -10,7 +10,6 @@ from scipy.spatial.transform import Rotation
 pytest.importorskip("mujoco")
 
 # pylint: disable=wrong-import-position
-from r2s2r.robots import ROBOTS  # noqa: E402
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec  # noqa: E402
 from r2s2r.testbed.pick import match_target  # noqa: E402
 from r2s2r.testbed.policy import (  # noqa: E402
@@ -27,8 +26,6 @@ BOX = (0.03, 0.07, 0.12)  # thin along x in its own frame
 # The closing axis in the TCP frame, how far the fingertips reach past the TCP, and
 # the opening at which the fingers meet (the 2F-140's pads touch before it is shut).
 GRIPPERS = {
-    "franka_panda": ((0, 1, 0), 0.009, 1.0),
-    "droid_franka": ((0, 1, 0), 0.019, 1.0),
     "fr3_robotiq": ((0, 1, 0), 0.019, 1.0),
     "ur5e_2f140": ((1, 0, 0), 0.036, 0.9),
 }
@@ -79,13 +76,13 @@ def _scene(tmp_path, robot, yaw_deg):
 
 def _scene_of(objects):
     return SceneSpec(
-        "s", "franka_panda", objects, np.eye(4), {}, "c", 0, np.zeros(7)
+        "s", "fr3_robotiq", objects, np.eye(4), {}, "c", 0, np.zeros(7)
     )  # fmt: skip
 
 
-@pytest.fixture(name="robot", params=sorted(ROBOTS))
+@pytest.fixture(name="robot", params=sorted(GRIPPERS))
 def fixture_robot(request):
-    """Each robot's spec."""
+    """Each one-armed robot's spec."""
     return robot_or_skip(request.param)
 
 
@@ -104,7 +101,7 @@ def test_grasp_closes_across_the_thin_side(tmp_path, robot):
     the table."""
     scene = _scene(tmp_path, robot, 30.0)
     geometry = gripper_geometry(KinematicRobot(robot, 1.0).model)
-    plan = plan_top_down_grasp(scene, "crayon_box", geometry, robot.max_opening)
+    plan = plan_top_down_grasp(scene, "crayon_box", geometry, robot.arm.max_opening)
     assert plan.width == pytest.approx(BOX[0], abs=3e-3)
     closing = plan.T_base_tcp[:3, :3] @ geometry.closing_axis
     thin = Rotation.from_euler("z", 30.0, degrees=True).apply([1.0, 0.0, 0.0])
@@ -170,7 +167,7 @@ def test_match_target_takes_the_nearest_match(tmp_path):
         },
     }
     capture = Capture(
-        "c", "mujoco", "franka_panda", "", {}, [], (0, 1), tmp_path,
+        "c", "mujoco", "fr3_robotiq", "", {}, [], (0, 1), tmp_path,
         metadata={"ground_truth": truth},
     )  # fmt: skip
     scene = _scene_of([obj("far", 0.42), obj("near", 0.49), obj("other", 0.01)])

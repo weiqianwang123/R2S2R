@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from r2s2r.mjrender import MAX_SIZE, CameraRenderer, add_camera
 from r2s2r.robots.model import RobotModel
@@ -56,9 +56,10 @@ class RobotMasker:
         height: int,
         T_base_cam: NDArray,
         joint_positions: NDArray,
-        gripper_position: float,
+        gripper_position: ArrayLike,
     ) -> NDArray[np.float32]:
-        """Planar depth of the robot surface, :data:`NO_ROBOT` elsewhere."""
+        """Planar depth of the robot surface, :data:`NO_ROBOT` elsewhere
+        (``gripper_position`` as a capture records it: one opening per arm)."""
         self.robot.set(joint_positions, gripper_position)
         out = self.renderer.render(K, width, height, T_base_cam)
         return np.where(out["geom"] >= 0, out["depth"], NO_ROBOT).astype(np.float32)
@@ -69,7 +70,7 @@ class RobotMasker:
         K: NDArray,
         T_base_cam: NDArray,
         joint_positions: NDArray,
-        gripper_position: float,
+        gripper_position: ArrayLike,
     ) -> tuple[NDArray[np.float32], NDArray[np.bool_]]:
         """``depth`` with robot pixels set to 0, and the mask of those pixels."""
         h, w = depth.shape

@@ -45,7 +45,7 @@ def _capture(tmp_path):
         "source": {},
     }
     capture = Capture(
-        "c", "mujoco", "franka_panda", "", {}, [], (0, 1), tmp_path / "capture",
+        "c", "mujoco", "fr3_robotiq", "", {}, [], (0, 1), tmp_path / "capture",
         metadata={"depth": "rendered", "ground_truth": ground_truth},
     )  # fmt: skip
     capture.save()
@@ -65,7 +65,7 @@ def _scene(tmp_path, offset, support_z=0.02, tilt_deg=0.0):
     )
     return SceneSpec(
         name="s",
-        embodiment="franka_panda",
+        embodiment="fr3_robotiq",
         objects=[obj],
         T_base_support=make_transform(R, [0.3, 0.0, support_z]),
         cameras={},

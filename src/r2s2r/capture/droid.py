@@ -227,7 +227,7 @@ def load_droid_episode(
     capture = Capture(
         name=uuid.replace("+", "_"),
         source="droid",
-        embodiment="droid_franka",
+        embodiment="fr3_robotiq",
         instruction=calib.instruction or metadata.get("current_task", ""),
         cameras=cameras,
         frames=frames,

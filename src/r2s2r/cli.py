@@ -3,7 +3,7 @@
 Captures: the robot's calibrated cameras, poses in its base frame, with joint states::
 
     r2s2r capture droid EPISODE_DIR --calib CALIB_DIR --out CAPTURE_DIR
-    r2s2r capture mujoco --world panda_table|physcoder_box_block --out CAPTURE_DIR
+    r2s2r capture mujoco --world fr3_table|physcoder_box_block --out CAPTURE_DIR
         [--seed 0] [--block corner|beside] [--every 5]
 
 Reconstruction, a run of a method on a capture (see :mod:`r2s2r.pipeline`), and the
@@ -212,7 +212,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--gripper-threshold", type=float, default=0.05)
     p.set_defaults(func=_droid_capture)
     p = sources.add_parser("mujoco", help="record a capture in a MuJoCo world")
-    p.add_argument("--world", required=True, help="panda_table, physcoder_box_block")
+    p.add_argument("--world", required=True, help="fr3_table, physcoder_box_block")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--seed", type=int, help="the layout's seed (physcoder_box_block)")
     p.add_argument("--block", help="corner or beside the box (physcoder_box_block)")

@@ -369,7 +369,7 @@ def test_fit_recovers_scale_yaw_and_position(tmp_path):
 
     truth = SceneSpec(
         "t",
-        "franka_panda",
+        "fr3_robotiq",
         [ObjectSpec("box", "box", str(box_urdf(tmp_path, BOX)), TRUE_POSE)],
         np.eye(4),
         {},

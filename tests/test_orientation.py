@@ -49,7 +49,7 @@ def _scene(urdf, T):
     obj = ObjectSpec("thing", "thing", str(urdf), T)
     return SceneSpec(
         name="t",
-        embodiment="franka_panda",
+        embodiment="fr3_robotiq",
         objects=[obj],
         T_base_support=np.eye(4),
         cameras={},

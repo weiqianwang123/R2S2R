@@ -44,7 +44,7 @@ from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
 from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from pxr import PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from r2s2r.assets import bottom_offset
@@ -99,11 +99,11 @@ def robot_cfg(robot: RobotSpec, joint_positions: NDArray) -> ArticulationCfg:
 
 
 def gripper_joints(
-    articulation: Articulation, robot: RobotSpec
+    articulation: Articulation, robot: RobotSpec, arm: int = 0
 ) -> tuple[list[int], torch.Tensor, torch.Tensor]:
-    """The gripper's articulation joints, and their open and closed positions: the
-    spec's table, else the driver alone between its soft limits."""
-    gripper = robot.gripper
+    """Arm ``arm``'s gripper's articulation joints, and their open and closed
+    positions: the spec's table, else the driver alone between its soft limits."""
+    gripper = robot.arms[arm].gripper
     if gripper.isaac_joints is None:
         ids, _ = articulation.find_joints([gripper.isaac_driver])
         limits = articulation.data.soft_joint_pos_limits[0, ids]
@@ -544,7 +544,8 @@ def simulation_cfg(scene: SceneSpec) -> SimulationCfg:
 
 class Session:
     """A scene running in Isaac Lab (:func:`build_scene_cfg`): the simulation, the
-    interactive scene, the robot's arm and gripper joints, the objects by name.
+    interactive scene, the robot's arm and gripper joints (every arm's in turn), the
+    objects by name.
 
     ``robot_spec`` is the scene's embodiment; ``kinematic_objects`` holds the objects
     where they are placed; ``cameras`` as for :func:`build_scene_cfg`. An articulated
@@ -570,8 +571,17 @@ class Session:
         self.arm_ids, _ = self.articulation.find_joints(
             list(robot_spec.isaac_arm_joints), preserve_order=True
         )
-        self.grip_ids, self.grip_open, self.grip_closed = gripper_joints(
-            self.articulation, robot_spec
+        grips = [
+            gripper_joints(self.articulation, robot_spec, arm)
+            for arm in range(len(robot_spec.arms))
+        ]
+        self.grip_ids = [i for ids, _, _ in grips for i in ids]
+        self.grip_open = torch.cat([ends for _, ends, _ in grips])
+        self.grip_closed = torch.cat([ends for _, _, ends in grips])
+        # The arm whose gripper each of them is.
+        self._grip_arm = torch.tensor(
+            [arm for arm, (ids, _, _) in enumerate(grips) for _ in ids],
+            device=self.grip_open.device,
         )
         self.names = {object_key(i): obj.name for i, obj in enumerate(spec.objects)}
         specs = {obj.name: obj for obj in spec.objects}
@@ -583,9 +593,13 @@ class Session:
                     joint_targets(specs[name], obj, kinematic_objects)
                 )
 
-    def gripper_targets(self, level: float) -> torch.Tensor:
-        """The gripper joints' positions at opening ``level`` (0 open, 1 closed)."""
-        return self.grip_open + level * (self.grip_closed - self.grip_open)
+    def gripper_targets(self, level: ArrayLike) -> torch.Tensor:
+        """The gripper joints' positions at openings ``level`` (0 open, 1 closed; as
+        a capture records them, one per arm)."""
+        levels = self.grip_open.new_tensor(self.robot_spec.gripper_levels(level))
+        return self.grip_open + levels[self._grip_arm] * (
+            self.grip_closed - self.grip_open
+        )
 
     def step_physics(self, n: int, render: bool = False) -> None:
         """``n`` physics steps; ``render`` renders on the last."""

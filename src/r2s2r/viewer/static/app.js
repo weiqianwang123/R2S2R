@@ -292,7 +292,7 @@ function setIdx(i) {
   $('slider').value = S.idx;
   const step = S.robot.steps[S.idx];
   const [s0, s1] = S.rec.static_steps;
-  $('readout').textContent = `step ${step} · ${fmt(S.robot.times[S.idx])} s · gripper ${fmt(S.robot.gripper[S.idx])}${step >= s0 && step < s1 ? '' : ' · moving'}`;
+  $('readout').textContent = `step ${step} · ${fmt(S.robot.times[S.idx])} s · gripper ${[].concat(S.robot.gripper[S.idx]).map((g) => fmt(g)).join(' / ')}${step >= s0 && step < s1 ? '' : ' · moving'}`;
   updateCameraTiles(step);
   poseRobot(S.idx);
   updateFrusta(step);

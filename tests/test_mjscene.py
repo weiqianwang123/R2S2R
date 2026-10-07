@@ -68,7 +68,7 @@ def test_a_lid_moves_as_its_dynamics_say(tmp_path):
 def test_the_robot_is_set_and_driven(tmp_path):
     """Set, the arm stands at the joints given; driven, its actuators take it to a
     target; the gripper closes."""
-    robot = robot_or_skip("franka_panda")
+    robot = robot_or_skip("fr3_robotiq")
     scene = _box_scene(tmp_path)
     session = Session(scene, robot)
     home = np.asarray(robot.home_q)
@@ -94,7 +94,9 @@ def test_the_gripper_closes_at_the_real_ones_speed(tmp_path):
         session.step()
         levels.append(session.gripper_level())
     shut = (np.argmax(np.asarray(levels) > 0.95) + 1) * session.dt
-    assert shut == pytest.approx(robot.max_opening / robot.gripper.speed, rel=0.2)
+    assert shut == pytest.approx(
+        robot.arm.max_opening / robot.arm.gripper.speed, rel=0.2
+    )
 
 
 def test_a_drawn_objects_physics_is_set_and_the_state_kept(tmp_path):
@@ -123,3 +125,23 @@ def test_a_drawn_objects_physics_is_set_and_the_state_kept(tmp_path):
     assert session.object_joints()["box"]["hinge"] == pytest.approx(-0.8)
     session.step(int(1.5 / session.dt))
     assert session.object_joints()["box"]["hinge"] < -0.7  # held by the drawn friction
+
+
+def test_two_arms_are_set_and_driven_each_by_its_own(tmp_path):
+    """RoboDojo's two arms: each follows its own targets and its gripper its own
+    opening; the session gives one opening per arm."""
+    robot = robot_or_skip("dual_x5")
+    home = np.asarray(robot.home_q)
+    scene = replace(_box_scene(tmp_path), embodiment=robot.name, joint_positions=home)
+    session = Session(scene, robot)
+    assert session.arm_q() == pytest.approx(home)
+    assert session.gripper_level() == pytest.approx([0.0, 0.0])
+    # The left arm reaching ahead, the right one up; both well above the table.
+    target = (
+        home + np.r_[0.3, 0.8, 0.9, -0.4, 0.2, -0.3, -0.3, 0.6, 0.8, 0.3, -0.2, 0.3]
+    )
+    session.command(target, [1.0, 0.0])
+    session.step(int(1.5 / session.dt))
+    assert np.abs(session.arm_q() - target).max() < 0.02
+    left, right = session.gripper_level()
+    assert left > 0.95 and right < 0.05
