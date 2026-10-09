@@ -38,9 +38,10 @@ from r2s2r.transforms import make_transform, matrix_to_pos_quat, pos_quat_to_mat
 
 TIMESTEP = 0.002  # s, the longest (MuJoCo's default): a pinch between the pads holds
 # Sliding friction when the scene gives an object none (PhysX's default material's);
-# MuJoCo's own torsional and rolling friction.
+# MuJoCo's own torsional and rolling friction, which every contact has (CONDIM).
 DEFAULT_FRICTION = 0.5
 SPIN_FRICTION, ROLL_FRICTION = 0.005, 0.0001
+CONDIM = 6  # a contact's friction: sliding, torsional and rolling
 VISUAL_GROUP, COLLISION_GROUP = 2, 3  # rendered by default, and not
 # A joint's dry friction as a stiff constraint: MuJoCo's default lets a lid its friction
 # should hold creep shut under its weight, the same at any friction.
@@ -216,6 +217,12 @@ def scene_spec(
     _add_support(spec, scene)
     for obj in scene.objects:
         _add_object(spec, obj)
+    # Torsional and rolling friction on every contact, the robot's pads' too (they
+    # set their own contacts' terms: their priority). MuJoCo's default condim, 3,
+    # drops both: a block pinched between the pads turned about them as the arm
+    # carried it, 7 degrees over 20 cm (0.4 with them).
+    for geom in spec.geoms:
+        geom.condim = CONDIM
     return spec
 
 

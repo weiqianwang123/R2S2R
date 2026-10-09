@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from conftest import hinged_box, rgbd_capture, robot_or_skip
 
-from r2s2r.sim.mjscene import Session
+from r2s2r.sim.mjscene import CONDIM, Session
 from r2s2r.structs import JointDynamics, SceneSpec
 from r2s2r.tools.objects import assemble
 from r2s2r.transforms import look_at, make_transform
@@ -79,6 +79,19 @@ def test_the_robot_is_set_and_driven(tmp_path):
     session.step(int(1.5 / session.dt))
     assert np.abs(session.arm_q() - target).max() < 0.02
     assert session.gripper_level() > 0.5
+
+
+def test_every_contact_has_torsional_and_rolling_friction(tmp_path):
+    """Every geom that collides has MuJoCo's torsional and rolling friction (condim
+    6), the gripper's pads too, whose priority makes their contacts theirs: without
+    it a block pinched between the pads turns about them as the arm carries it."""
+    robot = robot_or_skip("fr3_robotiq")
+    scene = replace(_box_scene(tmp_path), embodiment=robot.name)
+    m = Session(scene, robot).model
+    colliding = (m.geom_contype != 0) | (m.geom_conaffinity != 0)
+    pads = [i for i in np.flatnonzero(colliding) if "pad" in m.geom(i).name]
+    assert pads and set(m.geom_condim[colliding]) == {CONDIM}
+    assert all(m.geom_friction[i][1] > 0 for i in pads)
 
 
 def test_the_gripper_closes_at_the_real_ones_speed(tmp_path):
