@@ -74,9 +74,11 @@ class GripperSpec:
         return min(max(level, 0.0), 1.0)
 
     def ctrl_at(self, level: float) -> float:
-        """The MuJoCo actuator's control at opening ``level`` (clipped to 0-1)."""
+        """The MuJoCo actuator's control at opening ``level``; past 0 or 1, past
+        that end, which MuJoCo holds within the actuator's control range (the
+        joint's, unless a world widens it to drive the fingers past their stop)."""
         lo, hi = self.ctrl
-        return lo + min(max(float(level), 0.0), 1.0) * (hi - lo)
+        return lo + float(level) * (hi - lo)
 
 
 def _no_position_control(mjspec: Any) -> None:

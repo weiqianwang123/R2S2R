@@ -41,13 +41,17 @@ def test_registry_names_the_known_robots():
         get_robot("ur10")
 
 
-def test_a_grippers_opening_is_clipped_to_0_1():
-    """An opening past 0 or 1 gives the control (and driver) at that end."""
-    gripper = get_robot("fr3_robotiq").arm.gripper
+def test_a_grippers_control_goes_past_its_ends_as_its_actuator_allows(model):
+    """An opening past 0 or 1 asks for a control past that end, which MuJoCo
+    holds within the actuator's range (a world may widen it to squeeze past
+    the stop); the driver's position stays at the end."""
+    gripper = model.robot.arms[0].gripper
     lo, hi = gripper.ctrl
-    assert gripper.ctrl_at(1.2) == gripper.ctrl_at(1.0) == pytest.approx(hi)
-    assert gripper.ctrl_at(-0.5) == gripper.ctrl_at(0.0) == pytest.approx(lo)
+    assert gripper.ctrl_at(1.2) == pytest.approx(lo + 1.2 * (hi - lo))
+    assert gripper.ctrl_at(-0.5) == pytest.approx(lo - 0.5 * (hi - lo))
     assert gripper.driver_at(1.2) == gripper.driver_at(1.0)
+    actuator = model.model.actuator(gripper.actuator)
+    assert actuator.ctrllimited[0] and min(actuator.ctrlrange) <= min(lo, hi)
 
 
 def test_robot_compiles_with_its_arms_and_grippers(model):
