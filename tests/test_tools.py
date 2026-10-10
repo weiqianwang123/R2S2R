@@ -15,6 +15,7 @@ from conftest import (
     box_urdf,
     hinged_box,
     rgbd_capture,
+    robot_or_skip,
     towel_mesh,
 )
 from scipy.spatial.transform import Rotation
@@ -574,6 +575,7 @@ def _fake_sam3(calls):
 def test_segment_keeps_every_text_apart(tmp_path, monkeypatch):
     """Each text in its own directory with its own masks.json; one --name is for one
     text; text and point prompts do not mix."""
+    robot_or_skip("fr3_robotiq")  # each mask's share on the robot, rendered
     calls = []
     monkeypatch.setattr(segment_module, "run_env_job", _fake_sam3(calls))
     ws = Workspace.create(
