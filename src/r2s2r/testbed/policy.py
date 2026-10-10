@@ -12,7 +12,7 @@ The pick program only knows the reconstructed :class:`~r2s2r.structs.SceneSpec` 
 robot, which is all a code-writing agent would get. It grasps from above, across the
 object's narrowest side, with the gripper's closing axis, finger reach and empty
 closure read off the robot's model; a cloth it pinches near the nearest point of its
-border the arm reaches straight down, the fingertips at the table, closing to twice its
+border the arm reaches straight down, the fingertips at the table, closing to its
 thickness.
 """
 
@@ -438,7 +438,7 @@ def pick_up(
     robot.move_joints(np.asarray(robot.robot.home_q))
     geometry = gripper_geometry(robot.model)
     cloth = bool(find_object(scene, target).cloth)
-    if cloth:  # pinched to twice its thickness: nothing in MuJoCo stops the fingers
+    if cloth:  # pinched to its thickness: nothing in MuJoCo stops the fingers
         plan = plan_cloth_pinch(
             scene, target, geometry, robot.model, robot.tcp_pose()[:3, :3]
         )
@@ -503,38 +503,58 @@ def save_rollout(out_dir: Path, result: dict[str, Any], log: CommandLog) -> None
 
 
 class VideoRecorder:
-    """Collect RGB frames; write an mp4 and a contact sheet of evenly spaced frames."""
+    """Write RGB frames to an mp4 as they come; on closing, a contact sheet of evenly
+    spaced frames (read back from the video)."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self.frames: list[NDArray[np.uint8]] = []
+        self.count = 0
+        self._writer: cv2.VideoWriter | None = None
 
     def add(self, rgb: NDArray[np.uint8]) -> None:
-        """Append one RGB frame."""
-        self.frames.append(np.ascontiguousarray(rgb[..., :3]))
+        """Write one RGB frame."""
+        frame = np.ascontiguousarray(rgb[..., :3])
+        if self._writer is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            h, w = frame.shape[:2]
+            self._writer = cv2.VideoWriter(
+                str(self.path), cv2.VideoWriter.fourcc(*"mp4v"), VIDEO_FPS, (w, h)
+            )
+        self._writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        self.count += 1
 
     def close(self) -> None:
-        """Write the video and ``<stem>_sheet.jpg``."""
-        if not self.frames:
+        """Finish the video and write ``<stem>_sheet.jpg``."""
+        if self._writer is None:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        h, w = self.frames[0].shape[:2]
-        writer = cv2.VideoWriter(
-            str(self.path), cv2.VideoWriter.fourcc(*"mp4v"), VIDEO_FPS, (w, h)
-        )
-        for frame in self.frames:
-            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        writer.release()
-        idx = np.linspace(0, len(self.frames) - 1, SHEET_FRAMES).round().astype(int)
+        self._writer.release()
+        self._writer = None
+        idx = np.linspace(0, self.count - 1, SHEET_FRAMES).round().astype(int)
+        picked: dict[int, NDArray[np.uint8]] = {}
+        reader = cv2.VideoCapture(str(self.path))
+        try:
+            for i in range(int(idx[-1]) + 1):
+                ok, bgr = reader.read()
+                if not ok:
+                    break
+                if i in idx:
+                    picked[i] = np.asarray(
+                        cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), np.uint8
+                    )
+        finally:
+            reader.release()
+        if not picked:
+            return
+        h, w = next(iter(picked.values())).shape[:2]
         cols = 3
         rows = int(np.ceil(len(idx) / cols))
         tile_w = SHEET_WIDTH // cols
         tile_h = int(round(h * tile_w / w))
         sheet = np.zeros((rows * tile_h, cols * tile_w, 3), np.uint8)
         for k, i in enumerate(idx):
-            tile = cv2.resize(
-                self.frames[i], (tile_w, tile_h), interpolation=cv2.INTER_AREA
-            )
+            if int(i) not in picked:
+                continue
+            tile = cv2.resize(picked[i], (tile_w, tile_h), interpolation=cv2.INTER_AREA)
             cv2.putText(
                 tile,
                 f"t={i / VIDEO_FPS:.1f}s",

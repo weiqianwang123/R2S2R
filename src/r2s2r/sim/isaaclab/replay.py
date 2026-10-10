@@ -37,8 +37,11 @@ from r2s2r.sim.isaaclab.scene import (
 from r2s2r.sim.world import (
     SETTLE_SECONDS,
     frames_at,
+    recorded_trajectory,
     replay_steps,
     settled,
+    start_row,
+    trajectory_rows,
     write_render,
 )
 from r2s2r.structs import CameraSpec, Capture, SceneSpec
@@ -65,20 +68,14 @@ class _Recorded(Session):
         cameras: dict[str, CameraSpec],
         kinematic_objects: bool,
     ) -> None:
-        traj = capture.trajectory
-        if traj is None:
-            raise ValueError(
-                f"capture {capture.name} has no robot trajectory: record it again "
-                "(its trajectory.npz)"
-            )
-        self.traj = traj
+        self.traj = recorded_trajectory(capture)
         poses = [
             (cam, next(f for f in capture.frames if f.camera == s).T_base_cam)
             for s, cam in cameras.items()
         ]
         robot = get_robot(capture.embodiment)
         super().__init__(spec, robot, kinematic_objects, poses)
-        self.index = {int(s): i for i, s in enumerate(traj.steps.tolist())}
+        self.index = trajectory_rows(self.traj)
 
     def set_state(self, i: int) -> None:
         """The robot at trajectory row ``i``, and held there."""
@@ -150,7 +147,7 @@ def settle(
         ],
     )
     session = _Recorded(spec, capture, {}, False)
-    session.set_state(session.index.get(capture.static_steps[0], 0))
+    session.set_state(start_row(capture))
     before, joints_before = session.object_poses(), session.object_joints()
     session.step_physics(int(round(seconds / session.dt)))
     after, joints_after = session.object_poses(), session.object_joints()

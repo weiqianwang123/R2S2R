@@ -50,9 +50,17 @@ def segment(
 
     Writes ``out_dir/<name>/<frame>_<k>.png`` (best score first), an overlay per frame
     numbering the instances, and ``masks.json``; returns what ``masks.json`` holds.
+    Each text has its own ``name`` (by default from the text), so one ``name`` is for
+    one text.
     """
     out_dir = Path(out_dir).resolve()
     requests: list[dict[str, Any]] = []
+    if texts and (points or box):
+        raise ValueError("give text prompts, or points / a box, not both")
+    if texts and name and len(texts) > 1:
+        raise ValueError("a name is for one text: segment each text on its own")
+    if texts and len({slug(t) for t in texts}) != len(texts):
+        raise ValueError(f"the texts {texts} would share an output directory")
     if texts:
         for text in texts:
             for fid in frame_ids:

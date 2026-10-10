@@ -41,6 +41,7 @@ from r2s2r.tools.objects import (
     cloth_problems,
     physics_problems,
 )
+from r2s2r.tools.segment import slug
 from r2s2r.transforms import is_rigid
 from r2s2r.workspace import Workspace
 
@@ -138,25 +139,49 @@ def check_objects(_: Workspace, d: Path) -> list[str]:
     base = d.resolve()  # what relative paths in it start from
     problems = []
     objects = spec.get("objects", [])
+    if not isinstance(objects, list):
+        return ["objects.json: objects must be a list"]
     if not objects:
         problems.append("objects.json has no objects")
-    names = [o.get("name") for o in objects]
-    if len(set(names)) != len(names):
+    named = [
+        o for o in objects if isinstance(o, dict) and isinstance(o.get("name"), str)
+    ]
+    problems += [
+        f"objects.json: object {i} is not an object with a name"
+        for i, o in enumerate(objects)
+        if not any(o is n for n in named)
+    ]
+    objects = named
+    names = [o["name"] for o in objects]
+    if len({slug(n) for n in names}) != len(names):  # as file names too
         problems.append(f"object names are not unique: {names}")
     for obj in objects:
-        name = obj.get("name", "?")
+        name = obj["name"]
         mesh = obj.get("mesh")
-        if not mesh or not (base / mesh).exists():
+        if not isinstance(mesh, str) or not (base / mesh).exists():
             problems.append(f"{name}: mesh {mesh} not found")
-        scale = np.asarray(obj.get("scale", 1.0), float)  # as the reader takes it
-        if scale.size not in (1, 3) or np.any(scale <= 0):
+        try:  # as the reader takes it; nan (a null) is not positive
+            scale = np.asarray(obj.get("scale", 1.0), float)
+            positive = scale.size in (1, 3) and bool(
+                np.all(np.isfinite(scale) & (scale > 0))
+            )
+        except (TypeError, ValueError):
+            positive = False
+        if not positive:
             problems.append(f"{name}: scale must be positive (one value or three)")
         if not is_rigid(obj.get("T_base_obj", np.zeros((4, 4)))):
             problems.append(f"{name}: T_base_obj must be a rigid 4x4 transform")
         if obj.get("up", "z") not in UP_ROTATIONS:
             problems.append(f"{name}: up must be one of {sorted(UP_ROTATIONS)}")
-        for part in obj.get("parts") or []:
-            if not part.get("mesh") or not (base / part["mesh"]).exists():
+        parts = obj.get("parts") or []
+        if not isinstance(parts, list) or not all(isinstance(p, dict) for p in parts):
+            problems.append(f"{name}: parts must be a list of objects")
+            continue
+        for part in parts:
+            if (
+                not isinstance(part.get("mesh"), str)
+                or not (base / part["mesh"]).exists()
+            ):
                 problems.append(f"{name}: part {part.get('name')}'s mesh not found")
         problems += (
             articulation_problems(obj) + cloth_problems(obj) + physics_problems(obj)
@@ -178,7 +203,7 @@ def check_scene(extra: str) -> Callable[[Workspace, Path], list[str]]:
         problems = [] if (d / extra).exists() else [f"{extra} missing"]
         try:
             scene = SceneSpec.load(d / "scene")
-        except (OSError, KeyError, ValueError) as exc:
+        except (OSError, KeyError, TypeError, ValueError) as exc:
             return problems + [f"{d / 'scene'}: {exc}"]
         if not scene.objects:
             problems.append("the scene has no objects")

@@ -75,7 +75,12 @@ def problems(ws: Workspace, method: Method, key: str) -> list[str]:
     """What is wrong with stage ``key``'s product: the shared checks, then the
     method's; when it passes both, whether it is older than the previous stage's."""
     d = ws.root / STAGE_DIRS[key]
-    found = VALIDATORS[key](ws, d) + method.check(ws, key, d)
+    try:
+        found = VALIDATORS[key](ws, d) + method.check(ws, key, d)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        # A product so malformed that a check broke on it: said, not raised, so an
+        # agent is told what to fix.
+        return [f"checking stage {key}'s product failed: {type(exc).__name__}: {exc}"]
     if not found and not newer_than_previous(ws.root, key):
         previous = STAGES[STAGES.index(key) - 1]
         found.append(
@@ -118,6 +123,12 @@ def open_run(
             Capture.load(source), root, method, cameras, simulator or DEFAULT_SIM
         )
     ws = Workspace.load(root)
+    if root != source:
+        name = Capture.load(source).name
+        if name != ws.capture.name:
+            raise ValueError(
+                f"{root} is a run of capture {ws.capture.name}, not {name}"
+            )
     made_by = ws.read_run().get("method")
     if made_by != method:
         raise ValueError(f"{root} is a run of the {made_by} method, not {method}")
@@ -156,8 +167,11 @@ def run(
             if not force and is_done(ws, method, key):
                 logger.info("stage %s already done", key)
                 entry = ws.read_run()["stages"].get(key, {})
-                if entry.get("status") != "done":
-                    entry.pop("error", None)
+                if entry.get("status") != "done":  # what it was before is kept
+                    if "status" in entry:
+                        entry["previous_status"] = entry["status"]
+                    if "error" in entry:
+                        entry["previous_error"] = entry.pop("error")
                     _record(ws, key, {**entry, "status": "done"})
                 continue
             _run_stage(ws, method, key)
@@ -222,6 +236,7 @@ def _run_stage(ws: Workspace, method: Method, key: str) -> None:
     stage_dir.mkdir(parents=True, exist_ok=True)
     start = time.time()
     _record(ws, key, {"status": "running", "started": round(start, 1)})
+    entry: dict[str, Any] = {}
     try:
         if key == SETTLE:
             entry = _settle(ws, stage_dir)
@@ -231,7 +246,11 @@ def _run_stage(ws: Workspace, method: Method, key: str) -> None:
         if found:
             raise StageFailed(f"stage {key}'s output is not valid: {found}")
     except BaseException as exc:
-        _record(ws, key, _failed(start, exc))
+        # What the method recorded, also when it failed after (as an exception's
+        # ``record``: the agentic method's repository guard).
+        record = getattr(exc, "record", None)
+        record = record if isinstance(record, dict) else {}
+        _record(ws, key, {**entry, **record, **_failed(start, exc)})
         raise
     seconds = round(time.time() - start)
     _record(

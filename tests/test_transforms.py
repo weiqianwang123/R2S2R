@@ -28,13 +28,20 @@ def test_invert_roundtrip():
 
 
 def test_is_rigid_and_transform_points():
-    """Rotations with translations are rigid; scale, mirroring or a bad shape are not.
-    Points map like the homogeneous product."""
+    """Rotations with translations are rigid; scale, mirroring, a bad shape, a bottom
+    row other than 0 0 0 1 or a translation not finite are not. Points map like the
+    homogeneous product."""
     T = make_transform(Rotation.from_euler("z", 0.7).as_matrix(), [1.0, 2.0, 3.0])
     assert is_rigid(T) and is_rigid(T.tolist())
     assert not is_rigid(np.diag([2.0, 1.0, 1.0, 1.0]))
     assert not is_rigid(np.diag([-1.0, 1.0, 1.0, 1.0]))
     assert not is_rigid(np.eye(3)) and not is_rigid([[1, 2], [3]])
+    for row in ([0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0, 1.0]):
+        assert not is_rigid(np.r_[T[:3], [row]])
+    for bad in (np.nan, np.inf):
+        U = T.copy()
+        U[0, 3] = bad
+        assert not is_rigid(U)
     pts = np.array([[0.1, 0.2, 0.3], [1.0, -1.0, 0.5]])
     homogeneous = (T @ np.c_[pts, np.ones(2)].T).T[:, :3]
     assert np.allclose(transform_points(T, pts), homogeneous)

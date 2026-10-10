@@ -1,10 +1,11 @@
 """Compare a replay with the recording it replays: images for a person or an agent to
 look at, and numbers.
 
-For every rendered frame (:mod:`r2s2r.sim.isaaclab.replay`): the real image, the sim
-render and a blend side by side, with each object's outline where the replay has it
-drawn on the real image. Where the real frame has depth, the depth residual too, over
-the whole image and per object. Per camera, a contact sheet over time (at most
+For every rendered frame of a replay (either simulator's;
+:func:`~r2s2r.sim.world.write_render`): the real image, the sim render and a blend side
+by side, with each object's outline where the replay has it drawn on the real image.
+Where the real frame has depth, the depth residual too, over the whole image and per
+object. Per camera, a contact sheet over time (at most
 ``SHEET_ROWS`` frames, evenly spaced); per object, how far it moved from where it
 started.
 """
@@ -88,7 +89,7 @@ def compare_replay(
             for k, name in enumerate(names):
                 renderer.pose(k, poses[name].get(step))
             objects = renderer.render(view)["object"]
-            masks = {name: objects == i for i, name in enumerate(names)}
+            masks = {name: objects == k for k, name in enumerate(names)}
             panel = comparison_panel(real, sim, masks)
             row: dict[str, Any] = {"step": step, "camera": entry["role"]}
             if frame.depth_image is not None:

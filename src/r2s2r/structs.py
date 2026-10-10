@@ -328,6 +328,13 @@ class JointDynamics:
     rest: float = 0.0
 
 
+def log_uniform(key: str, low: float) -> bool:
+    """Whether a range of :attr:`ObjectSpec.ranges` (``key``, from ``low``) holds a
+    factor, drawn log-uniformly (and widened by factors): above 0, and not a position
+    (a joint's ``rest``, rad or m), which is drawn uniformly."""
+    return low > 0 and not key.endswith(".rest")
+
+
 @dataclass
 class ObjectSpec:
     """One object, rigid, articulated or a cloth, placed in the robot base frame."""
@@ -367,7 +374,8 @@ class ObjectSpec:
 
     def sample(self, rng: np.random.Generator) -> ObjectSpec:
         """This object with every parameter that has a range drawn from it: every
-        factor alike (log-uniformly) where both ends are above 0, else uniformly."""
+        factor alike (log-uniformly, :func:`log_uniform`), a position (a joint's rest)
+        and a range reaching 0 uniformly."""
         if not self.ranges:
             return self
         drawn = {}
@@ -375,7 +383,7 @@ class ObjectSpec:
             low, high = self.ranges[key]
             drawn[key] = float(
                 np.exp(rng.uniform(np.log(low), np.log(high)))
-                if low > 0
+                if log_uniform(key, low)
                 else rng.uniform(low, high)
             )
         dynamics = dict(self.joint_dynamics or {})
@@ -433,7 +441,6 @@ class SceneSpec:
         root = Path(root).resolve()
         root.mkdir(parents=True, exist_ok=True)
         payload = asdict(self)
-        payload["cameras"] = {k: asdict(v) for k, v in self.cameras.items()}
         for obj in payload["objects"]:
             for key in ("asset_path", "usd"):
                 if obj[key] is not None:

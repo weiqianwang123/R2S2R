@@ -14,7 +14,6 @@ from r2s2r.assets import (
     export_visual,
     make_sim_ready,
     urdf_visual_meshes,
-    urdf_visual_points,
 )
 from r2s2r.tools.geometry import load_mesh
 
@@ -48,21 +47,17 @@ def _collision_names(urdf):
     return [c.attrib.get("name") for c in ET.parse(urdf).getroot().iter("collision")]
 
 
-def test_mesh_scales_are_baked(tmp_path):
-    """Scaled meshes are written at their true size and lose the attribute."""
+def test_a_scaled_mesh_is_refused(tmp_path):
+    """A ``<mesh scale>`` other than 1 is refused (Isaac's importer mishandles it); a
+    scale of 1 is as good as none."""
     trimesh.creation.box(extents=(0.1, 0.1, 0.1)).export(tmp_path / "unit.obj")
-    urdf = _write_urdf(tmp_path, "box", _mesh_link("base", "unit.obj", "0.5 2 1"))
     lifted = np.eye(4)
-    lifted[2, 3] = 0.5  # off the support: no base, only the baking
-    out = make_sim_ready(urdf, lifted)
-    assert out.name == "box_r2s2r.urdf"
-    assert "scale" not in out.read_text(encoding="utf-8")
-    assert np.allclose(
-        np.ptp(urdf_visual_points(out, 2000), 0), (0.05, 0.2, 0.1), atol=2e-3
-    )
-    assert np.allclose(
-        np.ptp(urdf_visual_points(urdf, 2000), 0), (0.05, 0.2, 0.1), atol=2e-3
-    )
+    lifted[2, 3] = 0.5  # off the support: no base
+    urdf = _write_urdf(tmp_path, "box", _mesh_link("base", "unit.obj", "0.5 2 1"))
+    with pytest.raises(ValueError, match="scaled"):
+        make_sim_ready(urdf, lifted)
+    urdf = _write_urdf(tmp_path, "one", _mesh_link("base", "unit.obj", "1 1 1"))
+    assert make_sim_ready(urdf, lifted).name == "one_r2s2r.urdf"
 
 
 def test_resting_base_fills_the_footprint(tmp_path):

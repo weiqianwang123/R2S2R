@@ -3,6 +3,7 @@ assembly, fitting a mesh to several views."""
 
 import json
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -23,8 +24,17 @@ from r2s2r.assets import joint_transform, object_points, urdf_visual_meshes
 from r2s2r.structs import DepthView, JointDynamics, ObjectSpec, SceneSpec
 from r2s2r.tools import check as check_module
 from r2s2r.tools import cli as tools_cli
+from r2s2r.tools import envjobs, geometry
+from r2s2r.tools import segment as segment_module
 from r2s2r.tools.check import check
-from r2s2r.tools.geometry import fit_plane, parse_masks, pattern_search, view_points
+from r2s2r.tools.geometry import (
+    UP_ROTATIONS,
+    _initial_pose,
+    fit_plane,
+    parse_masks,
+    pattern_search,
+    view_points,
+)
 from r2s2r.tools.objects import (
     CLOTH_AREAL_DENSITY,
     CLOTH_POISSONS_RATIO,
@@ -150,6 +160,13 @@ def test_assemble_writes_a_simulation_ready_scene(tmp_path):
     (tmp_path / "objects.json").write_text(json.dumps(objects))
     with pytest.raises(ValueError, match="rigid"):
         assemble(ws, tmp_path / "objects.json", tmp_path / "scene2", "hull")
+
+    # Names that are one file name: refused, not one written over the other.
+    objects["objects"][0]["T_base_obj"] = T.tolist()
+    objects["objects"].append({**objects["objects"][0], "name": "box_1"})
+    (tmp_path / "objects.json").write_text(json.dumps(objects))
+    with pytest.raises(ValueError, match=r"unique as file names: \['Box 1', 'box_1'\]"):
+        assemble(ws, tmp_path / "objects.json", tmp_path / "scene3", "hull")
 
 
 def _hinged_box(tmp_path):
@@ -404,6 +421,8 @@ def test_check_cli_reads_joint_positions(monkeypatch):
     argv = ["tool", "check", "scene", "--frames", "ext1@0", "--out", "o", "--joint"]
     cli.main(argv + ["box:hinge=1.2", "box:slide=0.01", "door:pin=-0.5"])
     assert seen[0][-1] == {"box": {"hinge": 1.2, "slide": 0.01}, "door": {"pin": -0.5}}
+    cli.main(argv[:-1] + ["--joint", "box:hinge=1", "--joint", "door:pin=2"])
+    assert seen[1][-1] == {"box": {"hinge": 1.0}, "door": {"pin": 2.0}}
     with pytest.raises(SystemExit, match="OBJECT:JOINT=VALUE"):
         cli.main(argv + ["box=1.2"])
 
@@ -466,7 +485,12 @@ def test_fit_recovers_scale_yaw_and_position(tmp_path):
     result = fit(
         ws, tmp_path / "mesh.obj", support, mask_paths, tmp_path / "fit", up="z"
     )
+    # A given yaw is where the search starts, not where it stays.
+    started = fit(
+        ws, tmp_path / "mesh.obj", support, mask_paths, tmp_path / "f2", "z", 0.5, 22.0
+    )
     ws.close()
+    assert abs((started["yaw_deg"] - 30 + 90) % 180 - 90) < 4
     assert result["scale"] == pytest.approx(0.5, abs=0.025)
     assert result["mean_iou"] > 0.9
     T = np.asarray(result["T_base_obj"])
@@ -476,3 +500,112 @@ def test_fit_recovers_scale_yaw_and_position(tmp_path):
     yaw = np.degrees(np.arctan2(T[1, 0], T[0, 0]))
     assert abs((yaw - 30 + 90) % 180 - 90) < 4  # a box looks the same turned 180
     assert (tmp_path / "fit" / "ext1@2.png").exists()
+
+
+def test_print_json_keeps_number_lists_on_one_line(capsys):
+    """Lists of numbers on one line; a long one ending in something else is quick."""
+    tools_cli.print_json(
+        {"a": [1, -2.5, 3e-05], "b": ["x", 1], "c": [1.0] * 40 + [None]}
+    )
+    out = capsys.readouterr().out
+    assert '"a": [1, -2.5, 3e-05]' in out and '"x",' in out
+    assert json.loads(out)["c"][-1] is None
+
+
+def test_fit_cli_knows_the_up_axes(monkeypatch):
+    """``--up`` offers what fit turns, and refuses the rest."""
+    seen = []
+    monkeypatch.setattr(tools_cli, "_ws", lambda args: None)
+    monkeypatch.setattr(geometry, "fit", lambda *a, **kw: seen.append(kw["up"]) or {})
+    argv = ["tool", "fit", "m.obj", "--support", "s", "--mask", "f=m", "--out", "o"]
+    for up in UP_ROTATIONS:
+        cli.main(argv + [f"--up={up}"])
+    assert sorted(seen) == sorted(UP_ROTATIONS)
+    with pytest.raises(SystemExit):
+        cli.main(argv + ["--up=-z"])
+
+
+def test_points_and_support_want_frames_or_masks(tmp_path):
+    """Neither frames nor masks: said so."""
+    ws = Workspace.create(
+        rgbd_capture(tmp_path / "c", CAMERAS), tmp_path / "r", "agentic"
+    )
+    with pytest.raises(ValueError, match="--frames or --mask"):
+        geometry.points(ws, [], {}, tmp_path / "p.ply")
+    with pytest.raises(ValueError, match="--frames or --mask"):
+        geometry.support(ws, {}, tmp_path / "s.json")
+
+
+def test_initial_pose_of_a_lifted_object():
+    """An object not resting on the support: scale from its own height, starting at
+    its bottom; a given scale puts its top on the observed top."""
+    rng = np.random.default_rng(0)
+    observed = rng.uniform([-0.03, -0.02, 0.10], [0.03, 0.02, 0.18], (2000, 3))
+    model = rng.uniform([-0.06, -0.04, 0.0], [0.06, 0.04, 0.16], (2000, 3))
+    params, start = _initial_pose(observed, model, 0.16, None, 0.0, rest=False)
+    assert np.exp(params[0]) == pytest.approx(0.5, abs=0.03)
+    assert params[4] == pytest.approx(0.10, abs=0.005)
+    assert start["observed_bottom_m"] == pytest.approx(0.10, abs=0.005)
+    params, _ = _initial_pose(observed, model, 0.16, 0.5, 0.0, rest=False)
+    assert params[4] == pytest.approx(0.10, abs=0.005)
+    params, start = _initial_pose(observed, model, 0.16, None, 0.0, rest=True)
+    assert params[4] == 0.0 and "observed_bottom_m" not in start
+
+
+def _fake_sam3(calls):
+    """A SAM3 job writing one mask per request (its frame's left half)."""
+
+    def run(script, job, workdir, env):  # pylint: disable=unused-argument
+        calls.append(job)
+        results = []
+        for req in job["requests"]:
+            out = Path(req["out"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            mask = np.zeros(RGBD_SIZE[::-1], np.uint8)
+            mask[:, : RGBD_SIZE[0] // 2] = 255
+            cv2.imwrite(f"{out}_0.png", mask)
+            inst = {"mask": f"{out}_0.png", "score": 0.9, "box": [0, 0, 10, 10]}
+            results.append({"request": req, "instances": [inst]})
+        return {"results": results}
+
+    return run
+
+
+def test_segment_keeps_every_text_apart(tmp_path, monkeypatch):
+    """Each text in its own directory with its own masks.json; one --name is for one
+    text; text and point prompts do not mix."""
+    calls = []
+    monkeypatch.setattr(segment_module, "run_env_job", _fake_sam3(calls))
+    ws = Workspace.create(
+        rgbd_capture(tmp_path / "c", CAMERAS), tmp_path / "r", "agentic"
+    )
+    out = tmp_path / "masks"
+    summary = segment_module.segment(ws, ["ext1@0", "ext1@1"], out, ["red mug", "box"])
+    assert sorted(summary) == ["box", "red_mug"]
+    assert summary["red_mug"]["prompt"] == "red mug"
+    inst = summary["box"]["frames"]["ext1@1"]["instances"][0]
+    assert inst["mask"] == "box/ext1@1_0.png" and inst["on_robot"] >= 0
+    saved = json.loads((out / "red_mug" / "masks.json").read_text())
+    assert sorted(saved["frames"]) == ["ext1@0", "ext1@1"]
+    summary = segment_module.segment(ws, ["ext1@0"], out, ["mug"], name="cup")
+    assert list(summary) == ["cup"] and summary["cup"]["prompt"] == "mug"
+    with pytest.raises(ValueError, match="one text"):
+        segment_module.segment(ws, ["ext1@0"], out, ["mug", "cup"], name="cup")
+    with pytest.raises(ValueError, match="share"):
+        segment_module.segment(ws, ["ext1@0"], out, ["red mug", "red-mug"])
+    with pytest.raises(ValueError, match="not both"):
+        segment_module.segment(ws, ["ext1@0"], out, ["mug"], box=(0, 0, 5, 5))
+    assert len(calls) == 2
+
+
+def test_a_failing_env_job_raises_its_log(tmp_path, monkeypatch):
+    """A job that fails: its exit code and its log's tail are raised."""
+    mamba = tmp_path / "mamba"
+    mamba.write_text("#!/bin/sh\necho 'CUDA out of memory'\nexit 3\n")
+    mamba.chmod(0o755)
+    monkeypatch.setattr(envjobs, "mamba_exe", lambda: str(mamba))
+    with pytest.raises(RuntimeError, match="exit 3(.|\n)*CUDA out of memory"):
+        envjobs.run_env_job("sam3_job.py", {"a": 1}, tmp_path, "simfoundry")
+    assert json.loads(next((tmp_path / "logs").glob("*[0-9].json")).read_text()) == {
+        "a": 1
+    }

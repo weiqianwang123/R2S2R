@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ AGENTS: dict[str, tuple[Callable[[], str], str]] = {
 # How long a command Claude Code runs may take when the agent gives no limit (its own
 # default is 2 minutes; generating meshes takes longer).
 CLAUDE_COMMAND_S = 3600
+STOP_GRACE_S = 10.0  # how long a stopped agent may take to end before it is killed
 
 
 @dataclass
@@ -83,7 +85,12 @@ class _Agent:
 
 
 class RepositoryChanged(RuntimeError):
-    """The agent changed files outside its run."""
+    """The agent changed files outside its run; ``record``: what the stage would have
+    recorded about the agent."""
+
+    def __init__(self, message: str, record: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.record = record or {}
 
 
 class AgenticMethod:
@@ -123,32 +130,39 @@ class AgenticMethod:
             f"recording, the tools) and then {stage_dir / 'BRIEF.md'}, and carry out "
             f"that stage. Work in {stage_dir}."
         )
-        session, model = ask(agent, prompt, None, f"{name}_0")
-        found = problems(ws, self, key)
-        attempt = 0
-        while found and attempt < cfg.retries:
-            attempt += 1
-            logger.warning("stage %s output invalid: %s", key, found)
-            ask(
-                agent,
-                "The stage's output is not complete yet:\n- "
-                + "\n- ".join(found)
-                + "\nFix this and finish the stage.",
-                session,
-                f"{name}_{attempt}",
-            )
+        record: dict[str, Any] = {"agent": name, "model": agent.model}
+        try:
+            session, record["model"] = ask(agent, prompt, None, f"{name}_0")
+            record.update(session=session, resumptions=0)
             found = problems(ws, self, key)
+            while found and record["resumptions"] < cfg.retries:
+                record["resumptions"] += 1
+                logger.warning("stage %s output invalid: %s", key, found)
+                ask(
+                    agent,
+                    "The stage's output is not complete yet:\n- "
+                    + "\n- ".join(found)
+                    + "\nFix this and finish the stage.",
+                    session,
+                    f"{name}_{record['resumptions']}",
+                )
+                found = problems(ws, self, key)
+        except BaseException as exc:  # the repository is compared however it ends
+            changed = diff_states(before, repo_state())
+            if changed:
+                logger.error("stage %s changed the repository: %s", key, changed)
+                raise RepositoryChanged(
+                    f"stage {key} changed files outside its workspace: {changed} "
+                    f"(and failed: {type(exc).__name__}: {exc})",
+                    record,
+                ) from exc
+            raise
         changed = diff_states(before, repo_state())
         if changed:
             raise RepositoryChanged(
-                f"stage {key} changed files outside its workspace: {changed}"
+                f"stage {key} changed files outside its workspace: {changed}", record
             )
-        return {
-            "agent": name,
-            "model": model,
-            "session": session,
-            "resumptions": attempt,
-        }
+        return record
 
     def check(self, ws: Workspace, key: str, stage_dir: Path) -> list[str]:
         """Stage 2 beyond the shared checks: 4 to 8 frames, each with depth; a support
@@ -217,7 +231,7 @@ def _codex(
         cmd = [agent.executable, "exec", *common, "-C", str(agent.cwd), prompt]
     else:
         cmd = [agent.executable, "exec", "resume", *common, session, prompt]
-    log, events = _run(agent, cmd, name)
+    log, events, code = _run(agent, cmd, name)
     found = session
     for event in events:
         if event.get("type") == "thread.started":
@@ -226,6 +240,8 @@ def _codex(
             raise RuntimeError(
                 f"codex turn failed ({log}): {event.get('error', {}).get('message')}"
             )
+    if code != 0 and not any(e.get("type") == "turn.completed" for e in events):
+        raise RuntimeError(f"codex exited {code}; {_tail(log)}")
     if found is None:
         raise RuntimeError(f"codex started no session; {_tail(log)}")
     return found, agent.model
@@ -258,7 +274,7 @@ def _claude(
         # Nothing it learns of one scene is remembered in the next run.
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
     }
-    log, events = _run(agent, cmd, name, env)
+    log, events, code = _run(agent, cmd, name, env)
     found, model = session, agent.model
     for event in events:
         if event.get("type") == "system" and event.get("subtype") == "init":
@@ -271,6 +287,8 @@ def _claude(
             (agent.cwd / f"{name}_final.md").write_text(
                 str(event.get("result", "")), encoding="utf-8"
             )
+    if code != 0 and not any(e.get("type") == "result" for e in events):
+        raise RuntimeError(f"claude exited {code}; {_tail(log)}")
     if found is None:
         raise RuntimeError(f"claude started no session; {_tail(log)}")
     return found, model
@@ -278,9 +296,13 @@ def _claude(
 
 def _run(
     agent: _Agent, cmd: list[str], name: str, env: dict[str, str] | None = None
-) -> tuple[Path, list[dict[str, Any]]]:
+) -> tuple[Path, list[dict[str, Any]], int]:
     """Run the agent's CLI in the stage's directory, with nothing on its stdin and its
-    output (JSON lines) in ``<name>.jsonl``; that log and its events."""
+    output (JSON lines) in ``<name>.jsonl``; that log, its events and its exit code.
+
+    It runs in a session of its own: when it times out or this process is interrupted,
+    it is stopped with everything it started (the tools' GPU jobs among them).
+    """
     full_env = {**os.environ, **(env or {})}
     # The agent's `python` and `r2s2r` are this environment's.
     full_env["PATH"] = os.pathsep.join(
@@ -289,16 +311,20 @@ def _run(
     log = agent.cwd / f"{name}.jsonl"
     logger.info("%s: %s (events: %s)", agent.name, agent.cwd.name, log)
     with open(log, "w", encoding="utf-8") as out:
-        subprocess.run(
+        with subprocess.Popen(
             cmd,
             cwd=agent.cwd,
             env=full_env,
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=subprocess.STDOUT,
-            timeout=agent.timeout_s,
-            check=False,
-        )
+            start_new_session=True,
+        ) as proc:
+            try:
+                code = proc.wait(timeout=agent.timeout_s)
+            except BaseException:
+                _stop_group(proc)
+                raise
     events = []
     for line in log.read_text(errors="replace").splitlines():
         try:
@@ -307,7 +333,24 @@ def _run(
             continue
         if isinstance(event, dict):
             events.append(event)
-    return log, events
+    return log, events, code
+
+
+def _stop_group(proc: subprocess.Popen[bytes]) -> None:
+    """Stop the process group ``proc`` leads: SIGTERM, then SIGKILL to whatever of it
+    is left after a grace period."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=STOP_GRACE_S)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def _tail(log: Path) -> str:
@@ -374,11 +417,11 @@ def repo_state() -> dict[str, tuple[str, str]]:
 
         status = git("status", "--porcelain=v1", "--untracked-files=all")
         digest = hashlib.sha256(git("diff", "HEAD", "--no-ext-diff").encode())
-        for line in status.splitlines():
-            if line.startswith("?? "):
-                path = repo / line[3:]
-                if path.is_file():
-                    digest.update(path.read_bytes())
+        untracked = git("ls-files", "--others", "--exclude-standard", "-z")
+        for name in untracked.split("\0"):  # raw paths (status quotes odd ones)
+            path = repo / name
+            if name and path.is_file():
+                digest.update(name.encode() + b"\0" + path.read_bytes())
         state[str(repo)] = (status, digest.hexdigest())
     return state
 

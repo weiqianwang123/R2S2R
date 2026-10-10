@@ -177,6 +177,19 @@ def test_unknown_worlds_and_parameters_are_named():
         worlds.build_world("fr3_table", seed=1)
 
 
+def test_a_builders_own_type_error_is_its_own(monkeypatch):
+    """A TypeError inside a builder is not read as a wrong parameter."""
+
+    def broken(seed: int = 0):
+        raise TypeError(f"an API changed under seed {seed}")
+
+    monkeypatch.setitem(worlds.WORLDS, "broken", broken)
+    with pytest.raises(TypeError, match="an API changed"):
+        worlds.build_world("broken", seed=2)
+    with pytest.raises(ValueError, match="takes no"):
+        worlds.build_world("broken", size=2)
+
+
 @pytest.mark.gl
 @pytest.mark.parametrize(
     "name, params",

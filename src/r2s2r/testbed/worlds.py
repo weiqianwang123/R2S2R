@@ -20,6 +20,7 @@ Assets: ``scripts/setup/fetch_mujoco_assets.sh`` (menagerie, GSO) and physcoder'
 
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import xml.etree.ElementTree as ET
@@ -664,10 +665,11 @@ def build_world(name: str, **params: Any) -> MujocoWorld:
     """World ``name`` built with ``params`` (its builder's keyword arguments)."""
     if name not in WORLDS:
         raise ValueError(f"unknown world {name!r} (known: {', '.join(WORLDS)})")
-    try:
-        return WORLDS[name](**params)
+    try:  # the parameters alone: a TypeError inside the builder is its own
+        inspect.signature(WORLDS[name]).bind(**params)
     except TypeError as exc:
         raise ValueError(f"world {name} takes no {sorted(params)}: {exc}") from exc
+    return WORLDS[name](**params)
 
 
 def world_from_capture(capture: Capture) -> MujocoWorld:
@@ -679,6 +681,7 @@ def world_from_capture(capture: Capture) -> MujocoWorld:
     world = build_world(meta["name"], **meta["params"])
     recorded = capture.metadata["ground_truth"]["layout"]
     if not _same(world.layout, recorded):
+        world.close()
         raise ValueError(
             f"world {meta['name']} {meta['params']} no longer has capture "
             f"{capture.name}'s layout: {world.layout} vs {recorded}"

@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import re
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,7 +30,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import cv2
 
+from r2s2r import robots
 from r2s2r.robots import get_robot
+from r2s2r.robots.spec import RobotSpec
+from r2s2r.structs import CAPTURE_FILENAME, TRAJECTORY_FILENAME
 from r2s2r.viewer.robot import robot_glb, robot_poses
 from r2s2r.viewer.scenes import mesh_glb, mesh_preview, scene_glb
 from r2s2r.viewer.state import recording, run_state
@@ -49,11 +53,12 @@ class Viewer:
         self.cache = cache or self.root.parent / ".viewer_cache" / self.root.name
         self.cache.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
+        self._robot: tuple[Path, Path] | None = None
 
     def resolve(self, rel: str) -> Path:
-        """A path inside the run (or its cache), else ``PermissionError``."""
+        """A path inside the run, else ``PermissionError``."""
         path = (self.root / unquote(rel)).resolve()
-        if not (path.is_relative_to(self.root) or path.is_relative_to(self.cache)):
+        if not path.is_relative_to(self.root):
             raise PermissionError(rel)
         return path
 
@@ -69,21 +74,41 @@ class Viewer:
         return path
 
     def robot(self) -> tuple[Path, Path]:
-        """The robot's GLB and its poses along the trajectory."""
+        """The robot's GLB and its poses along the trajectory, cached on what they are
+        made of: the robot's model (:func:`model_stamp`), the capture's files."""
+        if self._robot is not None:
+            return self._robot
         robot = get_robot(self.ws.capture.embodiment)
-        glb_path = self.cache / f"robot_{robot.name}.glb"
-        names_path = self.cache / f"robot_{robot.name}.json"
-        poses_path = self.cache / f"robot_{robot.name}_poses.json"
-        with self.lock:
-            if not glb_path.exists():
-                glb, names = robot_glb(robot)
-                glb_path.write_bytes(glb)
-                names_path.write_text(json.dumps(names))
-            if not poses_path.exists():
-                names = json.loads(names_path.read_text())
-                poses = robot_poses(robot, self.ws.capture, names)
-                poses_path.write_text(json.dumps(poses))
-        return glb_path, poses_path
+        model = f"robot {robot.name} {model_stamp(robot)}"
+        made: list[tuple[bytes, list[str]]] = []
+
+        def glb() -> tuple[bytes, list[str]]:
+            if not made:
+                made.append(robot_glb(robot))
+            return made[0]
+
+        glb_path = self.cached(model, ".glb", lambda: glb()[0])
+        names_path = self.cached(model, ".json", lambda: json.dumps(glb()[1]).encode())
+        capture = self.ws.capture.root
+        recorded = [capture / CAPTURE_FILENAME, capture / TRAJECTORY_FILENAME]
+        stamps = [p.stat().st_mtime for p in recorded if p.exists()]
+        poses_path = self.cached(
+            f"poses {model} {capture} {stamps}",
+            ".json",
+            lambda: json.dumps(
+                robot_poses(robot, self.ws.capture, json.loads(names_path.read_text()))
+            ).encode(),
+        )
+        self._robot = glb_path, poses_path
+        return self._robot
+
+
+def model_stamp(robot: RobotSpec) -> float:
+    """When ``robot``'s model last changed: the newest of the files its MJCF names
+    (meshes) and the robots' modules."""
+    files = [Path(f) for f in re.findall(r'file="([^"]+)"', robot.mjcf().to_xml())]
+    files += Path(robots.__file__).parent.rglob("*.py")
+    return max((f.stat().st_mtime for f in files if f.is_file()), default=0.0)
 
 
 class Viewers:

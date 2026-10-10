@@ -96,8 +96,9 @@ def _load_entry(path: Path, uuid: str) -> dict[str, Any] | None:
 
 def align_steps_to_video(
     step_times_ms: NDArray[np.int64], video_times_ms: NDArray[np.int64]
-) -> NDArray[np.int64]:
-    """Map every trajectory step to the index of its video frame.
+) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    """Map every trajectory step to the index of its video frame, and how far (ms) that
+    frame is from the step's time (large for a step before or after the video).
 
     Video timestamps trail the step capture estimates by a roughly constant latency, so
     the median offset is removed before nearest-neighbour matching.
@@ -110,7 +111,7 @@ def align_steps_to_video(
     left = video_times_ms[idx - 1]
     right = video_times_ms[idx]
     idx -= (shifted - left < right - shifted).astype(np.int64)
-    return idx.astype(np.int64)
+    return idx.astype(np.int64), np.abs(video_times_ms[idx] - shifted)
 
 
 def read_video_frames(
@@ -312,14 +313,29 @@ def _frames(
     gripper: NDArray,
 ) -> list[FrameRecord]:
     """The camera's frames at ``steps`` from its ``video``, their left and right images
-    written to ``out_dir/frames/<serial>/``."""
+    written to ``out_dir/frames/<serial>/``; a step with no video frame within half a
+    frame period (before or after the video) has none."""
     serial = cam.serial
     timestamps_path = video.with_name(f"{serial}_timestamps.json")
     if timestamps_path.exists():
         video_times = np.asarray(json.loads(timestamps_path.read_text()))
-        step_to_frame = align_steps_to_video(step_times, video_times)
+        step_to_frame, gap = align_steps_to_video(step_times, video_times)
+        tolerance = float(np.median(np.diff(video_times))) / 2
     else:
+        cap = cv2.VideoCapture(str(video))
+        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or len(gripper)  # 0: unknown
+        cap.release()
         step_to_frame = np.arange(len(gripper))
+        gap, tolerance = np.where(step_to_frame < count, 0.0, np.inf), 0.0
+    kept = [s for s in steps if gap[s] <= tolerance]
+    if len(kept) < len(steps):
+        logger.warning(
+            "camera %s: %d of %d steps have no video frame near them; skipped",
+            serial,
+            len(steps) - len(kept),
+            len(steps),
+        )
+    steps = kept
     decoded = read_video_frames(video, {int(step_to_frame[s]) for s in steps})
 
     frame_dir = out_dir / "frames" / serial

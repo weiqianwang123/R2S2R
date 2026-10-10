@@ -23,6 +23,7 @@ from r2s2r.paths import REPO_ROOT, SIMFOUNDRY_DIR, mamba_exe
 logger = logging.getLogger(__name__)
 
 JOBS_DIR = REPO_ROOT / "scripts" / "tools"
+STOP_GRACE_S = 10.0  # how long a stopped job may take to end before it is killed
 
 
 def simfoundry_env() -> dict[str, str]:
@@ -66,7 +67,9 @@ def run_env_job(
 ) -> dict[str, Any]:
     """Run ``scripts/tools/<script>`` in ``env_name`` on ``job``; its result.
 
-    The job's output goes to ``workdir/logs/``; on failure, its tail is raised.
+    The job's output goes to ``workdir/logs/``; on failure, its tail is raised. When
+    this process is interrupted, the job is stopped (``mamba run`` passes SIGTERM on to
+    it; a SIGKILL would leave it running).
     """
     workdir = Path(workdir)
     logs = workdir / "logs"
@@ -88,14 +91,18 @@ def run_env_job(
     ]
     logger.info("running %s in %s (log: %s)", script, env_name, log_path)
     with open(log_path, "w", encoding="utf-8") as log:
-        proc = subprocess.run(
-            cmd,
-            cwd=workdir,
-            env=simfoundry_env(),
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        with subprocess.Popen(
+            cmd, cwd=workdir, env=simfoundry_env(), stdout=log, stderr=subprocess.STDOUT
+        ) as proc:
+            try:
+                proc.wait()
+            except BaseException:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=STOP_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                raise
     if proc.returncode != 0 or not result_path.exists():
         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-30:])
         raise RuntimeError(

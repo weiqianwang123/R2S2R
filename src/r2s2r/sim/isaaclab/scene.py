@@ -51,7 +51,7 @@ from pxr import PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from r2s2r.assets import bottom_offset
 from r2s2r.robots.spec import RobotSpec
-from r2s2r.sim.world import gravity, support_extent
+from r2s2r.sim.world import SUPPORT_COLOR, gravity, support_extent
 from r2s2r.structs import SUPPORT_THICKNESS, CameraSpec, ObjectSpec, SceneSpec
 from r2s2r.transforms import (
     make_transform,
@@ -437,10 +437,8 @@ def support_cfg(scene: SceneSpec) -> AssetBaseCfg:
             size=(extent[0], extent[1], SUPPORT_THICKNESS),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(
-                    (0.2, 0.45, 0.9)
-                    if scene.support_color is None
-                    else tuple(_linear(np.asarray(scene.support_color)))
+                diffuse_color=tuple(
+                    _linear(np.asarray(scene.support_color or SUPPORT_COLOR))
                 )
             ),
         ),

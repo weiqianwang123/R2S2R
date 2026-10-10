@@ -4,13 +4,15 @@ rests.
 
 :func:`make_sim_ready` writes one ``<name>_r2s2r.urdf`` per object:
 
-- every ``<mesh scale>`` is baked into its mesh (Isaac Sim 5.1's importer turns a
-  scaled mesh into an unscaled prototype plus a scaled instance, and left a 1 m
-  collider beside the right one);
 - an object resting on the support gets a flat base (on its root link). An object seen
   standing still on the support must also stand in simulation, but generated meshes
   round off the edges an object stands on, and the contact patch left can be a
   fraction of the real footprint (a tall box then topples).
+
+Its meshes must be at their true size, with no ``<mesh scale>`` (Isaac Sim 5.1's
+importer turns a scaled mesh into an unscaled prototype plus a scaled instance, and
+left a 1 m collider beside the right one); :func:`~r2s2r.tools.objects.assemble`
+scales the meshes before it writes the URDF.
 
 The readers place every link where its joints put it: at given joint positions (an
 articulated object's :attr:`~r2s2r.structs.ObjectSpec.joints`), else at zero.
@@ -35,14 +37,8 @@ SIM_READY_SUFFIX = "_r2s2r"
 RESTING_BASE = "r2s2r_resting_base"
 ROOT_LINK = "base"  # an object's root link: a rigid object's only one
 VISUAL = "visual"  # the file name of an object's (root link's) visual mesh
-
-
-@dataclass
-class SimReadyConfig:
-    """Knobs of :func:`make_sim_ready` (metres)."""
-
-    base_height: float = 0.005  # the flat base's thickness
-    contact_tolerance: float = 0.01  # lowest point this close to the support: resting
+BASE_HEIGHT = 0.005  # m: the flat base's thickness
+CONTACT_TOLERANCE = 0.01  # m: lowest point this close to the support: resting
 
 
 @dataclass
@@ -87,22 +83,23 @@ class VisualMesh:
     link: str = ROOT_LINK
 
 
-def make_sim_ready(
-    urdf_path: str | Path,
-    T_support_obj: NDArray,
-    config: SimReadyConfig | None = None,
-) -> Path:
-    """Write ``<name>_r2s2r.urdf`` next to ``urdf_path`` (see the module doc).
+def make_sim_ready(urdf_path: str | Path, T_support_obj: NDArray) -> Path:
+    """Write ``<name>_r2s2r.urdf`` next to ``urdf_path`` (see the module doc); a
+    ValueError for a scaled mesh.
 
     ``T_support_obj`` places the object in the support frame (z up, the support
     surface at z = 0); it decides whether the object rests on the support.
     """
-    cfg = config or SimReadyConfig()
     urdf_path = Path(urdf_path)
     tree = ET.parse(urdf_path)
     root = tree.getroot()
-    _bake_mesh_scales(root, urdf_path.parent)
-    _add_resting_base(root, urdf_path, np.asarray(T_support_obj, float), cfg)
+    for mesh_el in root.iter("mesh"):
+        if not np.allclose(urdf_vector(mesh_el, "scale", "1 1 1"), 1.0):
+            raise ValueError(
+                f"{urdf_path}: mesh {mesh_el.attrib.get('filename')} is scaled; "
+                "write it at its true size"
+            )
+    _add_resting_base(root, urdf_path, np.asarray(T_support_obj, float))
     out_path = urdf_path.with_name(f"{urdf_path.stem}{SIM_READY_SUFFIX}.urdf")
     tree.write(out_path, xml_declaration=True, encoding="utf-8")
     return out_path
@@ -262,29 +259,12 @@ def object_points(obj: ObjectSpec, n: int = 3000) -> NDArray[np.float64]:
 
 
 # ------------------------------------------------------------------ preparation
-def _bake_mesh_scales(root: ET.Element, asset_dir: Path) -> None:
-    for mesh_el in root.iter("mesh"):
-        scale = urdf_vector(mesh_el, "scale", "1 1 1")
-        mesh_el.attrib.pop("scale", None)
-        if np.allclose(scale, 1.0):
-            continue
-        rel = Path(mesh_el.attrib["filename"])
-        baked_rel = rel.parent / f"{rel.stem}{SIM_READY_SUFFIX}.obj"
-        baked, source = asset_dir / baked_rel, asset_dir / rel
-        if not baked.exists() or baked.stat().st_mtime < source.stat().st_mtime:
-            mesh = trimesh.load(source, force="mesh", process=False)
-            assert isinstance(mesh, trimesh.Trimesh), f"{rel} is not a single mesh"
-            mesh.apply_transform(np.diag([*scale, 1.0]))
-            export_visual(mesh, baked)
-        mesh_el.attrib["filename"] = str(baked_rel)
-
-
 def _add_resting_base(
-    root: ET.Element, urdf_path: Path, T_support_obj: NDArray, cfg: SimReadyConfig
+    root: ET.Element, urdf_path: Path, T_support_obj: NDArray
 ) -> None:
-    """A convex prism: the root link's visual mesh's cross-section ``base_height`` above
-    its lowest point (support frame), extruded down to that point; added to the root
-    link as an extra collision.
+    """A convex prism: the root link's visual mesh's cross-section :data:`BASE_HEIGHT`
+    above its lowest point (support frame), extruded down to that point; added to the
+    root link as an extra collision.
 
     Skipped for objects not resting on the support.
     """
@@ -302,10 +282,10 @@ def _add_resting_base(
     assert isinstance(mesh, trimesh.Trimesh)
     mesh.apply_transform(T_support_obj)
     z0 = float(mesh.bounds[0, 2])
-    if abs(z0) > cfg.contact_tolerance:
+    if abs(z0) > CONTACT_TOLERANCE:
         return
     section = mesh.section(
-        plane_origin=[0.0, 0.0, z0 + cfg.base_height], plane_normal=[0.0, 0.0, 1.0]
+        plane_origin=[0.0, 0.0, z0 + BASE_HEIGHT], plane_normal=[0.0, 0.0, 1.0]
     )
     if section is None or len(section.vertices) < 3:
         return
@@ -314,7 +294,7 @@ def _add_resting_base(
         np.concatenate(
             [
                 np.c_[outline, np.full(len(outline), z0)],
-                np.c_[outline, np.full(len(outline), z0 + cfg.base_height)],
+                np.c_[outline, np.full(len(outline), z0 + BASE_HEIGHT)],
             ]
         )
     )

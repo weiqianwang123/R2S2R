@@ -122,6 +122,9 @@ def test_a_drawn_objects_physics_is_set_and_the_state_kept(tmp_path):
     session = Session(replace(scene, objects=[box]))
     session.set_joints("box", {"hinge": -0.8})
     poses = session.object_poses()
+    m = session.model
+    ids = [b for b in range(m.nbody) if m.body(b).name in ("box", "box/lid")]
+    built = m.body_mass[ids].sum()
     drawn = replace(
         box,
         mass=0.8,
@@ -129,8 +132,6 @@ def test_a_drawn_objects_physics_is_set_and_the_state_kept(tmp_path):
         joint_dynamics={"hinge": JointDynamics(friction=0.5)},
     )
     session.set_physics(drawn)
-    m = session.model
-    ids = [b for b in range(m.nbody) if m.body(b).name in ("box", "box/lid")]
     assert m.body_mass[ids].sum() == pytest.approx(0.8)
     colliders = [
         g for g in range(m.ngeom) if m.geom_bodyid[g] in ids and m.geom_group[g] == 3
@@ -140,6 +141,8 @@ def test_a_drawn_objects_physics_is_set_and_the_state_kept(tmp_path):
     assert session.object_joints()["box"]["hinge"] == pytest.approx(-0.8)
     session.step(int(1.5 / session.dt))
     assert session.object_joints()["box"]["hinge"] < -0.7  # held by the drawn friction
+    session.set_physics(replace(drawn, mass=None))  # no mass: as built, not as drawn
+    assert m.body_mass[ids].sum() == pytest.approx(built)
 
 
 def test_two_arms_are_set_and_driven_each_by_its_own(tmp_path):
@@ -221,3 +224,18 @@ def test_a_cloth_is_drawn_where_it_moved(tmp_path):
         session.close()
     assert before == pytest.approx(0.55, abs=0.01)
     assert after == pytest.approx(before - 0.1, abs=0.01)
+
+
+@pytest.mark.gl
+def test_the_sky_has_no_depth(tmp_path):
+    """Where a render sees no geometry (the sky), its depth is 0, as a depth camera
+    gives and Isaac's replay keeps, not the far plane; the box seen has its own."""
+    session = Session(_box_scene(tmp_path))
+    K = np.array([[300.0, 0.0, 79.5], [0.0, 300.0, 59.5], [0.0, 0.0, 1.0]])
+    try:
+        sky = session.render(K, 160, 120, look_at((0.5, 0.0, 0.3), (3.0, 0.0, 1.5)))
+        box = session.render(K, 160, 120, look_at((0.5, 0.0, 0.6), (0.5, 0.01, 0.0)))
+    finally:
+        session.close()
+    assert np.all(sky["geom"] < 0) and np.all(sky["depth"] == 0.0)
+    assert box["geom"][60, 80] >= 0 and 0.4 < box["depth"][60, 80] < 0.6

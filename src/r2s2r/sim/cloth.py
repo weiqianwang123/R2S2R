@@ -88,13 +88,7 @@ def settle(
     if not cloths:
         return None
     to_support = invert(np.asarray(scene.T_base_support, float))
-    surfaces = {obj.name: _visual(obj) for obj in cloths}
-    placed = {
-        obj.name: transform_points(
-            to_support @ obj.T_base_obj, surfaces[obj.name].vertices
-        )
-        for obj in cloths
-    }
+    surfaces, placed = _placed(cloths, to_support)
     for obj in cloths:
         assert obj.cloth is not None
         below = -float(placed[obj.name][:, 2].min())
@@ -113,12 +107,9 @@ def settle(
         }
         objects = {  # every object's links: what a free body may rest on
             b
-            for obj in scene.objects
-            for b in range(m.nbody)
-            if not obj.cloth
-            and (
-                m.body(b).name == obj.name or m.body(b).name.startswith(f"{obj.name}/")
-            )
+            for name, ids in session.bodies.items()
+            if not session.objects[name].cloth
+            for b in ids
         }
         ids, arrays = scene_bodies(m, session.data, to_support, objects)
     finally:
@@ -202,13 +193,7 @@ class ClothSim:
         self.ids, arrays = scene_bodies(session.model, session.data, self.to_support)
         work = Path(work_dir).resolve()
         work.mkdir(parents=True, exist_ok=True)
-        surfaces = {obj.name: _visual(obj) for obj in self.cloths}
-        placed = {
-            obj.name: transform_points(
-                self.to_support @ obj.T_base_obj, surfaces[obj.name].vertices
-            )
-            for obj in self.cloths
-        }
+        surfaces, placed = _placed(self.cloths, self.to_support)
         write_input(work / "serve.npz", arrays, self.cloths, placed, surfaces)
         # pylint: disable-next=consider-using-with
         self._log = open(work / "cloth_sim.log", "wb")
@@ -387,6 +372,21 @@ def _pose_matrix(pose: NDArray) -> NDArray[np.float64]:
 
 def _visual(obj: ObjectSpec) -> trimesh.Trimesh:
     return urdf_visual_meshes(obj.asset_path)[0].mesh  # a cloth has one
+
+
+def _placed(
+    cloths: list[ObjectSpec], to_support: NDArray
+) -> tuple[dict[str, trimesh.Trimesh], dict[str, NDArray[np.float64]]]:
+    """Each cloth's visual mesh, and its vertices where it lies (the support's
+    frame), by name."""
+    surfaces = {obj.name: _visual(obj) for obj in cloths}
+    placed = {
+        obj.name: transform_points(
+            to_support @ obj.T_base_obj, surfaces[obj.name].vertices
+        )
+        for obj in cloths
+    }
+    return surfaces, placed
 
 
 def write_input(

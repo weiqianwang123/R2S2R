@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from r2s2r.assets import urdf_visual_points
+from r2s2r.assets import object_points
 from r2s2r.mjrender import MAX_SIZE, SceneRenderer
 from r2s2r.pipeline.fixed.refine import Observation, RefineConfig, observe
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
@@ -80,7 +80,7 @@ def drop_unseen(
         return scene, report
 
     # Heights in the support frame: which objects rested on a dropped one.
-    boxes = [_box(scene, obj.asset_path, obj.T_base_obj, cfg) for obj in scene.objects]
+    boxes = [_box(scene, obj, cfg) for obj in scene.objects]
     contact = cfg.refine.contact_tolerance
     objects = []
     for i, obj in enumerate(scene.objects):
@@ -119,8 +119,9 @@ def _points_under(
     obs: Observation, obj: ObjectSpec, groups: list, cfg: ExistenceConfig
 ) -> int:
     """How many points of unmatched clusters stand within ``obj``'s footprint."""
-    T = invert(obs.T_base_support) @ obj.T_base_obj
-    pts = transform_points(T, urdf_visual_points(obj.asset_path, cfg.model_points))
+    pts = transform_points(
+        invert(obs.T_base_support), object_points(obj, cfg.model_points)
+    )
     lo = pts[:, :2].min(axis=0) - cfg.footprint_margin
     hi = pts[:, :2].max(axis=0) + cfg.footprint_margin
     count = 0
@@ -154,11 +155,12 @@ def _see_through(
 
 
 def _box(
-    scene: SceneSpec, asset_path: str, T_base_obj: NDArray, cfg: ExistenceConfig
+    scene: SceneSpec, obj: ObjectSpec, cfg: ExistenceConfig
 ) -> tuple[NDArray, NDArray]:
     """The object's axis-aligned box in the support frame (low and high corners)."""
-    T = invert(scene.T_base_support) @ T_base_obj
-    pts = transform_points(T, urdf_visual_points(asset_path, cfg.model_points))
+    pts = transform_points(
+        invert(scene.T_base_support), object_points(obj, cfg.model_points)
+    )
     return pts.min(axis=0), pts.max(axis=0)
 
 

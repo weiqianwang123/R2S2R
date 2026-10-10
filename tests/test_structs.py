@@ -15,6 +15,7 @@ from r2s2r.structs import (
     JointDynamics,
     ObjectSpec,
     SceneSpec,
+    log_uniform,
     read_depth,
     write_depth,
 )
@@ -219,3 +220,19 @@ def test_an_objects_ranges_are_kept_and_drawn_from(tmp_path):
     )
     plain = replace(loaded, ranges=None)
     assert plain.sample(np.random.default_rng(0)) is plain
+
+
+def test_a_joints_rest_is_drawn_uniformly():
+    """A rest position's range above 0 is a position, drawn uniformly (median mid-way),
+    not log-uniformly as a factor (median near the low end)."""
+    assert log_uniform("mass", 0.2) and log_uniform("hinge.damping", 0.01)
+    assert not log_uniform("hinge.rest", 0.01) and not log_uniform("mass", 0.0)
+    lid = ObjectSpec(
+        "box", "box", "box.urdf", np.eye(4), ranges={"hinge.rest": (0.01, 0.3)}
+    )
+    rests = [
+        lid.sample(np.random.default_rng(seed)).dynamics("hinge").rest
+        for seed in range(400)
+    ]
+    assert all(0.01 <= r <= 0.3 for r in rests)
+    assert np.median(rests) == pytest.approx(0.155, abs=0.03)

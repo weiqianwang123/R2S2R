@@ -14,7 +14,9 @@ from r2s2r.assets import ROOT_LINK, UrdfLink, write_object_urdf  # noqa: E402
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec  # noqa: E402
 from r2s2r.testbed.pick import match_target  # noqa: E402
 from r2s2r.testbed.policy import (  # noqa: E402
+    SHEET_FRAMES,
     RobotInterface,
+    VideoRecorder,
     find_object,
     gripper_geometry,
     opening_at_gap,
@@ -265,3 +267,24 @@ def test_match_target_takes_the_nearest_match(tmp_path):
     scene.objects = [obj("other", 0.01)]
     with pytest.raises(KeyError, match="block"):
         match_target(scene, capture)
+
+
+def test_a_video_is_written_as_it_is_recorded(tmp_path):
+    """Frames go to the mp4 as they come; the sheet holds evenly spaced ones."""
+    # pylint: disable=import-outside-toplevel
+    import cv2
+
+    video = VideoRecorder(tmp_path / "v" / "pick.mp4")
+    for k in range(20):
+        video.add(np.full((48, 64, 4), 10 * k, np.uint8))
+    assert video.count == 20 and (tmp_path / "v" / "pick.mp4").exists()
+    video.close()
+    video.close()  # once is enough
+    reader = cv2.VideoCapture(str(tmp_path / "v" / "pick.mp4"))
+    assert int(reader.get(cv2.CAP_PROP_FRAME_COUNT)) == 20
+    reader.release()
+    sheet = cv2.imread(str(tmp_path / "v" / "pick_sheet.jpg"))
+    assert sheet is not None and sheet.shape[0] == (SHEET_FRAMES // 3) * 480
+    assert sheet[-10, -10].mean() > sheet[10, 10].mean() + 100  # the last is brightest
+    VideoRecorder(tmp_path / "none.mp4").close()  # nothing recorded: nothing written
+    assert not (tmp_path / "none.mp4").exists()

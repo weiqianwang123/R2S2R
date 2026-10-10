@@ -263,6 +263,9 @@ async function initCapture() {
   buildCameraTiles();
   init3d();
   S.robot = await (await fetch(`/api/robot.json?${Q}`)).json();
+  // Without a trajectory there is no clock: play the frames' steps at 10 per second.
+  S.robot.clock = S.robot.times != null;
+  if (!S.robot.clock) S.robot.times = S.robot.steps.map((_, i) => i / 10);
   $('slider').max = S.robot.steps.length - 1;
   loadRobot();
   $('slider').addEventListener('input', (e) => { S.playing = false; $('play').textContent = '▶'; setIdx(+e.target.value); S.t = S.robot.times[S.idx]; });
@@ -295,7 +298,7 @@ function setIdx(i) {
   $('slider').value = S.idx;
   const step = S.robot.steps[S.idx];
   const [s0, s1] = S.rec.static_steps;
-  $('readout').textContent = `step ${step} · ${fmt(S.robot.times[S.idx])} s · gripper ${[].concat(S.robot.gripper[S.idx]).map((g) => fmt(g)).join(' / ')}${step >= s0 && step < s1 ? '' : ' · moving'}`;
+  $('readout').textContent = `step ${step}${S.robot.clock ? ` · ${fmt(S.robot.times[S.idx])} s` : ''} · gripper ${[].concat(S.robot.gripper[S.idx]).map((g) => fmt(g)).join(' / ')}${step >= s0 && step < s1 ? '' : ' · moving'}`;
   updateCameraTiles(step);
   poseRobot(S.idx);
   updateFrusta(step);
@@ -636,7 +639,7 @@ function openModel(url, caption, up) {
 function closeLightbox() {
   $('lightbox').classList.add('hidden');
   if (lbResize) { lbResize.disconnect(); lbResize = null; }
-  if (lbRenderer) { lbRenderer.dispose(); lbRenderer = null; }
+  if (lbRenderer) { lbRenderer.forceContextLoss(); lbRenderer.dispose(); lbRenderer = null; }
 }
 
 init();

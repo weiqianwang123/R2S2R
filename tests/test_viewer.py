@@ -12,13 +12,13 @@ from http.server import ThreadingHTTPServer
 import cv2
 import numpy as np
 import pytest
-from conftest import hinged_box, rgbd_capture, towel_mesh
+from conftest import hinged_box, rgbd_capture, robot_or_skip, towel_mesh
 
 from r2s2r.structs import Capture
 from r2s2r.tools.objects import assemble
 from r2s2r.transforms import make_transform
 from r2s2r.viewer.scenes import scene_glb
-from r2s2r.viewer.server import Viewers, make_handler
+from r2s2r.viewer.server import Viewer, Viewers, make_handler
 from r2s2r.viewer.state import run_state
 from r2s2r.workspace import Workspace
 
@@ -324,3 +324,31 @@ def test_robot_poses_follow_the_trajectory(tmp_path):
     assert len(poses["poses"]) == 3 and len(poses["poses"][0]) == len(bodies)
     assert poses["poses"][0][hand] == poses["poses"][1][hand]
     assert poses["poses"][0][hand][:3] != poses["poses"][2][hand][:3]
+
+
+def test_the_cache_is_not_served_and_the_robot_follows_its_capture(tmp_path):
+    """Only the run's own files are served; the robot's poses are made again when the
+    capture changes, its model kept."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.viewer.robot import robot_poses
+
+    ws = _run(tmp_path)
+    robot = robot_or_skip(ws.capture.embodiment)
+    viewer = Viewer(ws.root)
+    (viewer.cache / "x.glb").write_bytes(b"x")
+    with pytest.raises(PermissionError):
+        viewer.resolve("../.viewer_cache/run/x.glb")
+    glb, poses = viewer.robot()
+    assert viewer.robot() == (glb, poses)
+    later = Viewer(ws.root)
+    assert later.robot() == (glb, poses)  # from the cache
+    capture_json = ws.capture.root / "capture.json"
+    os.utime(capture_json, (time.time() + 5, time.time() + 5))
+    again = Viewer(ws.root).robot()
+    assert again[0] == glb and again[1] != poses
+
+    # Without a trajectory there is no clock.
+    capture = ws.capture
+    capture.trajectory = None
+    untimed = robot_poses(robot, capture, json.loads(poses.read_text())["bodies"])
+    assert untimed["times"] is None and len(untimed["steps"]) == 3

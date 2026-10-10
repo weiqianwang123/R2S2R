@@ -34,7 +34,7 @@ from r2s2r.assets import VisualMesh, base_color_texture, urdf_origin, urdf_vecto
 from r2s2r.mjrender import MAX_SIZE, CameraRenderer, add_camera, add_mesh, mujoco
 from r2s2r.robots.model import GripperPoser, prepare_robot
 from r2s2r.robots.spec import RobotSpec
-from r2s2r.sim.world import gravity, support_extent
+from r2s2r.sim.world import SUPPORT_COLOR, gravity, support_extent
 from r2s2r.structs import SUPPORT_THICKNESS, ObjectSpec, SceneSpec
 from r2s2r.transforms import (
     invert,
@@ -56,9 +56,8 @@ VISUAL_GROUP, COLLISION_GROUP = 2, 3  # rendered by default, and not
 FRICTION_SOLREF = (2 * TIMESTEP, 1.0)
 FRICTION_SOLIMP = (0.99, 0.999, 0.001, 0.5, 2.0)
 IMPRATIO = 10.0  # friction's stiffness over the normal's (see scene_spec)
-SUPPORT_RGBA = (0.2, 0.45, 0.9, 1.0)  # when the scene has no support colour
 # The background, a room's neutral greys from above to below (Isaac Lab's is a dim dome):
-# no geometry, so it gives no depth.
+# no geometry, so it gives no depth (0, as the renderer gives where no geom is seen).
 SKY_RGB = ((0.8, 0.82, 0.84), (0.4, 0.4, 0.42))
 JOINT_KINDS = {
     "revolute": mujoco.mjtJoint.mjJNT_HINGE,
@@ -245,7 +244,7 @@ def _add_support(spec: Any, scene: SceneSpec) -> None:
     below = make_transform(np.eye(3), [0.0, 0.0, -SUPPORT_THICKNESS / 2])
     pos, quat = matrix_to_pos_quat(scene.T_base_support @ below)
     body = spec.worldbody.add_body(name="support", pos=pos, quat=quat)
-    rgba = SUPPORT_RGBA if scene.support_color is None else (*scene.support_color, 1.0)
+    rgba = (*(scene.support_color or SUPPORT_COLOR), 1.0)
     body.add_geom(
         name="support_slab",
         type=mujoco.mjtGeom.mjGEOM_BOX,
@@ -571,13 +570,14 @@ class Session:
     def set_physics(self, obj: ObjectSpec) -> None:
         """Object ``obj.name``'s mass, friction and joints' dynamics as ``obj`` gives
         them (a draw from its ranges, say): its links' masses and inertias scaled
-        alike, its colliders' sliding friction. The simulation's state stays."""
+        alike (as built when it gives no mass, not as an earlier draw left them), its
+        colliders' sliding friction. The simulation's state stays."""
         m, d = self.model, self.data
         ids = self._bodies[obj.name]
-        if obj.mass is not None:
-            scale = obj.mass / float(self._mass0[obj.name].sum())
-            m.body_mass[ids] = self._mass0[obj.name] * scale
-            m.body_inertia[ids] = self._inertia0[obj.name] * scale
+        mass0 = self._mass0[obj.name]
+        scale = 1.0 if obj.mass is None else obj.mass / float(mass0.sum())
+        m.body_mass[ids] = mass0 * scale
+        m.body_inertia[ids] = self._inertia0[obj.name] * scale
         friction = DEFAULT_FRICTION if obj.friction is None else obj.friction
         m.geom_friction[self._colliders[obj.name], 0] = friction
         for joint, (jq, jd, _) in self._joints.get(obj.name, {}).items():
@@ -592,6 +592,11 @@ class Session:
         mujoco.mj_setConst(m, d)
         d.qpos[:], d.qvel[:], d.act[:] = state
         mujoco.mj_forward(m, d)
+
+    @property
+    def bodies(self) -> dict[str, list[int]]:
+        """Every object's MuJoCo body ids: its root's and its links' (a copy)."""
+        return {name: list(ids) for name, ids in self._bodies.items()}
 
     def object_poses(self) -> dict[str, NDArray[np.float64]]:
         """Every object's ``T_base_obj`` (a cloth's where the scene has it)."""

@@ -37,10 +37,15 @@ def test_static_step_range():
 def test_align_steps_to_video_removes_latency():
     """A constant video latency must not shift steps onto the next frame."""
     steps = np.arange(10) * 66
-    assert np.array_equal(align_steps_to_video(steps, steps + 41), np.arange(10))
+    idx, gap = align_steps_to_video(steps, steps + 41)
+    assert np.array_equal(idx, np.arange(10)) and np.allclose(gap, 0.0)
     # A dropped frame: later steps still land on the frame closest in time.
     video = np.delete(steps + 41, 5)
-    assert align_steps_to_video(steps, video)[6] == 5
+    assert align_steps_to_video(steps, video)[0][6] == 5
+    # A video that stops early: the later steps are far from its last frame.
+    idx, gap = align_steps_to_video(steps, (steps + 41)[:6])
+    assert np.all(idx[6:] == 5) and np.allclose(gap[:6], 0.0)
+    assert np.allclose(gap[6:], 66 * np.arange(1, 5))
 
 
 def test_load_droid_episode(droid_episode, tmp_path):

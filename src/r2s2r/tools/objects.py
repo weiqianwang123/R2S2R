@@ -497,8 +497,10 @@ def assemble(
     T_base_support = spec.T_base_support
     out_dir = Path(out_dir).resolve()
     names = [o["name"] for o in spec.objects]
-    if len(set(names)) != len(names):
-        raise ValueError(f"object names must be unique: {names}")
+    slugs = [slug(n) for n in names]  # what their files and scene objects are called
+    if len(set(slugs)) != len(slugs):
+        same = [n for n, s in zip(names, slugs) if slugs.count(s) > 1]
+        raise ValueError(f"object names must be unique as file names: {same}")
 
     objects, report, sources = [], {}, {}
     for obj in spec.objects:

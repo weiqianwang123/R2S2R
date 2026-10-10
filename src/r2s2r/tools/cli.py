@@ -12,7 +12,7 @@ from r2s2r.sim import SIMS
 from r2s2r.sim.world import SETTLE_SECONDS
 from r2s2r.workspace import Workspace
 
-NUMBER_LIST = re.compile(r"\[\s*((?:-?[\d.eE+-]+,?\s*)+)\]")
+NUMBER_LIST = re.compile(r"\[\s*(-?[\d.eE+-]+(?:,\s*-?[\d.eE+-]+)*)\s*\]")
 
 
 def _ws(args: argparse.Namespace) -> Workspace:
@@ -189,7 +189,7 @@ def add_tool_parser(sub: Any) -> None:
     p.add_argument("--point", action="append", help="x,y[,label]: 1 in, 0 out")
     p.add_argument("--box", help="x0,y0,x1,y1")
     p.add_argument("--name", help="output sub-directory (default: from the text)")
-    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--threshold", type=float, default=0.5, help="confidence for --text")
     p.add_argument("--out", required=True)
 
     p = add("crop", _crop, "cut a masked object out, RGBA, for generation")
@@ -221,10 +221,15 @@ def add_tool_parser(sub: Any) -> None:
     p.add_argument("--support", required=True)
     p.add_argument("--mask", action="append", required=True, help="FRAME=MASK")
     p.add_argument(
-        "--up", default="y", help="the mesh's up axis: y (generated), z, x, -y"
+        "--up",
+        default="y",
+        choices=["y", "z", "x", "-y"],  # geometry.UP_ROTATIONS
+        help="the mesh's up axis: y (generated), z, x, -y",
     )
     p.add_argument("--scale", type=float, help="start scale")
-    p.add_argument("--yaw", type=float, help="yaw (deg, about the support normal)")
+    p.add_argument(
+        "--yaw", type=float, help="start yaw (deg, about the support normal)"
+    )
     p.add_argument("--no-rest", action="store_true", help="not standing on the support")
     p.add_argument("--no-refine", action="store_true", help="keep the start values")
     p.add_argument("--out", required=True)
@@ -235,6 +240,7 @@ def add_tool_parser(sub: Any) -> None:
     p.add_argument(
         "--joint",
         nargs="+",
+        action="extend",
         metavar="OBJECT:JOINT=VALUE",
         help="render articulated objects with these joint positions (rad or m)",
     )

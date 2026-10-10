@@ -35,7 +35,7 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree  # pylint: disable=no-name-in-module
 from scipy.spatial.transform import Rotation
 
-from r2s2r.assets import urdf_visual_points
+from r2s2r.assets import object_points, urdf_visual_points
 from r2s2r.structs import DepthView, ObjectSpec, SceneSpec
 from r2s2r.tools.geometry import (
     MAX_DEPTH,
@@ -99,12 +99,7 @@ def observe(
     cfg = cfg or RefineConfig()
     view_pts = [view_points(v, max_depth=cfg.max_depth)[0] for v in views]
     pts = np.concatenate(view_pts)
-    obj_pts = [
-        transform_points(
-            o.T_base_obj, urdf_visual_points(o.asset_path, cfg.match_points)
-        )
-        for o in scene.objects
-    ]
+    obj_pts = [object_points(o, cfg.match_points) for o in scene.objects]
     middle = (  # of the objects: the support is the plane region around it
         np.mean([o.T_base_obj[:3, 3] for o in scene.objects], axis=0)
         if scene.objects
@@ -258,7 +253,9 @@ def refine_scene(
             new_objects.append(obj)
             continue
         observed = obs.above[obs.groups[obs.matches[i]]]
-        model_obj = urdf_visual_points(obj.asset_path, cfg.model_points)
+        model_obj = urdf_visual_points(
+            obj.asset_path, cfg.model_points, joints=obj.joints
+        )
         model = transform_points(T_so, model_obj)
         T_fix, before, after = register_footprint(model, observed)
         if after < before + cfg.min_iou_gain:

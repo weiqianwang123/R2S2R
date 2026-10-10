@@ -77,7 +77,8 @@ class CameraRenderer:
     def render(
         self, K: NDArray, width: int, height: int, T_base_cam: NDArray
     ) -> dict[str, NDArray]:
-        """``rgb`` (H, W, 3), planar ``depth`` (H, W) and ``geom`` ids (-1: none)."""
+        """``rgb`` (H, W, 3), planar ``depth`` (H, W; 0 where no geom is seen, as for
+        a depth camera, not the far plane) and ``geom`` ids (-1: none)."""
         self.place(K, width, height, T_base_cam)
         mujoco.mj_forward(self.model, self.data)
         key = (width, height)
@@ -95,6 +96,7 @@ class CameraRenderer:
         seg = r.render()
         r.disable_segmentation_rendering()
         geom = np.where(seg[..., 1] == int(mujoco.mjtObj.mjOBJ_GEOM), seg[..., 0], -1)
+        depth = np.where(geom >= 0, depth, 0.0).astype(depth.dtype)
         return {"rgb": rgb, "depth": depth, "geom": geom}
 
     def upload_mesh(self, mesh: int) -> None:

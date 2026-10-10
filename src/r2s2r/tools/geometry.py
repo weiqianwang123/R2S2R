@@ -99,6 +99,8 @@ def points(
 ) -> dict[str, Any]:
     """Fused points of the frames (inside their masks, shrunk by 3 pixels, where given)
     as a coloured PLY, and where they lie."""
+    if not frame_ids and not masks:
+        raise ValueError("give --frames or --mask")
     all_pts, all_rgb, per_frame = [], [], {}
     for fid in dict.fromkeys([*frame_ids, *masks]):
         frame = ws.frame(fid)
@@ -261,6 +263,8 @@ def support(
     overlay per frame (``<stem>_<frame>.png``): the rectangle and a 10 cm grid on it.
     """
     ids = list(dict.fromkeys([*(frame_ids or []), *masks]))
+    if not ids:
+        raise ValueError("give --frames or --mask")
     chunks: list[NDArray[np.float64]] = []
     owners: list[NDArray[np.int64]] = []
     centres: list[NDArray[np.float64]] = []
@@ -412,7 +416,7 @@ def register_footprint(
     Yaws within ``yaw_window_deg`` of the model's win unless a turn by
     90/180/270 degrees has less than ``flip_gain`` times their non-overlap
     (1 - IoU): nearly symmetric objects (a mug without a clearly seen handle)
-    otherwise flip on noise.
+    otherwise flip on noise. A window of 180 degrees holds every turn.
 
     Returns the 4x4 correction (applied on the left), and the IoU before and
     after.
@@ -457,15 +461,17 @@ def register_footprint(
     before = iou(grid0, float((grid0 * obs).sum()))
     window = np.deg2rad(np.arange(-yaw_window_deg, yaw_window_deg + 0.5, 1.0))
     near = search(window)
-    turned_best = max(
-        (
-            search(window[np.abs(window) <= np.deg2rad(10.0)] + np.deg2rad(turn))
-            for turn in (90.0, 180.0, 270.0)
-        ),
-        key=lambda r: r[0],
-    )
-    use_turned = 1.0 - turned_best[0] < flip_gain * (1.0 - near[0])
-    after, yaw, t = turned_best if use_turned else near
+    after, yaw, t = near
+    if yaw_window_deg < 180.0:  # else the window holds every turn already
+        turned_best = max(
+            (
+                search(window[np.abs(window) <= np.deg2rad(10.0)] + np.deg2rad(turn))
+                for turn in (90.0, 180.0, 270.0)
+            ),
+            key=lambda r: r[0],
+        )
+        if 1.0 - turned_best[0] < flip_gain * (1.0 - near[0]):
+            after, yaw, t = turned_best
     T = planar(0, *(centre + t)) @ planar(yaw, 0, 0) @ planar(0, *(-centre))
     return T, before, after
 
@@ -533,7 +539,8 @@ class _View:
         self.mask_full = load_mask(mask_path, self.full)
         small = (self.size[1], self.size[0])
         self.mask = load_mask(mask_path, small)
-        depth = ws.depth_view(frame).depth
+        self.view = ws.depth_view(frame)
+        depth = self.view.depth
         self.depth = cv2.resize(
             depth.astype(np.float32), self.size, interpolation=cv2.INTER_NEAREST
         )
@@ -557,10 +564,12 @@ def fit(
     given frame.
 
     The mesh is turned ``up``-axis to the support normal. Scale starts from the observed
-    height (or footprint, for flat objects), yaw and position from matching top-down
-    footprints of the mesh and the fused masked depth; then scale, yaw and position (and
-    height, unless the object ``rest``s on the support) are searched to maximise the
-    mean silhouette IoU over the frames (robot pixels ignored).
+    height (its vertical extent when the object does not ``rest`` on the support; the
+    footprint, for flat objects), yaw and position from matching top-down footprints of
+    the mesh and the fused masked depth (``scale`` and ``yaw_deg``, when given, are the
+    start instead); then scale, yaw and position (and height, unless the object
+    ``rest``s on the support) are searched to maximise the mean silhouette IoU over the
+    frames (robot pixels ignored).
 
     Writes ``out_dir/fit.json`` and an overlay per frame (green: the mask; red: the
     fitted mesh). ``T_base_obj`` maps the mesh file's coordinates, scaled by ``scale``,
@@ -568,6 +577,8 @@ def fit(
     """
     if not masks:
         raise ValueError("fit needs the object's mask in at least one frame")
+    if up not in UP_ROTATIONS:
+        raise ValueError(f"up must be one of {sorted(UP_ROTATIONS)}, not {up!r}")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     T_base_support, _ = load_support(support_source)
@@ -581,7 +592,7 @@ def fit(
     model_h = float(canon.bounds[1, 2])
 
     views = [_View(ws, fid, path) for fid, path in masks.items()]
-    observed = _object_points(ws, views, T_base_support)
+    observed = _object_points(views, T_base_support)
     if len(observed) < 20:
         raise ValueError("too few depth points inside the masks")
     params, start = _initial_pose(observed, model_pts, model_h, scale, yaw_deg, rest)
@@ -609,8 +620,10 @@ def fit(
 
         initial, _ = score(params)
         if refine:
-            steps = np.array([0.1, np.radians(10.0), 0.01, 0.01, 0.01])
-            free = [True, yaw_deg is None, True, True, not rest]
+            # A given yaw is a start, searched from more finely than a matched one.
+            yaw_step = np.radians(10.0 if yaw_deg is None else 3.0)
+            steps = np.array([0.1, yaw_step, 0.01, 0.01, 0.01])
+            free = [True, True, True, True, not rest]
             params = pattern_search(lambda p: score(p)[0], params, steps, free)
         final, rows = score(params)
 
@@ -651,20 +664,25 @@ def _initial_pose(
     """Where :func:`fit`'s search starts (log scale, yaw, x, y, z in the support frame)
     for the upright mesh (its points ``model_pts``, its height ``model_h``) on the
     object's ``observed`` points, and what it started from: the scale from the observed
-    height (or footprint, for flat objects) unless given, yaw and position from matching
-    top-down footprints (a given yaw kept)."""
+    height (its vertical extent when it does not ``rest`` on the support; the
+    footprint, for flat objects) unless given, yaw and position from matching top-down
+    footprints (from a given yaw, the position the points' median)."""
     obs_h = float(np.percentile(observed[:, 2], 98))
+    # Its bottom: the support for an object resting on it, else the lowest seen.
+    obs_lo = 0.0 if rest else float(np.percentile(observed[:, 2], 2))
     obs_long = _long_side(observed[:, :2])
     model_long = _long_side(model_pts[:, :2])
+    tall = obs_h - obs_lo >= 0.03
     if scale is None:
-        scale = obs_h / model_h if obs_h >= 0.03 else obs_long / model_long
-        scale_source = "height" if obs_h >= 0.03 else "footprint"
+        scale = (obs_h - obs_lo) / model_h if tall else obs_long / model_long
+        scale_source = "height" if tall else "footprint"
+        z0 = obs_lo
     else:
         scale_source = "given"
+        z0 = 0.0 if rest else obs_h - scale * model_h  # its top on the observed top
 
     # Yaw and position from the footprints.
     xy0 = np.median(observed[:, :2], axis=0)
-    z0 = 0.0 if rest else obs_h - scale * model_h
     if yaw_deg is None:
         placed = model_pts * scale + [*xy0, 0.0]
         T_fix, _, iou_fp = register_footprint(
@@ -677,6 +695,7 @@ def _initial_pose(
     params = np.array([np.log(scale), yaw0, xy_init[0], xy_init[1], z0])
     return params, {
         "observed_height_m": round(obs_h, 4),
+        **({} if rest else {"observed_bottom_m": round(obs_lo, 4)}),
         "scale_from": scale_source,
         "footprint_iou_init": None if iou_fp is None else round(float(iou_fp), 3),
     }
@@ -703,14 +722,12 @@ def _write_overlays(
 
 
 def _object_points(
-    ws: Workspace, views: list[_View], T_base_support: NDArray[np.float64]
+    views: list[_View], T_base_support: NDArray[np.float64]
 ) -> NDArray[np.float64]:
     """Masked depth above the support (support frame), stray pixels dropped."""
     T_support_base = invert(T_base_support)
     chunks = [
-        transform_points(
-            T_support_base, view_points(ws.depth_view(v.frame), v.mask_full, 3, 2)[0]
-        )
+        transform_points(T_support_base, view_points(v.view, v.mask_full, 3, 2)[0])
         for v in views
     ]
     pts = np.concatenate(chunks)

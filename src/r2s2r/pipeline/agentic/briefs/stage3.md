@@ -3,8 +3,8 @@
 Make every object of stage 2 a mesh, scaled and placed in the base frame so that it
 matches every chosen frame. Work in this directory.
 
-Inputs: `../s2_frames/output.json` (the chosen frames, the objects, notes) and
-`../s2_frames/support.json`.
+Inputs: `../s2_frames/output.json` (the chosen frames, the objects, notes) and the
+support file it names (`support.file`, in `../s2_frames/`).
 
 For each object:
 
@@ -25,7 +25,7 @@ For each object:
    optimisation.
 
 Then write `objects.json` (the objects file of `../AGENTS.md`) with every object and
-`"support": "../s2_frames/support.json"`, run
+`"support": "../s2_frames/<that support file>"`, run
 `r2s2r tool check objects.json --frames <the chosen frames> --out check`, and look at
 every panel: each object's outline must sit on it in every frame. Fix what is off.
 

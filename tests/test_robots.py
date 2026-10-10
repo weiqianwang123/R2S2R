@@ -41,6 +41,15 @@ def test_registry_names_the_known_robots():
         get_robot("ur10")
 
 
+def test_a_grippers_opening_is_clipped_to_0_1():
+    """An opening past 0 or 1 gives the control (and driver) at that end."""
+    gripper = get_robot("fr3_robotiq").arm.gripper
+    lo, hi = gripper.ctrl
+    assert gripper.ctrl_at(1.2) == gripper.ctrl_at(1.0) == pytest.approx(hi)
+    assert gripper.ctrl_at(-0.5) == gripper.ctrl_at(0.0) == pytest.approx(lo)
+    assert gripper.driver_at(1.2) == gripper.driver_at(1.0)
+
+
 def test_robot_compiles_with_its_arms_and_grippers(model):
     """The spec's joints, actuators and bodies exist; the home pose is within limits."""
     robot = model.robot

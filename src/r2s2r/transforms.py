@@ -31,12 +31,15 @@ def invert(T: ArrayLike) -> NDArray[np.float64]:
 
 
 def is_rigid(T: ArrayLike, atol: float = 1e-4) -> bool:
-    """Whether ``T`` is a 4x4 rigid transform (a rotation, no scale or mirroring)."""
+    """Whether ``T`` is a 4x4 rigid transform (a rotation, no scale or mirroring, a
+    finite translation, the bottom row 0 0 0 1)."""
     try:
         T = np.asarray(T, dtype=np.float64)
     except (TypeError, ValueError):  # not numbers, or ragged
         return False
-    if T.shape != (4, 4):
+    if T.shape != (4, 4) or not np.all(np.isfinite(T)):
+        return False
+    if not np.allclose(T[3], [0.0, 0.0, 0.0, 1.0], atol=atol):
         return False
     R = T[:3, :3]
     return bool(np.allclose(R @ R.T, np.eye(3), atol=atol) and np.linalg.det(R) > 0)

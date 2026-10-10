@@ -1,9 +1,9 @@
 """What every simulator does the same with a reconstructed scene, whichever runs it
 (Isaac Lab, :mod:`r2s2r.sim.isaac`; MuJoCo, :mod:`r2s2r.sim.mujoco`): gravity along the
 support's normal, the support's outline, how long the objects get to come to rest and
-how far each moved, the support's colour from the capture, which of the capture's steps
-a replay renders, each rendered frame written beside the real one, and a replay's
-numbers.
+how far each moved, the support's colour from the capture, the recorded robot and its
+state at the start of the static period, which of the capture's steps a replay renders,
+each rendered frame written beside the real one, and a replay's numbers.
 
 Every pose is in the robot base frame, every simulator's world frame.
 """
@@ -27,6 +27,7 @@ from r2s2r.structs import (
     Capture,
     FrameRecord,
     ObjectSpec,
+    RobotTrajectory,
     SceneSpec,
     read_depth,
     read_rgb,
@@ -37,6 +38,7 @@ from r2s2r.transforms import backproject, invert, transform_points
 SETTLE_SECONDS = 2.0  # simulated time for the objects to come to rest
 ON_SUPPORT = 0.005  # m: a point this near the support's plane lies on it
 SUPPORT_EXTENT = (0.6, 0.6)  # m, for a scene whose support's outline is unknown
+SUPPORT_COLOR = (0.2, 0.45, 0.9)  # sRGB, for a scene whose support's colour is unknown
 
 
 def gravity(scene: SceneSpec) -> tuple[float, float, float]:
@@ -180,12 +182,41 @@ def cloth_surface(obj: ObjectSpec) -> NDArray[np.float64]:
     return transform_points(obj.T_base_obj, mesh.vertices)
 
 
+# ------------------------------------------------------------ the recorded robot
+def recorded_trajectory(capture: Capture) -> RobotTrajectory:
+    """The capture's robot trajectory, which settling and replaying need."""
+    if capture.trajectory is None:
+        raise ValueError(
+            f"capture {capture.name} has no robot trajectory: record it again "
+            "(its trajectory.npz)"
+        )
+    return capture.trajectory
+
+
+def trajectory_rows(traj: RobotTrajectory) -> dict[int, int]:
+    """The trajectory's row of each step."""
+    return {int(s): i for i, s in enumerate(traj.steps.tolist())}
+
+
+def start_row(capture: Capture) -> int:
+    """The trajectory's row at the start of the static period, where settling holds
+    the robot."""
+    step = capture.static_steps[0]
+    row = trajectory_rows(recorded_trajectory(capture)).get(step)
+    if row is None:
+        raise ValueError(
+            f"capture {capture.name}'s trajectory has no row for step {step}, "
+            "the start of its static period"
+        )
+    return row
+
+
 # ----------------------------------------------------------------------- replays
 def replay_steps(
     capture: Capture, cameras: dict[str, CameraSpec], every: int
 ) -> list[int]:
     """The static period's steps that have a frame of one of ``cameras``, every
-    ``every``-th of them."""
+    ``every``-th of them; a ValueError when there are none."""
     steps = sorted(
         {
             f.step
@@ -193,6 +224,12 @@ def replay_steps(
             if f.camera in cameras and capture.in_static(f.step)
         }
     )
+    if not steps:
+        start, end = capture.static_steps
+        raise ValueError(
+            f"no frame of cameras {sorted(cameras)} in the static period "
+            f"[{start}, {end})"
+        )
     return steps[:: max(1, every)]
 
 

@@ -47,21 +47,21 @@ def robot_poses(
     robot: RobotSpec, capture: Capture, bodies: list[str]
 ) -> dict[str, Any]:
     """Every body's pose (x, y, z, qx, qy, qz, qw; base frame) at every step of the
-    capture's trajectory (or of its frames, without one), ``robot`` being the
-    capture's."""
+    capture's trajectory (or of its frames, without one: then ``times`` is None, there
+    being no clock), ``robot`` being the capture's."""
     model = RobotModel(robot)
     ids = [model.model.body(name).id for name in bodies]
     traj = capture.trajectory
     if traj is not None:
         steps = traj.steps.tolist()
-        times = traj.times.tolist()
+        times: list[float] | None = traj.times.tolist()
         joints, grips = traj.joint_positions, traj.gripper_position
     else:
         frames = sorted(
             {f.step: f for f in capture.frames}.values(), key=lambda f: f.step
         )
         steps = [f.step for f in frames]
-        times = [float(s) for s in steps]
+        times = None
         joints = np.array([f.joint_positions for f in frames])
         grips = np.array([f.gripper_position for f in frames])
     poses = []
@@ -80,7 +80,7 @@ def robot_poses(
     return {
         "bodies": bodies,
         "steps": steps,
-        "times": [round(t, 4) for t in times],
+        "times": None if times is None else [round(t, 4) for t in times],
         "gripper": np.round(np.asarray(grips, float), 3).tolist(),
         "poses": poses,
     }

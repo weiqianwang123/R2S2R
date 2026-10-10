@@ -488,3 +488,135 @@ def test_repository_guard_sees_changes(tmp_path, monkeypatch):
     (tmp_path / "repo" / "a.txt").write_text("b")
     changed = agentic.diff_states(later, agentic.repo_state())
     assert len(changed) == 1 and changed[0].startswith(str(tmp_path / "repo"))
+    (tmp_path / "sub" / "a b é.txt").write_text("x")  # a name git quotes
+    quoted = agentic.repo_state()
+    (tmp_path / "sub" / "a b é.txt").write_text("y")
+    assert agentic.diff_states(quoted, agentic.repo_state())
+
+
+def test_a_malformed_objects_file_is_reported_not_raised(tmp_path):
+    """Objects that are no objects, a null or non-numeric scale, names that clash as
+    file names: problems to tell the agent, not exceptions."""
+    ws = Workspace.create(_capture(tmp_path), tmp_path / "run", "agentic")
+    s3 = ws.root / "s3_objects"
+    s3.mkdir()
+    _frames_product(ws.root / "s2_frames")
+    _write(s3 / "objects.json", {"support": SUPPORT, "objects": {"box": {}}})
+    assert VALIDATORS["3"](ws, s3) == ["objects.json: objects must be a list"]
+    _write(s3 / "objects.json", {"support": SUPPORT, "objects": ["box", {"a": 1}]})
+    assert len(VALIDATORS["3"](ws, s3)) == 2
+    for scale in (None, "big", [1, 1]):
+        _objects_product(s3, scale=scale)
+        assert VALIDATORS["3"](ws, s3) == [
+            "box: scale must be positive (one value or three)"
+        ]
+    _objects_product(s3, parts=["lid"])
+    assert VALIDATORS["3"](ws, s3) == ["box: parts must be a list of objects"]
+    _objects_product(s3)
+    spec = json.loads((s3 / "objects.json").read_text())
+    spec["objects"].append({**spec["objects"][0], "name": "Box"})
+    _write(s3 / "objects.json", spec)
+    assert "not unique" in VALIDATORS["3"](ws, s3)[0]
+
+    class Broken(FakeMethod):
+        """Its own check breaks."""
+
+        def check(self, ws, key, stage_dir):
+            raise AttributeError("no")
+
+    found = run_module.problems(ws, Broken(), "3")
+    assert found == ["checking stage 3's product failed: AttributeError: no"]
+
+
+def test_a_run_of_another_capture_is_not_resumed(tmp_path):
+    """--out naming a run of another capture is refused."""
+    run(_capture(tmp_path).root, tmp_path / "run", FakeMethod(), ("2",))
+    other = rgbd_capture(tmp_path / "other", CAMERAS)
+    meta = json.loads((other.root / "capture.json").read_text())
+    meta["name"] = "other"
+    (other.root / "capture.json").write_text(json.dumps(meta))
+    with pytest.raises(ValueError, match="run of capture t, not other"):
+        run(other.root, tmp_path / "run", FakeMethod(), ("2",))
+
+
+def test_a_done_stage_keeps_what_it_failed_with(tmp_path):
+    """A stage found done after it failed keeps its error, and what the method
+    recorded before failing."""
+
+    class Guarded(FakeMethod):
+        """Writes stage 2, then fails as the repository guard does."""
+
+        def run_stage(self, ws, key, stage_dir):
+            super().run_stage(ws, key, stage_dir)
+            raise agentic.RepositoryChanged("changed", {"session": "s1"})
+
+    with pytest.raises(agentic.RepositoryChanged):
+        run(_capture(tmp_path).root, tmp_path / "run", Guarded(), ("2",))
+    entry = Workspace.load(tmp_path / "run").read_run()["stages"]["2"]
+    assert entry["status"] == "failed" and entry["session"] == "s1"
+    entry = run(tmp_path / "run", None, FakeMethod(), ("2",))["stages"]["2"]
+    assert entry["status"] == "done" and entry["previous_status"] == "failed"
+    assert entry["previous_error"] == "RepositoryChanged: changed"
+    assert entry["session"] == "s1" and "error" not in entry
+
+
+def test_the_repository_is_compared_when_the_agent_fails(tmp_path, monkeypatch):
+    """An agent that changed the repository and then failed: the change is the
+    stage's error, the agent's failure beside it."""
+    claude = _fake_cli(tmp_path / "claude", FAKE_CLAUDE)
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(tmp_path / "calls.jsonl"))
+    monkeypatch.setenv("FAKE_CLAUDE_FAILS", "1")
+    states = iter([{"repo": ("", "a")}, {"repo": (" M x.py", "b")}])
+    monkeypatch.setattr(agentic, "repo_state", lambda: next(states))
+    method = agentic.AgenticMethod(
+        agentic.AgenticConfig(agent="claude", executable=claude)
+    )
+    with pytest.raises(agentic.RepositoryChanged, match="usage limit") as err:
+        run(_capture(tmp_path).root, tmp_path / "run", method, ("2",))
+    assert isinstance(err.value.__cause__, RuntimeError)
+    entry = Workspace.load(tmp_path / "run").read_run()["stages"]["2"]
+    assert entry["status"] == "failed" and "x.py" in entry["error"]
+    assert entry["agent"] == "claude"
+
+
+def test_an_agent_that_exits_without_a_turn_fails_with_its_output(
+    tmp_path, monkeypatch
+):
+    """A CLI that dies at once fails the stage with its exit code and output, not with
+    retries."""
+    codex = _fake_cli(
+        tmp_path / "codex", "import sys\nprint('not logged in')\nsys.exit(2)"
+    )
+    monkeypatch.setattr(agentic, "repo_state", lambda: {})
+    method = agentic.AgenticMethod(agentic.AgenticConfig(executable=codex))
+    with pytest.raises(RuntimeError, match="codex exited 2(.|\n)*not logged in"):
+        run(_capture(tmp_path).root, tmp_path / "run", method, ("2",))
+
+
+def test_a_timed_out_agent_is_stopped_with_what_it_started(tmp_path):
+    """The agent's own children (a tool's job) end with it."""
+    pid_file = tmp_path / "child.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; "
+        "time.sleep(60)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(60)\n"
+    )
+    cli_path = _fake_cli(tmp_path / "agent", script)
+    agent = agentic._Agent(  # pylint: disable=protected-access
+        "codex", cli_path, "m", "low", 2.0, tmp_path, tmp_path
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        agentic._run(agent, [cli_path], "codex_0")  # pylint: disable=protected-access
+    pid = int(pid_file.read_text())
+    for _ in range(50):  # the orphan is reaped by whoever adopted it
+        try:
+            status = open(f"/proc/{pid}/status", encoding="utf-8").read()
+        except FileNotFoundError:
+            break
+        if "\nState:\tZ" in status:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("the agent's child outlived it")

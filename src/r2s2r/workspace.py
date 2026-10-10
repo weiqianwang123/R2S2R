@@ -256,7 +256,10 @@ class Workspace:
             frame.gripper_position,
         )
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, depth=depth, robot=robot)
+        # Whole or not at all: tools running at once may read it meanwhile.
+        tmp = path.with_name(f".{path.stem}.{os.getpid()}.tmp.npz")
+        np.savez_compressed(tmp, depth=depth, robot=robot)
+        os.replace(tmp, path)
         return depth, robot
 
     @property

@@ -20,9 +20,12 @@ from r2s2r.sim.mjscene import Session
 from r2s2r.sim.world import (
     SETTLE_SECONDS,
     frames_at,
+    recorded_trajectory,
     replay_steps,
     replay_summary,
     settled,
+    start_row,
+    trajectory_rows,
     write_render,
 )
 from r2s2r.structs import Capture, SceneSpec
@@ -62,9 +65,8 @@ def held_session(spec: SceneSpec, capture: Capture) -> Session:
     """A session of ``spec`` with the capture's robot as it was at the start of the
     static period (what the objects come to rest against, held there by
     ``Session.step(hold_robot=True)``)."""
-    traj = _trajectory(capture)
+    traj, i = recorded_trajectory(capture), start_row(capture)
     session = Session(spec, get_robot(capture.embodiment))
-    i = _rows(traj).get(capture.static_steps[0], 0)
     session.set_robot(traj.joint_positions[i], _level(traj.gripper_position[i]))
     return session
 
@@ -85,8 +87,8 @@ def replay(
     out_dir = Path(out_dir).resolve()
     spec = SceneSpec.load(scene_dir)
     capture = Capture.load(capture_dir)
-    traj = _trajectory(capture)
-    rows = _rows(traj)
+    traj = recorded_trajectory(capture)
+    rows = trajectory_rows(traj)
     chosen = {s: capture.cameras[s] for s in capture.resolve_cameras(cameras)}
     log: dict[str, Any] = {
         "scene": spec.name,
@@ -110,10 +112,7 @@ def replay(
                 log["objects"][name].append([step, *pos.tolist(), *quat.tolist()])
             for serial, frame in frames_at(capture, chosen, step).items():
                 cam = chosen[serial]
-                T_cam = cam.T_base_cam if cam.is_static else frame.T_base_cam
-                if T_cam is None:
-                    raise ValueError(f"{serial} has no pose at step {step}")
-                out = session.render(cam.K, cam.width, cam.height, T_cam)
+                out = session.render(cam.K, cam.width, cam.height, frame.T_base_cam)
                 log["frames"].append(
                     write_render(capture, cam, frame, out["rgb"], out["depth"], out_dir)
                 )
@@ -122,20 +121,6 @@ def replay(
     (out_dir / "replay.json").write_text(json.dumps(log, indent=1), encoding="utf-8")
     compare_replay(log, spec, capture, out_dir / "compare", out_dir)
     return replay_summary(out_dir)
-
-
-def _trajectory(capture: Capture) -> Any:
-    if capture.trajectory is None:
-        raise ValueError(
-            f"capture {capture.name} has no robot trajectory: record it again "
-            "(its trajectory.npz)"
-        )
-    return capture.trajectory
-
-
-def _rows(traj: Any) -> dict[int, int]:
-    """The trajectory's row of each step."""
-    return {int(s): i for i, s in enumerate(traj.steps.tolist())}
 
 
 def _level(gripper: ArrayLike) -> NDArray:

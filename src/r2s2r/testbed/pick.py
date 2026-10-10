@@ -280,28 +280,28 @@ def run_pick(
     """Pick ``target`` (an object of ``scene``) in the world ``capture`` came from,
     and score by how far the world's own target rose."""
     out_dir = Path(out_dir)
-    world = world_from_capture(capture)
-    video = None
-    if video_camera:
-        video = VideoRecorder(out_dir / f"mujoco_{video_camera}.mp4")
+    with ExitStack() as stack:  # the world closed, the video written, however it ends
+        world = world_from_capture(capture)
+        stack.callback(world.close)
+        video = None
+        if video_camera:
+            video = VideoRecorder(out_dir / f"mujoco_{video_camera}.mp4")
+            stack.callback(video.close)
 
-    def record(robot: MujocoRobot) -> None:
-        if video is not None and robot.steps % VIDEO_EVERY == 0:
-            video.add(world.render(video_camera or "")["rgb"])
+        def record(robot: MujocoRobot) -> None:
+            if video is not None and robot.steps % VIDEO_EVERY == 0:
+                video.add(world.render(video_camera or "")["rgb"])
 
-    before = world.object_positions()
-    robot = MujocoRobot(world, on_step=record)
-    policy = pick_up(robot, scene, target)
-    result = {
-        "deployment": "mujoco",
-        "scene": scene.name,
-        "scene_method": scene.provenance.get("method"),
-        "policy": policy,
-        "ground_truth_target": world.target,
-        **score_lift(before, world.object_positions(), world.target),
-    }
-    save_rollout(out_dir, result, robot.log)
-    if video is not None:
-        video.close()
-    world.close()
+        before = world.object_positions()
+        robot = MujocoRobot(world, on_step=record)
+        policy = pick_up(robot, scene, target)
+        result = {
+            "deployment": "mujoco",
+            "scene": scene.name,
+            "scene_method": scene.provenance.get("method"),
+            "policy": policy,
+            "ground_truth_target": world.target,
+            **score_lift(before, world.object_positions(), world.target),
+        }
+        save_rollout(out_dir, result, robot.log)
     return result

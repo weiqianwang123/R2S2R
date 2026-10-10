@@ -1,16 +1,23 @@
 """Tests for sim/world.py, what every simulator does the same: which way gravity
-points, the support's colour, a settling's report."""
+points, the support's colour, a settling's report, a replay's steps."""
 
 import cv2
 import numpy as np
 import pytest
 
-from r2s2r.sim.world import gravity, settled, support_color
+from r2s2r.sim.world import (
+    gravity,
+    replay_steps,
+    settled,
+    start_row,
+    support_color,
+)
 from r2s2r.structs import (
     CameraSpec,
     Capture,
     FrameRecord,
     ObjectSpec,
+    RobotTrajectory,
     SceneSpec,
     write_depth,
 )
@@ -125,3 +132,31 @@ def test_a_settled_scene_has_its_objects_where_they_came_to_rest(tmp_path):
     }
     assert settled_scene.provenance["settle"] is report
     assert "too few pixels" in report["support_color"]
+
+
+def test_a_replay_needs_frames_and_the_robot_at_the_static_start(tmp_path):
+    """The static period's steps with a frame, every n-th; none is an error, not an
+    empty replay. Settling starts from the trajectory's row at the static period's
+    start, which must be there."""
+    frames = [
+        FrameRecord(s, "w", "c.png", None, np.eye(4), np.zeros(7), 0.0)
+        for s in (0, 2, 4, 9)
+    ]
+    camera = CameraSpec("w", "wrist", 64, 48, np.eye(3))
+    traj = RobotTrajectory(
+        np.arange(2, 10), np.arange(8) * 0.1, np.zeros((8, 7)), np.zeros(8)
+    )
+    capture = Capture(
+        "c", "test", "fr3_robotiq", "", {"w": camera}, frames, (0, 6), tmp_path
+    )
+    assert replay_steps(capture, {"w": camera}, 1) == [0, 2, 4]
+    assert replay_steps(capture, {"w": camera}, 2) == [0, 4]
+    with pytest.raises(ValueError, match="no frame of cameras"):
+        replay_steps(capture, {}, 1)
+    with pytest.raises(ValueError, match="no robot trajectory"):
+        start_row(capture)
+    capture.trajectory = traj
+    with pytest.raises(ValueError, match="no row for step 0"):
+        start_row(capture)
+    capture.static_steps = (3, 6)
+    assert start_row(capture) == 1
