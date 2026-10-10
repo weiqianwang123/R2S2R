@@ -1,6 +1,6 @@
 """Where r2s2r finds what it does not ship: its own checkout (scripts), the SimFoundry
 submodule, the asset cache, physcoder's assets, the conda environments the model jobs run
-in, and the executables it drives (and the Codex model it asks).
+in, and the executables it drives (and the models Codex and Claude Code run).
 
 The one home of these; every other module asks here.
 """
@@ -36,6 +36,7 @@ ENV_NEWTON = "newton"
 # `codex` can be too old for the newest models.
 DESKTOP_APP_CODEX = Path("/usr/lib/chatgpt/resources/codex")
 CODEX_MODEL = "gpt-6-astra"  # the model every Codex call uses by default
+CLAUDE_MODEL = "claude-opus-5-5"  # Claude Code's, as the agentic method's agent
 
 
 def mamba_exe() -> str:
@@ -57,3 +58,12 @@ def codex_bin() -> str:
     if os.access(DESKTOP_APP_CODEX, os.X_OK):
         return str(DESKTOP_APP_CODEX)
     return shutil.which("codex") or "codex"
+
+
+def claude_bin() -> str:
+    """``claude`` (Claude Code) on the PATH, else where its installer puts it."""
+    found = shutil.which("claude")
+    if found:
+        return found
+    installed = Path.home() / ".local" / "bin" / "claude"
+    return str(installed) if os.access(installed, os.X_OK) else "claude"

@@ -1,6 +1,7 @@
 """Tests for r2s2r.viewer: what it reads of a run, and what its server serves."""
 
 import json
+import os
 import struct
 import threading
 import time
@@ -92,6 +93,24 @@ def test_state_reads_stage_status_and_products(tmp_path):
     assert stages["2"]["status"] == "done" and stages["2"]["seconds"] == 50
     assert stages["3"]["status"] == "running" and stages["3"]["started"] == now
     assert stages["3"]["activity"] == "Fitting the mug now."
+    later = ws.root / "s3_objects" / "claude_0.jsonl"  # the stage redone by Claude Code
+    _events(
+        later,
+        {"type": "system", "subtype": "init", "session_id": "z"},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "..."},
+                    {"type": "text", "text": "Generating the meshes. All four."},
+                ]
+            },
+        },
+        {"type": "assistant", "message": {"content": [{"type": "tool_use"}]}},
+    )
+    os.utime(later, (time.time() + 1, time.time() + 1))
+    activity = {s["key"]: s for s in run_state(ws)["stages"]}["3"]["activity"]
+    assert activity == "Generating the meshes."
     assert stages["4"]["status"] == "pending"
     assert state["frames"][1] == {"id": "ext1@1", "note": "sharp", "selected": False}
     assert state["support"]["extent"] == [1, 1]

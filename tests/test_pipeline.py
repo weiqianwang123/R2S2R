@@ -1,6 +1,6 @@
 """Tests for r2s2r.pipeline: the run directory, the stage checks, the run loop
 (``run.json``, staleness, the shared settling and final replay, with Isaac Lab faked)
-and the agentic method (a fake Codex; its repository guard)."""
+and the agentic method (a fake Codex, a fake Claude Code; its repository guard)."""
 
 import json
 import os
@@ -177,7 +177,7 @@ def test_agentic_checks_more_at_stage_2(tmp_path):
     list the objects."""
     ws = Workspace.create(_capture(tmp_path), tmp_path / "run", "agentic")
     s2 = ws.root / "s2_frames"
-    method = agentic.AgenticMethod(agentic.AgenticConfig(codex_bin="codex"))
+    method = agentic.AgenticMethod()
     _frames_product(s2, support={"T_base_support": np.eye(4).tolist()})
     assert method.check(ws, "2", s2) == [
         "choose 4 to 8 frames, not 2",
@@ -239,7 +239,7 @@ def test_redoing_a_stage_makes_every_later_one_stale(tmp_path):
 def test_run_refuses_what_does_not_fit(tmp_path):
     """Another method's run, a method's missing stage, other cameras, a second --out."""
     run(_capture(tmp_path).root, tmp_path / "run", FakeMethod(), ("2",))
-    other = agentic.AgenticMethod(agentic.AgenticConfig(codex_bin="codex"))
+    other = agentic.AgenticMethod()
     with pytest.raises(ValueError, match="fake method"):
         run(tmp_path / "run", None, other)
     with pytest.raises(ValueError, match="stages"):
@@ -335,33 +335,63 @@ def test_settling_and_final_replay_are_shared(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------------ agentic method
-FAKE_CODEX = r"""
-import json, pathlib, sys
-args = sys.argv[1:]
-out = pathlib.Path.cwd()
-print(json.dumps({"type": "thread.started", "thread_id": "fake-session"}))
-if "resume" in args:  # the second call: finish the stage
-    (out / "support.json").write_text(json.dumps(
-        {"T_base_support": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]], "extent": [1, 1]}))
-    (out / "output.json").write_text(json.dumps({
-        "frames": ["ext1@0", "ext1@4", "wrist@0", "wrist@4"],
-        "support": {"file": "support.json"}, "objects": []}))
-else:  # the first call: three frames, no support
-    (out / "output.json").write_text(json.dumps(
-        {"frames": ["ext1@0", "ext1@4", "wrist@9"], "support": {}}))
+# Stage 2 as an agent does it: three frames and no support first, then (when its
+# session is resumed) a valid product.
+FAKE_STAGE_2 = r"""
+import json, os, pathlib, sys
+
+def stage_2(finish):
+    out = pathlib.Path.cwd()
+    if finish:
+        (out / "support.json").write_text(json.dumps({"extent": [1, 1],
+            "T_base_support": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}))
+        (out / "output.json").write_text(json.dumps({
+            "frames": ["ext1@0", "ext1@4", "wrist@0", "wrist@4"],
+            "support": {"file": "support.json"}, "objects": []}))
+    else:
+        (out / "output.json").write_text(json.dumps(
+            {"frames": ["ext1@0", "ext1@4", "wrist@9"], "support": {}}))
 """
+FAKE_CODEX = FAKE_STAGE_2 + r"""
+print(json.dumps({"type": "thread.started", "thread_id": "fake-session"}))
+stage_2("resume" in sys.argv[1:])
+"""
+# Claude Code's stream-json events; what it was called with, in $FAKE_CLAUDE_CALLS.
+FAKE_CLAUDE = FAKE_STAGE_2 + r"""
+args = sys.argv[1:]
+with open(os.environ["FAKE_CLAUDE_CALLS"], "a") as calls:
+    calls.write(json.dumps({"args": args, "cwd": os.getcwd(), "stdin": sys.stdin.read(),
+        "memory_off": os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY")}) + "\n")
+session = args[args.index("--resume") + 1] if "--resume" in args else "fake-claude"
+print(json.dumps({"type": "system", "subtype": "init", "session_id": session,
+                  "model": "claude-fake-1"}))
+if os.environ.get("FAKE_CLAUDE_FAILS"):
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                      "result": "usage limit reached", "session_id": session}))
+    sys.exit(1)
+stage_2("--resume" in args)
+print(json.dumps({"type": "assistant", "session_id": session, "message": {
+    "content": [{"type": "text", "text": "Done."}]}}))
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                  "result": "Done.", "session_id": session}))
+"""
+
+
+def _fake_cli(path, script):
+    path.write_text(f"#!{sys.executable}\n{script}")
+    path.chmod(0o755)
+    return str(path)
 
 
 def test_agent_is_resumed_until_the_stage_output_is_valid(tmp_path, monkeypatch):
     """A fake Codex writes invalid output first, then valid output when resumed."""
-    codex = tmp_path / "codex"
-    codex.write_text(f"#!{sys.executable}\n{FAKE_CODEX}")
-    codex.chmod(0o755)
+    codex = _fake_cli(tmp_path / "codex", FAKE_CODEX)
     monkeypatch.setattr(agentic, "repo_state", lambda: {})
-    method = agentic.AgenticMethod(agentic.AgenticConfig(codex_bin=str(codex)))
+    method = agentic.AgenticMethod(agentic.AgenticConfig(executable=codex))
     log = run(_capture(tmp_path).root, tmp_path / "run", method, ("2",))
     entry = log["stages"]["2"]
     assert entry["session"] == "fake-session" and entry["resumptions"] == 1
+    assert entry["agent"] == "codex" and entry["model"] == agentic.CODEX_MODEL
     assert entry["status"] == "done" and entry["started"] > 0
     brief = (tmp_path / "run/s2_frames/BRIEF.md").read_text()
     rules = (tmp_path / "run/AGENTS.md").read_text()
@@ -369,6 +399,57 @@ def test_agent_is_resumed_until_the_stage_output_is_valid(tmp_path, monkeypatch)
     # Done stages are skipped.
     again = run(tmp_path / "run", None, method, ("2",))
     assert again["stages"]["2"]["resumptions"] == 1
+
+
+def test_claude_code_can_be_the_agent(tmp_path, monkeypatch):
+    """Claude Code (a fake) does the stage: ``claude -p`` at the run's effort, with the
+    run's directory, nothing on its stdin, no memory; its session resumed while the
+    product is invalid. A resumed run keeps it unless told otherwise."""
+    claude = _fake_cli(tmp_path / "claude", FAKE_CLAUDE)
+    calls = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(calls))
+    monkeypatch.setattr(agentic, "repo_state", lambda: {})
+    method = agentic.AgenticMethod(
+        agentic.AgenticConfig(agent="claude", executable=claude)
+    )
+    log = run(_capture(tmp_path).root, tmp_path / "run", method, ("2",))
+    entry = log["stages"]["2"]
+    assert entry["agent"] == "claude" and entry["model"] == "claude-fake-1"
+    assert entry["session"] == "fake-claude" and entry["resumptions"] == 1
+    first, second = [json.loads(line) for line in calls.read_text().splitlines()]
+    s2 = (tmp_path / "run/s2_frames").resolve()
+    args = first["args"]
+    assert first["cwd"] == str(s2) and args[0] == "-p" and "--resume" not in args
+    assert args[args.index("--model") + 1] == agentic.CLAUDE_MODEL
+    assert args[args.index("--effort") + 1] == "xhigh"
+    assert args[args.index("--add-dir") + 1] == str(s2.parent)
+    assert "--dangerously-skip-permissions" in args and "BRIEF.md" in args[-1]
+    assert first["stdin"] == "" and first["memory_off"] == "1"
+    assert second["args"][:3] == ["-p", "--resume", "fake-claude"]
+    assert "not complete yet" in second["args"][-1]
+    assert (s2 / "claude_1_final.md").read_text() == "Done."
+
+    calls.unlink()
+    unnamed = agentic.AgenticMethod(agentic.AgenticConfig(executable=claude))
+    run(tmp_path / "run", None, unnamed, ("2",), force=True)
+    assert json.loads(calls.read_text().splitlines()[0])["args"][0] == "-p"
+    with pytest.raises(ValueError, match="no agent 'gemini'"):
+        agentic.AgenticConfig(agent="gemini")
+
+
+def test_an_agent_that_fails_fails_the_stage(tmp_path, monkeypatch):
+    """Claude Code's error (its result) is the stage's."""
+    claude = _fake_cli(tmp_path / "claude", FAKE_CLAUDE)
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(tmp_path / "calls.jsonl"))
+    monkeypatch.setenv("FAKE_CLAUDE_FAILS", "1")
+    monkeypatch.setattr(agentic, "repo_state", lambda: {})
+    method = agentic.AgenticMethod(
+        agentic.AgenticConfig(agent="claude", executable=claude)
+    )
+    with pytest.raises(RuntimeError, match="claude failed .*usage limit reached"):
+        run(_capture(tmp_path).root, tmp_path / "run", method, ("2",))
+    entry = Workspace.load(tmp_path / "run").read_run()["stages"]["2"]
+    assert entry["status"] == "failed" and "usage limit" in entry["error"]
 
 
 def test_repository_guard_sees_changes(tmp_path, monkeypatch):

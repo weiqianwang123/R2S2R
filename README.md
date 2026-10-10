@@ -22,7 +22,7 @@ bash scripts/setup/fetch_mujoco_assets.sh        # MuJoCo robots and objects
 bash scripts/setup/fetch_robotiq_isaac.sh        # Robotiq's 2F-85 for Isaac (git-lfs)
 bash scripts/setup/fetch_robodojo_x5.sh          # RoboDojo's ARX X5, for its two-armed robot
 bash scripts/setup/install_newton.sh             # conda env "newton": cloths settle there
-source .venv/bin/activate              # and the Codex CLI on the PATH
+source .venv/bin/activate              # and the Codex CLI (or Claude Code) on the PATH
 ```
 
 SimFoundry's conda envs run SAM3, Hunyuan3D-2.1, CoACD and FoundationStereo.
@@ -31,6 +31,7 @@ SimFoundry's conda envs run SAM3, Hunyuan3D-2.1, CoACD and FoundationStereo.
 r2s2r capture droid EPISODE --calib CALIB --out CAP    # raw DROID episode, KarlP/droid calibration
 r2s2r capture mujoco --world fr3_table --out CAP        # or physcoder_box_block
 r2s2r run CAP --method fixed --out RUN                  # or agentic; --cameras ext2 wrist; --sim mujoco
+r2s2r run CAP --method agentic --agent claude --out RUN # Claude Code as the agent, not Codex
 r2s2r viewer RUN                                        # live, http://localhost:8765
 r2s2r eval RUN --capture CAP                            # MuJoCo capture: vs its ground truth
 r2s2r pick RUN/s5_settle/scene --capture CAP --out PICK # MuJoCo capture: pick test, also in Isaac Lab
@@ -58,19 +59,21 @@ flowchart LR
   classDef shared stroke-dasharray: 5 4
 ```
 
-**Agentic**: astra (Codex `gpt-6-astra`, xhigh) does stages 2, 3, 4 and 6, one session
-each with its [brief](src/r2s2r/pipeline/agentic/briefs), working through `r2s2r tool`
+**Agentic**: a coding agent does stages 2, 3, 4 and 6, one session each with its
+[brief](src/r2s2r/pipeline/agentic/briefs), working through `r2s2r tool`
 (`frames segment crop points support generate fit check assemble settle replay`). The
-run checks every product and resumes the session while it is invalid.
+run checks every product and resumes the session while it is invalid. The agent is
+astra (Codex `gpt-6-astra`) or, with `--agent claude`, Claude Code (`claude-opus-5-5`);
+both at xhigh effort (`--model`, `--reasoning`). A resumed run keeps its agent.
 
 ```mermaid
 flowchart LR
   cap["capture<br/>droid or mujoco"] --> inp["inputs/<br/>frames, robot-free depth"]
-  inp --> s2["s2_frames<br/>astra: 4-8 frames,<br/>support plane and frame"]
-  s2 --> s3["s3_objects<br/>astra: best view per object,<br/>Hunyuan3D-2.1 mesh,<br/>multi-view silhouette fit"]
-  s3 --> s4["s4_scene<br/>astra: mass, friction,<br/>joint dynamics;<br/>shared assemble tool"]
+  inp --> s2["s2_frames<br/>agent: 4-8 frames,<br/>support plane and frame"]
+  s2 --> s3["s3_objects<br/>agent: best view per object,<br/>Hunyuan3D-2.1 mesh,<br/>multi-view silhouette fit"]
+  s3 --> s4["s4_scene<br/>agent: mass, friction,<br/>joint dynamics;<br/>shared assemble tool"]
   s4 --> s5["s5_settle<br/>settle in Isaac Lab or MuJoCo"]
-  s5 --> s6["s6_refine<br/>astra: replay tool,<br/>fix the geometry"]
+  s5 --> s6["s6_refine<br/>agent: replay tool,<br/>fix the geometry"]
   s6 --> fr["final_replay<br/>the recording replayed<br/>in the same simulator, every view"]
   class cap,inp,s5,fr shared
   classDef shared stroke-dasharray: 5 4
@@ -120,7 +123,8 @@ src/r2s2r/
   cli.py             r2s2r capture | run | tool | viewer | eval | pick
   structs.py         Capture, CameraSpec, FrameRecord, SceneSpec: plain data, JSON on disk
   workspace.py       the run directory: capture copy, frame index, depth cache, run.json
-  paths.py           where SimFoundry, the caches, PhysCoder, the conda envs and Codex are
+  paths.py           where SimFoundry, the caches, PhysCoder, the conda envs, Codex and
+                     Claude Code are
   transforms.py      rigid transforms, quaternions, projection
   assets.py          object URDFs: written, made sim-ready, read back
   mjrender.py        MuJoCo renders from calibrated pinhole cameras
@@ -131,8 +135,8 @@ src/r2s2r/
     stages.py        stage directories, their products, the checks
     run.py           a method's stages, the shared settle, the final replay
     fixed/           SimFoundry driver; existence, orientation, refinement; Codex VLM
-    agentic/         astra's runner and briefs
-  tools/             r2s2r tool (cli.py), for both methods and astra; envjobs.py: conda env jobs
+    agentic/         the agent's runner (Codex or Claude Code) and briefs
+  tools/             r2s2r tool (cli.py), for both methods and the agent; envjobs.py: conda env jobs
     segment.py       SAM3 masks, object crops
     geometry.py      points, support plane and outline, footprints, multi-view mesh fit
     objects.py       Hunyuan3D-2.1 meshes; assembly into a sim-ready scene
@@ -164,7 +168,7 @@ scripts/
                      the conda envs
   setup/             install.sh, link_simfoundry_resources.sh, fetch_mujoco_assets.sh,
                      fetch_robotiq_isaac.sh, fetch_robodojo_x5.sh, install_newton.sh
-tests/               pytest, no GPU, SimFoundry or Codex needed (MuJoCo renders: marker gl)
+tests/               pytest, no GPU, SimFoundry, Codex or Claude needed (MuJoCo renders: marker gl)
 docs/                this README's images: robots/, demo/, viewer.png
 third_party/SimFoundry  our SimFoundry fork (branch r2s2r), a submodule
 ```

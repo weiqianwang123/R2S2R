@@ -13,7 +13,7 @@ tools a method (or anyone) can use on a run::
         [--sim isaac|mujoco] [--stages 2 3 4 5 6] [--force]
         fixed: [--frame-selection codex] [--max-frames 12] [--retry-frames 3]
                [--codex-reasoning medium] [--override HYDRA_OVERRIDE ...]
-        agentic: [--model gpt-6-astra] [--reasoning xhigh]
+        agentic: [--agent codex|claude] [--model MODEL] [--reasoning xhigh]
     r2s2r run RUN_DIR --method fixed            # resumes: done stages are skipped
     r2s2r tool <frames|segment|crop|points|support|generate|fit|check|assemble|settle|
                 replay> ...
@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Callable
 
 from r2s2r.capture.droid import DEFAULT_ROLES, load_droid_episode
-from r2s2r.pipeline.agentic.method import AgenticConfig, AgenticMethod
+from r2s2r.pipeline.agentic.method import AGENTS, AgenticConfig, AgenticMethod
 from r2s2r.pipeline.fixed import FixedMethod
 from r2s2r.pipeline.fixed.simfoundry import FRAME_SELECTIONS, SimFoundryConfig
 from r2s2r.pipeline.run import Method, run
@@ -65,7 +65,9 @@ def _fixed(args: argparse.Namespace) -> Method:
 
 
 def _agentic(args: argparse.Namespace) -> Method:
-    return AgenticMethod(AgenticConfig(model=args.model, reasoning=args.reasoning))
+    return AgenticMethod(
+        AgenticConfig(agent=args.agent, model=args.model, reasoning=args.reasoning)
+    )
 
 
 METHODS: dict[str, Callable[[argparse.Namespace], Method]] = {
@@ -286,8 +288,23 @@ def main(argv: list[str] | None = None) -> None:
         "--override", action="append", default=[], help="SimFoundry Hydra override"
     )
     agentic = p.add_argument_group("agentic")
-    agentic.add_argument("--model", default=AgenticConfig.model)
-    agentic.add_argument("--reasoning", default=AgenticConfig.reasoning)
+    agentic.add_argument(
+        "--agent",
+        choices=sorted(AGENTS),
+        help="the coding agent: Codex or Claude Code (default: the one that last "
+        "worked on the run, else codex)",
+    )
+    agentic.add_argument(
+        "--model",
+        help="the agent's model (default: "
+        + ", ".join(f"{model} for {name}" for name, (_, model) in AGENTS.items())
+        + ")",
+    )
+    agentic.add_argument(
+        "--reasoning",
+        default=AgenticConfig.reasoning,
+        help="Codex's reasoning effort, Claude Code's --effort",
+    )
     p.set_defaults(func=_run)
     add_tool_parser(sub)
 

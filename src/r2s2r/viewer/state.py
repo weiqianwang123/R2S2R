@@ -5,8 +5,9 @@ objects, their physical parameters, and the latest replay.
 A stage's status is what ``run.json`` says (:mod:`r2s2r.pipeline.run`), unless its
 product has since become invalid or stale (then "stopped"), or it has been "running"
 without writing anything for a long time (the run was killed: "stopped" too). A running
-stage's activity is an agent's last message (``codex_*.jsonl``), or the SimFoundry stage
-the fixed method is at (the last ``[Stage N]`` line of ``simfoundry.log``).
+stage's activity is the agent's last message (``codex_*.jsonl``, ``claude_*.jsonl``), or
+the SimFoundry stage the fixed method is at (the last ``[Stage N]`` line of
+``simfoundry.log``).
 """
 
 from __future__ import annotations
@@ -118,18 +119,29 @@ def _stage(ws: Workspace, key: str, entry: dict[str, Any]) -> dict[str, Any]:
 def _agent_message(d: Path) -> str | None:
     """The agent's last message in the stage, if an agent works there."""
     message = None
-    for path in sorted(d.glob("codex_*.jsonl")):
+    logs = [*d.glob("codex_*.jsonl"), *d.glob("claude_*.jsonl")]
+    for path in sorted(logs, key=lambda p: p.stat().st_mtime):
         for line in path.read_text(errors="replace").splitlines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            item = event.get("item") or {}
-            if event.get("type") == "item.completed" and item.get("type") == (
-                "agent_message"
-            ):
-                message = item.get("text")
+            if isinstance(event, dict):
+                message = _message_text(event) or message
     return message
+
+
+def _message_text(event: dict[str, Any]) -> str | None:
+    """The text of an agent's message: Codex's ``agent_message`` item, Claude Code's
+    ``assistant`` message (its text blocks)."""
+    item = event.get("item") or {}
+    if event.get("type") == "item.completed" and item.get("type") == "agent_message":
+        return item.get("text")
+    if event.get("type") == "assistant":
+        blocks = (event.get("message") or {}).get("content") or []
+        texts = [b.get("text") for b in blocks if b.get("type") == "text"]
+        return "\n".join(t for t in texts if t) or None
+    return None
 
 
 def _simfoundry_stage(log: Path) -> str | None:
