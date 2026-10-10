@@ -243,7 +243,8 @@ def _run_stage(ws: Workspace, method: Method, key: str) -> None:
 
 
 def _settle(ws: Workspace, stage_dir: Path) -> dict[str, Any]:
-    """Stage 5: stage 4's scene settles in the run's simulator, the robot held."""
+    """Stage 5: stage 4's scene settles in the run's simulator, the robot held (its
+    cloths then in Newton)."""
     report = sim.settle(
         ws.root / STAGE_DIRS["4"] / "scene",
         ws.capture.root,

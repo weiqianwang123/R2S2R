@@ -137,7 +137,8 @@ def settle(
     its state at the start of the static period (:func:`~r2s2r.sim.world.settled`).
 
     Each object's USD goes to ``out_dir/objects/<name>/<name>.usd`` with physcoder's
-    ``metadata.yaml`` beside it (for the settled pose). Returns the settled scene, with
+    ``metadata.yaml`` beside it (for the settled pose; a cloth, which settles
+    afterwards in Newton, has none). Returns the settled scene, with
     the USDs, and how far each object moved.
     """
     out_dir = Path(out_dir).resolve()
@@ -158,7 +159,8 @@ def settle(
     )
     for obj in scene.objects:
         assert obj.usd is not None
-        write_metadata(obj.usd, obj.T_base_obj, scene.T_base_support)
+        if not obj.cloth:  # a cloth has no colliders, and settles afterwards
+            write_metadata(obj.usd, obj.T_base_obj, scene.T_base_support)
     return scene, report
 
 

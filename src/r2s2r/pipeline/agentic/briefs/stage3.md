@@ -41,6 +41,14 @@ the way the real one would, without passing through the rest of the object. Only
 model joints you believe the object has; a rigid object stays rigid. Its joints'
 dynamics come in stage 4.
 
+Cloths: a towel, a napkin or a cloth lying on the scene is a `cloth` (see the objects
+file in `../AGENTS.md`), not a generated mesh: build its surface from the recorded depth
+(`points` with its masks gives the cloth's points in the base frame; mesh them into an
+even, open triangle surface that follows them, with no holes where the cloth is
+whole), as it lies. Place it with `T_base_obj` as you like (the identity and the mesh in
+the base frame is fine), give it its `cloth` material (a first estimate; stage 4 looks
+again) and `check` it like any other object.
+
 Add objects stage 2 missed; drop anything that is not a separate object. Finish with
 `notes.md`: per object, the view it was generated from, the frames it was fitted to,
-its final IoUs, its joints and why, and any doubts.
+its final IoUs, its joints and why, how a cloth was built, and any doubts.

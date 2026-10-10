@@ -3,11 +3,12 @@
 Real-to-sim from a robot's own cameras. In: what the robot records, calibrated images
 from one exterior camera, the wrist camera or both, with its joint states, every pose in
 its base frame (a real robot's, or one simulated in MuJoCo). Out: a scene of the objects
-on their support, in that base frame, for Isaac Lab or MuJoCo (`--sim`), rigid or
+on their support, in that base frame, for Isaac Lab or MuJoCo (`--sim`), rigid,
 articulated (a lid, a door, a drawer: the agentic method models joints, and how each
-moves: its damping, its dry friction, a spring toward a rest), each with a URDF (and a
-USD, for Isaac Lab), a mass and a friction, settled under gravity, on a support in the
-colour the cameras saw.
+moves: its damping, its dry friction, a spring toward a rest) or a cloth (a towel: it
+drapes in Newton as the scene settles, and moves in Newton beside MuJoCo as the robot
+pinches and lifts it), each with a URDF (and a USD, for Isaac Lab), a mass and a
+friction, settled under gravity, on a support in the colour the cameras saw.
 Two methods, **fixed** and **agentic**, share the inputs, the run directory, the last
 stages and the viewer. MuJoCo worlds stand in for the real world in local tests.
 
@@ -20,6 +21,7 @@ bash scripts/setup/link_simfoundry_resources.sh  # a SimFoundry install's models
 bash scripts/setup/fetch_mujoco_assets.sh        # MuJoCo robots and objects
 bash scripts/setup/fetch_robotiq_isaac.sh        # Robotiq's 2F-85 for Isaac (git-lfs)
 bash scripts/setup/fetch_robodojo_x5.sh          # RoboDojo's ARX X5, for its two-armed robot
+bash scripts/setup/install_newton.sh             # conda env "newton": cloths settle there
 source .venv/bin/activate              # and the Codex CLI on the PATH
 ```
 
@@ -32,6 +34,7 @@ r2s2r run CAP --method fixed --out RUN                  # or agentic; --cameras 
 r2s2r viewer RUN                                        # live, http://localhost:8765
 r2s2r eval RUN --capture CAP                            # MuJoCo capture: vs its ground truth
 r2s2r pick RUN/s5_settle/scene --capture CAP --out PICK # MuJoCo capture: pick test, also in Isaac Lab
+r2s2r pick RUN/s5_settle/scene --target towel --sims scene --out PICK  # any run: in its own scene
 ```
 
 ## Pipelines
@@ -145,18 +148,22 @@ src/r2s2r/
     isaaclab/        inside Isaac Lab: scene, replay and settle, pick
     mujoco.py        MuJoCo in this process: settle, replay
     mjscene.py       a scene in MuJoCo: robot, support, objects with their joints
+    cloth.py         cloths in Newton (VBD): settling with the bodies within reach,
+                     moving beside a MuJoCo session (the robot pinches and lifts them)
     compare.py       replay renders against the real frames, with numbers
   testbed/           MuJoCo as the real world, for local tests
     worlds.py        fr3_table, physcoder_box_block, with ground truth
     record.py        a capture recorded as a real rig would
     evaluate.py      scenes scored against the ground truth
-    policy.py        the robot interface and the pick program; pick.py: the test in MuJoCo
+    policy.py        the robot interface and the pick program (a cloth: pinched);
+                     pick.py: the test in MuJoCo, in a capture's world or the scene
   viewer/            live web viewer of runs (HTTP server, run state, GLBs, static/)
 scripts/
   isaaclab/          replay.py, settle.py, pick.py: Isaac Lab entry points
-  tools/             SAM3, Hunyuan3D, CoACD, FoundationStereo jobs for the conda envs
+  tools/             SAM3, Hunyuan3D, CoACD, FoundationStereo, cloth (Newton) jobs for
+                     the conda envs
   setup/             install.sh, link_simfoundry_resources.sh, fetch_mujoco_assets.sh,
-                     fetch_robotiq_isaac.sh, fetch_robodojo_x5.sh
+                     fetch_robotiq_isaac.sh, fetch_robodojo_x5.sh, install_newton.sh
 tests/               pytest, no GPU, SimFoundry or Codex needed (MuJoCo renders: marker gl)
 docs/                this README's images: robots/, demo/, viewer.png
 third_party/SimFoundry  our SimFoundry fork (branch r2s2r), a submodule

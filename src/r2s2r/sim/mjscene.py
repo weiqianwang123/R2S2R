@@ -10,8 +10,10 @@ plane, and colliding as that plane (:func:`_add_support`);
 every object from its URDF at its ``T_base_obj``, a free body (an articulated one with
 its links under it, joined by its joints with their dynamics,
 :class:`~r2s2r.structs.JointDynamics`), its collision parts convex colliders with its
-friction, its visual meshes textured and not colliding; behind it all, a neutral grey
-sky. Gravity is along the support's normal (:func:`~r2s2r.sim.world.gravity`).
+friction, its visual meshes textured and not colliding; a cloth held as it lies, a
+surface to see that nothing touches (it settles in Newton, :mod:`r2s2r.sim.cloth`);
+behind it all, a neutral grey sky. Gravity is along the support's normal
+(:func:`~r2s2r.sim.world.gravity`).
 
 MuJoCo's URDF import cannot take the assembled URDFs (it drops the ``collision/``
 directory from mesh paths), so the bodies are built from the URDF here.
@@ -34,7 +36,13 @@ from r2s2r.robots.model import GripperPoser, prepare_robot
 from r2s2r.robots.spec import RobotSpec
 from r2s2r.sim.world import gravity, support_extent
 from r2s2r.structs import SUPPORT_THICKNESS, ObjectSpec, SceneSpec
-from r2s2r.transforms import make_transform, matrix_to_pos_quat, pos_quat_to_matrix
+from r2s2r.transforms import (
+    invert,
+    make_transform,
+    matrix_to_pos_quat,
+    pos_quat_to_matrix,
+    transform_points,
+)
 
 TIMESTEP = 0.002  # s, the longest (MuJoCo's default): a pinch between the pads holds
 # Sliding friction when the scene gives an object none (PhysX's default material's);
@@ -258,13 +266,14 @@ def _add_support(spec: Any, scene: SceneSpec) -> None:
 
 
 def _add_object(spec: Any, obj: ObjectSpec) -> None:
-    """An object's bodies: its root link free at ``T_base_obj``, its other links
-    under it at their joints' zero."""
+    """An object's bodies: its root link free at ``T_base_obj`` (a cloth's fixed
+    there), its other links under it at their joints' zero."""
     root, links, joints = _read_urdf(Path(obj.asset_path))
     friction = DEFAULT_FRICTION if obj.friction is None else float(obj.friction)
     pos, quat = matrix_to_pos_quat(np.asarray(obj.T_base_obj, float))
     bodies = {root: spec.worldbody.add_body(name=obj.name, pos=pos, quat=quat)}
-    bodies[root].add_freejoint(name=f"{obj.name}/root")
+    if not obj.cloth:
+        bodies[root].add_freejoint(name=f"{obj.name}/root")
     for joint in joints:
         pos, quat = matrix_to_pos_quat(joint.origin)
         body = bodies[joint.parent].add_body(
@@ -344,7 +353,8 @@ class Session:
     ``timestep`` (:func:`scene_spec`).
 
     Every object starts where the scene has it, an articulated one with its joints as
-    the scene has them; the robot at the scene's recorded arm joints, grippers open.
+    the scene has them, a cloth held there as it lies; the robot at the scene's
+    recorded arm joints, grippers open.
     Arm joints are every arm's in turn, gripper openings as a capture records them
     (a number for a one-armed robot, else one per arm).
     """
@@ -364,9 +374,23 @@ class Session:
         self.dt = float(self.model.opt.timestep)
         m = self.model
         self.objects = {obj.name: obj for obj in scene.objects}
-        # Each object's free joint's (qpos, dof) addresses, and each articulated
-        # object's joints' (qpos, dof, range).
-        self._root = {name: _address(m, f"{name}/root") for name in self.objects}
+        # Each body's free joint's (qpos, dof) addresses, and each articulated
+        # object's joints' (qpos, dof, range); the cloths' poses, which stay.
+        self._root = {
+            name: _address(m, f"{name}/root")
+            for name, obj in self.objects.items()
+            if not obj.cloth
+        }
+        self._cloths = {
+            name: np.asarray(obj.T_base_obj, float)
+            for name, obj in self.objects.items()
+            if obj.cloth
+        }
+        # Each cloth's visual mesh geom (one), to draw it where it has moved to.
+        self._surfaces = {
+            name: next(g for g in range(m.ngeom) if m.geom_bodyid[g] == m.body(name).id)
+            for name in self._cloths
+        }
         self._joints = {
             name: {
                 joint: (*_address(m, f"{name}/{joint}"), _range(m, f"{name}/{joint}"))
@@ -424,6 +448,8 @@ class Session:
             for name, ids in self._bodies.items()
         }
         for name, obj in self.objects.items():
+            if name in self._cloths:
+                continue
             self.place(name, obj.T_base_obj)
             if obj.joints:
                 self.set_joints(name, obj.joints)
@@ -511,7 +537,9 @@ class Session:
     ) -> None:
         """Object ``name`` at ``T_base_obj`` moving at ``velocity`` (linear, angular;
         the base frame; at rest if not given). An articulated one's joints stay as
-        they are."""
+        they are; a cloth stays where it lies."""
+        if name in self._cloths:
+            raise ValueError(f"{name} is a cloth: it stays where it lies")
         qadr, dadr = self._root[name]
         pos, quat = matrix_to_pos_quat(np.asarray(T_base_obj, float))
         self.data.qpos[qadr : qadr + 7] = [*pos, *quat]
@@ -566,8 +594,8 @@ class Session:
         mujoco.mj_forward(m, d)
 
     def object_poses(self) -> dict[str, NDArray[np.float64]]:
-        """Every object's ``T_base_obj``."""
-        out = {}
+        """Every object's ``T_base_obj`` (a cloth's where the scene has it)."""
+        out = {name: T.copy() for name, T in self._cloths.items()}
         for name, (qadr, _) in self._root.items():
             q = self.data.qpos[qadr : qadr + 7]
             out[name] = pos_quat_to_matrix(q[:3], q[3:])
@@ -575,7 +603,7 @@ class Session:
 
     def object_velocities(self) -> dict[str, NDArray[np.float64]]:
         """Every object's velocity (linear, angular; the base frame)."""
-        out = {}
+        out = {name: np.zeros(6) for name in self._cloths}
         poses = self.object_poses()
         for name, (_, dadr) in self._root.items():
             v = self.data.qvel[dadr : dadr + 6]
@@ -605,6 +633,28 @@ class Session:
         }
 
     # -------------------------------------------------------------- rendering
+    def show_surface(self, name: str, vertices: NDArray) -> None:
+        """Draw cloth ``name`` with its visual mesh's vertices at ``vertices`` (in its
+        mesh's order, the base frame) from now on: it moved (in Newton,
+        :class:`r2s2r.sim.cloth.ClothSim`)."""
+        m, g = self.model, self._surfaces[name]
+        mesh = m.geom_dataid[g]
+        adr, n = m.mesh_vertadr[mesh], m.mesh_vertnum[mesh]
+        if len(vertices) != n:
+            raise ValueError(f"{name} has {n} vertices, not {len(vertices)}")
+        T_base_mesh = self._cloths[name] @ pos_quat_to_matrix(
+            m.geom_pos[g], m.geom_quat[g]
+        )
+        local = transform_points(invert(T_base_mesh), vertices)
+        m.mesh_vert[adr : adr + n] = local
+        f0, nf = m.mesh_faceadr[mesh], m.mesh_facenum[mesh]
+        faces = m.mesh_face[f0 : f0 + nf]
+        normals = trimesh.Trimesh(local, faces, process=False).vertex_normals
+        m.mesh_normal[m.mesh_normaladr[mesh] + m.mesh_facenormal[f0 : f0 + nf]] = (
+            normals[faces]
+        )
+        self.camera.upload_mesh(int(mesh))
+
     def render(
         self, K: NDArray, width: int, height: int, T_base_cam: NDArray
     ) -> dict[str, NDArray]:

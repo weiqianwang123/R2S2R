@@ -11,7 +11,9 @@ commands wherever it runs.
 The pick program only knows the reconstructed :class:`~r2s2r.structs.SceneSpec` and the
 robot, which is all a code-writing agent would get. It grasps from above, across the
 object's narrowest side, with the gripper's closing axis, finger reach and empty
-closure read off the robot's model.
+closure read off the robot's model; a cloth it pinches near the nearest point of its
+border the arm reaches straight down, the fingertips at the table, closing to twice its
+thickness.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation, Slerp
 
-from r2s2r.assets import object_points
+from r2s2r.assets import object_points, urdf_visual_meshes
 from r2s2r.mjrender import geom_mesh, mujoco
 from r2s2r.robots.model import RobotModel, in_subtree
 from r2s2r.robots.spec import RobotSpec
@@ -37,6 +39,13 @@ from r2s2r.transforms import invert, make_transform, transform_points
 LIFT_SUCCESS_M = 0.05  # the target must rise this much to count as picked
 # A gripper holds something when it stopped this much short of where its fingers meet.
 HOLDING_MARGIN = 0.05
+PAD_MOVE = 0.8  # a pad moves at least this share of the farthest a finger geom moves
+CLOTH_INSET = 0.04  # m: a cloth is pinched this far in from its border
+CLOTH_CLEARANCE = 0.001  # m: the fingertips stop this far above the support
+CLOTH_STEP = 0.01  # m: border points this near one already tried are not tried
+# A pose is within reach when IK gets the TCP this near it and turned this little away.
+REACHED_M, REACHED_RAD = 0.001, 0.01
+REST_SECONDS = 0.5  # physics before the program starts on a scene: it comes to rest
 CONTROL_DT = 0.02  # seconds per command (and per step of a MuJoCo recording)
 VIDEO_EVERY = 2  # control steps per video frame
 VIDEO_FPS = 1 / (CONTROL_DT * VIDEO_EVERY)
@@ -182,8 +191,45 @@ class GripperGeometry:
 def gripper_geometry(model: RobotModel) -> GripperGeometry:
     """Read off the model: the fingers' colliding geoms, open and closed, in the TCP
     frame. They close along the main direction the geoms move in the TCP's x-y plane;
-    the tips are their farthest point along its z at either opening; the two sides
-    (the geoms moving either way along the closing axis) meet at the empty level."""
+    the tips are their farthest point along its z at either opening; the two sides'
+    pads (the geoms moving most either way along the closing axis) meet at the empty
+    level."""
+    closing_axis, tip, _ = _fingers(model)
+    return GripperGeometry(closing_axis, tip, opening_at_gap(model, 0.0))
+
+
+def opening_at_gap(model: RobotModel, gap: float) -> float:
+    """The gripper opening (0 open, 1 closed) at which its two sides' fingers stand
+    ``gap`` apart (0: where they meet; a cloth's pinch)."""
+    m, d = model.model, model.data
+    _, _, sides = _fingers(model)
+    q = model.data.qpos[model.arm_qadr].copy()
+
+    def closer(level: float) -> bool:
+        model.set(q, level)
+        # A small distmax: with a large one mj_geomDistance can say 0 for far pairs.
+        return any(
+            mujoco.mj_geomDistance(m, d, a, b, gap + 1e-3, None) <= gap
+            for a in sides[0]
+            for b in sides[1]
+        )
+
+    apart, met = 0.0, 1.0
+    if not closer(met):
+        apart = met
+    while met - apart > 1e-4:
+        mid = (apart + met) / 2
+        apart, met = (apart, mid) if closer(mid) else (mid, met)
+    model.set(q, 0.0)
+    return apart
+
+
+def _fingers(
+    model: RobotModel,
+) -> tuple[NDArray[np.float64], float, list[list[int]]]:
+    """The gripper's closing axis (TCP frame), how far its tips reach below the TCP,
+    and its pads on either side: the colliding geoms that move most as it closes (see
+    :func:`gripper_geometry`; the knuckles stay near each other at any opening)."""
     m, d = model.model, model.data
     roots = [m.jnt_bodyid[m.joint(j).id] for j in model.grippers[0].joints]
     geoms = [
@@ -206,28 +252,15 @@ def gripper_geometry(model: RobotModel) -> GripperGeometry:
             T_base_body = make_transform(d.xmat[b].reshape(3, 3), d.xpos[b])
             z = transform_points(T_tcp_base @ T_base_body, mesh.vertices)[:, 2]
             tip = max(tip, float(z.max()))
+    model.set(q, 0.0)
     _, _, vt = np.linalg.svd((centres[1] - centres[0])[:, :2])
     closing_axis = np.r_[vt[0], 0.0]
     moves = (centres[1] - centres[0]) @ closing_axis
-    sides = [[g for g, v in zip(geoms, moves) if v * sign > 0] for sign in (1, -1)]
-
-    def meet(level: float) -> bool:
-        model.set(q, level)
-        # A small distmax: with a large one mj_geomDistance can say 0 for far pairs.
-        return any(
-            mujoco.mj_geomDistance(m, d, a, b, 1e-3, None) <= 0.0
-            for a in sides[0]
-            for b in sides[1]
-        )
-
-    apart, met = 0.0, 1.0
-    if not meet(met):
-        apart = met
-    while met - apart > 1e-4:
-        mid = (apart + met) / 2
-        apart, met = (apart, mid) if meet(mid) else (mid, met)
-    model.set(q, 0.0)
-    return GripperGeometry(closing_axis, tip, apart)
+    sides = [
+        [g for g, v in zip(geoms, moves) if v * sign > PAD_MOVE * np.abs(moves).max()]
+        for sign in (1, -1)
+    ]
+    return closing_axis, tip, sides
 
 
 @dataclass
@@ -274,9 +307,13 @@ def plan_top_down_grasp(
     top but with the fingertips ``clearance`` above its bottom.
 
     ``R_reference`` (a TCP rotation) picks which of the two symmetric yaws to use: the
-    one nearer to it.
+    one nearer to it. A cloth cannot be grasped this way.
     """
     obj = find_object(scene, target)
+    if obj.cloth:
+        raise ValueError(
+            f"{obj.name} is a cloth: pinched (plan_cloth_pinch), not grasped"
+        )
     pts = object_points(obj)
     (cx, cy), (w, h), angle = cv2.minAreaRect(pts[:, :2].astype(np.float32))
     theta = np.deg2rad(angle)
@@ -285,6 +322,86 @@ def plan_top_down_grasp(
     closing, width = (side_w, w) if w <= h else (side_h, h)
     if width > max_opening - width_margin:
         raise ValueError(f"{obj.name} is {width:.3f} m wide: too wide for the gripper")
+    R = _top_down(closing, gripper, R_reference)
+    top_z, bottom_z = float(pts[:, 2].max()), float(pts[:, 2].min())
+    T = make_transform(
+        R, [cx, cy, max(top_z - finger_depth, bottom_z + gripper.tip_depth + clearance)]
+    )
+    return GraspPlan(obj.name, T, float(width), top_z, bottom_z)
+
+
+def plan_cloth_pinch(
+    scene: SceneSpec,
+    target: str,
+    gripper: GripperGeometry,
+    model: RobotModel | None = None,
+    R_reference: NDArray | None = None,
+    inset: float = CLOTH_INSET,
+    clearance: float = CLOTH_CLEARANCE,
+) -> GraspPlan:
+    """Pinch a cloth ``inset`` in from a point of its border toward its middle (its
+    area's centre), closing across that line, the fingertips ``clearance`` above the
+    support, to its thickness (``width``: a fold of it, squeezed). The point is the
+    border's nearest the robot's base whose pinch, on the cloth, ``model`` reaches
+    from its home pose (the arm cannot point straight down close to its base); without
+    a model, the nearest."""
+    obj = find_object(scene, target)
+    if not obj.cloth:
+        raise ValueError(f"{obj.name} is no cloth")
+    mesh = urdf_visual_meshes(obj.asset_path)[0].mesh.copy()
+    mesh.apply_transform(obj.T_base_obj)
+    edges = mesh.edges_sorted
+    _, index, counts = np.unique(edges, axis=0, return_index=True, return_counts=True)
+    border = np.unique(edges[index[counts == 1]])
+    xy = np.asarray(mesh.vertices)[:, :2]
+    areas = np.asarray(mesh.area_faces)
+    middle = (np.asarray(mesh.triangles_center)[:, :2] * areas[:, None]).sum(
+        0
+    ) / areas.sum()
+    o, n = scene.T_base_support[:3, 3], scene.T_base_support[:3, 2]
+    top = float(mesh.vertices[:, 2].max())
+    tried: list[NDArray] = []
+    for v in border[np.argsort(np.linalg.norm(xy[border], axis=1))]:
+        if any(np.linalg.norm(xy[v] - p) < CLOTH_STEP for p in tried):
+            continue
+        tried.append(xy[v])
+        inward = (middle - xy[v]) / np.linalg.norm(middle - xy[v])
+        x, y = xy[v] + inset * inward
+        if not _on(xy[np.asarray(mesh.faces)], np.array([x, y])):
+            continue
+        z = o[2] - (n[0] * (x - o[0]) + n[1] * (y - o[1])) / n[2]  # the support there
+        R = _top_down(np.array([-inward[1], inward[0], 0.0]), gripper, R_reference)
+        T = make_transform(R, [x, y, z + gripper.tip_depth + clearance])
+        if model is None or _reaches(model, T):
+            return GraspPlan(obj.name, T, obj.cloth["thickness"], top, float(z))
+    raise ValueError(f"no point of {obj.name}'s border is within the arm's reach")
+
+
+def _on(triangles: NDArray, point: NDArray) -> bool:
+    """Whether ``point`` (x, y) lies in one of ``triangles`` (their corners' x, y)."""
+    a, b, c = triangles[:, 0], triangles[:, 1], triangles[:, 2]
+
+    def side(p: NDArray, q: NDArray) -> NDArray:
+        return (q[:, 0] - p[:, 0]) * (point[1] - p[:, 1]) - (q[:, 1] - p[:, 1]) * (
+            point[0] - p[:, 0]
+        )
+
+    s = np.stack([side(a, b), side(b, c), side(c, a)], axis=1)
+    return bool(np.any(np.all(s >= 0, axis=1) | np.all(s <= 0, axis=1)))
+
+
+def _reaches(model: RobotModel, T_base_tcp: NDArray) -> bool:
+    """Whether IK from the robot's home pose gets the TCP to ``T_base_tcp``, pointing
+    as it does."""
+    solution = model.ik(T_base_tcp, np.asarray(model.robot.home_q))
+    return bool(solution.pos_error < REACHED_M and solution.rot_error < REACHED_RAD)
+
+
+def _top_down(
+    closing: NDArray, gripper: GripperGeometry, R_reference: NDArray | None
+) -> NDArray[np.float64]:
+    """The TCP's rotation pointing down, its fingers closing along ``closing``
+    (horizontal, the base frame): of the two that do, the nearer ``R_reference``."""
     down = np.array([0.0, 0.0, -1.0])
     tcp_axes = np.column_stack(
         [gripper.closing_axis, np.cross([0, 0, 1.0], gripper.closing_axis), [0, 0, 1]]
@@ -295,15 +412,7 @@ def plan_top_down_grasp(
     ]
     if R_reference is not None:
         options.sort(key=lambda R: -float(np.trace(R_reference.T @ R)))
-    top_z, bottom_z = float(pts[:, 2].max()), float(pts[:, 2].min())
-    T = np.eye(4)
-    T[:3, :3] = options[0]
-    T[:3, 3] = [
-        cx,
-        cy,
-        max(top_z - finger_depth, bottom_z + gripper.tip_depth + clearance),
-    ]
-    return GraspPlan(obj.name, T, float(width), top_z, bottom_z)
+    return options[0]
 
 
 def _raised(T: NDArray, dz: float) -> NDArray[np.float64]:
@@ -328,17 +437,25 @@ def pick_up(
     robot.set_gripper(0.0, 0.5)
     robot.move_joints(np.asarray(robot.robot.home_q))
     geometry = gripper_geometry(robot.model)
-    plan = plan_top_down_grasp(
-        scene,
-        target,
-        geometry,
-        robot.arm.max_opening,
-        robot.tcp_pose()[:3, :3],
-    )
+    cloth = bool(find_object(scene, target).cloth)
+    if cloth:  # pinched to twice its thickness: nothing in MuJoCo stops the fingers
+        plan = plan_cloth_pinch(
+            scene, target, geometry, robot.model, robot.tcp_pose()[:3, :3]
+        )
+        close = opening_at_gap(robot.model, plan.width)
+    else:
+        plan = plan_top_down_grasp(
+            scene,
+            target,
+            geometry,
+            robot.arm.max_opening,
+            robot.tcp_pose()[:3, :3],
+        )
+        close = 1.0
     grasp = plan.T_base_tcp
     robot.move_tcp(_raised(grasp, approach))
     grasp_err = robot.move_tcp(grasp, speed=0.08)
-    robot.set_gripper(1.0, 1.0)
+    robot.set_gripper(close, 1.0)
     robot.move_tcp(_raised(grasp, lift), speed=0.1)
     robot.wait(1.0)
     level = robot.gripper_level()
@@ -347,7 +464,10 @@ def pick_up(
         "grasp": plan.as_dict(),
         "grasp_ik_error_m": grasp_err,
         "gripper_level_after_lift": level,
-        "holding": bool(level < geometry.empty_level - HOLDING_MARGIN),
+        # A cloth does not hold the fingers apart in MuJoCo: its rise tells.
+        "holding": (
+            None if cloth else bool(level < geometry.empty_level - HOLDING_MARGIN)
+        ),
     }
 
 

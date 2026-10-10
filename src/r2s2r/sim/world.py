@@ -18,12 +18,15 @@ from typing import Any
 import cv2
 import numpy as np
 from numpy.typing import NDArray
+from scipy.spatial import Delaunay, QhullError  # pylint: disable=no-name-in-module
 from scipy.spatial.transform import Rotation
 
+from r2s2r.assets import urdf_visual_meshes
 from r2s2r.structs import (
     CameraSpec,
     Capture,
     FrameRecord,
+    ObjectSpec,
     SceneSpec,
     read_depth,
     read_rgb,
@@ -56,12 +59,21 @@ def support_color(
     T_base_support: NDArray,
     extent: tuple[float, float] | None,
     stride: int = 4,
+    covered: list[NDArray] | None = None,
 ) -> tuple[float, float, float]:
     """The support's colour (sRGB, 0 to 1): the median, over the static period's
     frames with depth, of the pixels whose depth puts them on its plane (within
     :data:`ON_SUPPORT`) and inside its outline. What stands on it is above the
-    plane and left out."""
+    plane and left out; so is what lies flat on it, as a cloth does: the convex hull of
+    each of ``covered``'s points (the support's frame) seen from above, unless they
+    span no area."""
     to_support = invert(np.asarray(T_base_support, float))
+    hulls = []
+    for points in covered or []:
+        try:
+            hulls.append(Delaunay(np.asarray(points)[:, :2]))
+        except QhullError:  # a line of points, a cloth hanging: nothing flat
+            continue
     found = []
     for frame in capture.frames:
         if frame.depth_image is None or not capture.in_static(frame.step):
@@ -81,6 +93,8 @@ def support_color(
         on = np.abs(s[:, 2]) < ON_SUPPORT
         if extent is not None:
             on &= (np.abs(s[:, 0]) < extent[0] / 2) & (np.abs(s[:, 1]) < extent[1] / 2)
+        for hull in hulls:
+            on &= hull.find_simplex(s[:, :2]) < 0
         found.append(image[keep][on])
     pixels = np.concatenate(found) if found else np.zeros((0, 3))
     if len(pixels) < 100:
@@ -100,7 +114,8 @@ def settled(
     """The scene with its objects where they came to rest (``poses`` and ``joints``
     before and after ``seconds`` of physics, the robot held as it was at the start of
     the capture's static period) and the support's colour as the capture's depth frames
-    show it (:func:`support_color`); and how far each object moved."""
+    show it (:func:`support_color`, what a cloth covers left out); and how far each
+    object moved."""
     before, after = poses
     joints_before, joints_after = joints
     report: dict[str, Any] = {
@@ -110,6 +125,9 @@ def settled(
     }
     objects = []
     for obj in spec.objects:
+        if obj.cloth:  # it settles afterwards, in Newton (r2s2r.sim.cloth)
+            objects.append(obj)
+            continue
         T0, T1 = before[obj.name], after[obj.name]
         turn = Rotation.from_matrix(T0[:3, :3].T @ T1[:3, :3]).magnitude()
         report["objects"][obj.name] = {
@@ -123,9 +141,15 @@ def settled(
                 j: round(q - joints_before[obj.name][j], 4) for j, q in moved.items()
             }
         objects.append(replace(obj, T_base_obj=T1, joints=moved or obj.joints))
+    to_support = invert(np.asarray(spec.T_base_support, float))
+    cloths = [  # what lies flat on the support, its own colour
+        transform_points(to_support, cloth_surface(obj))
+        for obj in spec.objects
+        if obj.cloth
+    ]
     try:
         colour: tuple[float, float, float] | None = support_color(
-            capture, spec.T_base_support, spec.support_extent
+            capture, spec.T_base_support, spec.support_extent, covered=cloths
         )
     except ValueError as exc:  # no depth on the support; it stays as it was
         colour = spec.support_color
@@ -140,11 +164,20 @@ def settled(
 
 
 def settle_summary(report: dict[str, Any]) -> str:
-    """One line on how far each object moved and turned while settling."""
+    """One line on how far each object moved while settling, and turned (a body; a
+    cloth's furthest point moved)."""
     return ", ".join(
-        f"{name} moved {r['moved_m']:.3f} m, turned {r['turned_deg']:.1f} deg"
+        f"{name} moved {r['moved_m']:.3f} m"
+        + (f", turned {r['turned_deg']:.1f} deg" if "turned_deg" in r else "")
         for name, r in report["objects"].items()
     )
+
+
+def cloth_surface(obj: ObjectSpec) -> NDArray[np.float64]:
+    """Cloth ``obj``'s surface where it lies: its visual mesh's vertices, in order, in
+    the base frame."""
+    mesh = urdf_visual_meshes(obj.asset_path)[0].mesh  # a cloth has one
+    return transform_points(obj.T_base_obj, mesh.vertices)
 
 
 # ----------------------------------------------------------------------- replays

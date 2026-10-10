@@ -3,8 +3,10 @@ the same files: settling it and replaying a capture's recording in it.
 
 Isaac Lab runs in its own process (:mod:`~r2s2r.sim.isaac`, the code inside it in
 :mod:`~r2s2r.sim.isaaclab`); MuJoCo in this one (:mod:`~r2s2r.sim.mujoco`, the scene in
-:mod:`~r2s2r.sim.mjscene`). What both do the same is in :mod:`~r2s2r.sim.world`; a
-replay is compared with the recording by :mod:`~r2s2r.sim.compare`.
+:mod:`~r2s2r.sim.mjscene`). Either holds a cloth as it lies; once the bodies are at
+rest, the cloths settle in Newton (:mod:`~r2s2r.sim.cloth`). What both do the same is in
+:mod:`~r2s2r.sim.world`; a replay is compared with the recording by
+:mod:`~r2s2r.sim.compare`.
 """
 
 from __future__ import annotations
@@ -36,11 +38,16 @@ def settle(
     seconds: float | None = None,
 ) -> dict[str, Any]:
     """The scene's objects at rest in ``sim`` (``out_dir/scene.json``,
-    ``out_dir/settle.json``), and how far each moved."""
+    ``out_dir/settle.json``), its cloths then in Newton, and how far each moved."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.sim import cloth
+    from r2s2r.sim.world import SETTLE_SECONDS
+
     backend = _backend(sim)
-    if seconds is None:
-        return dict(backend.settle(scene_dir, capture_dir, out_dir))
-    return dict(backend.settle(scene_dir, capture_dir, out_dir, seconds))
+    seconds = SETTLE_SECONDS if seconds is None else seconds
+    result = dict(backend.settle(scene_dir, capture_dir, out_dir, seconds))
+    report = cloth.settle(out_dir, capture_dir, seconds)
+    return result if report is None else {**result, **report}
 
 
 def replay(

@@ -1,9 +1,11 @@
 """Jobs that run in another conda environment.
 
-SAM3, CoACD and FoundationStereo run in SimFoundry's environment, Hunyuan3D in its own
-(:mod:`r2s2r.paths`); each job is a script under ``scripts/tools/`` that reads a job
-JSON and writes a result JSON. The SimFoundry submodule is on their path (as on
-SimFoundry's own stages', :func:`simfoundry_env`), and its models are used from there.
+SAM3, CoACD and FoundationStereo run in SimFoundry's environment, Hunyuan3D and Newton
+(cloths) each in its own (:mod:`r2s2r.paths`); each job is a script under
+``scripts/tools/`` that reads a job JSON and writes a result JSON (or, staying
+running, answers requests: :func:`env_python`). The SimFoundry
+submodule is on their path (as on SimFoundry's own stages', :func:`simfoundry_env`),
+and its models are used from there.
 """
 
 from __future__ import annotations
@@ -33,6 +35,30 @@ def simfoundry_env() -> dict[str, str]:
     )
     env.pop("VIRTUAL_ENV", None)
     return env
+
+
+def env_python(env_name: str) -> str:
+    """The Python interpreter of the conda environment ``env_name`` (for a program
+    that stays running beside this one)."""
+    proc = subprocess.run(
+        [
+            mamba_exe(),
+            "run",
+            "-n",
+            env_name,
+            "python",
+            "-c",
+            "import sys; print(sys.executable)",
+        ],
+        capture_output=True,
+        text=True,
+        env=simfoundry_env(),
+        check=False,
+    )
+    lines = proc.stdout.strip().splitlines()
+    if proc.returncode != 0 or not lines:
+        raise RuntimeError(f"no conda env {env_name!r}: {proc.stderr.strip()[-500:]}")
+    return lines[-1]
 
 
 def run_env_job(

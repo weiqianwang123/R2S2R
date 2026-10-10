@@ -97,6 +97,14 @@ class CameraRenderer:
         geom = np.where(seg[..., 1] == int(mujoco.mjtObj.mjOBJ_GEOM), seg[..., 0], -1)
         return {"rgb": rgb, "depth": depth, "geom": geom}
 
+    def upload_mesh(self, mesh: int) -> None:
+        """Send mesh ``mesh``'s vertices and normals, changed in the model, to every
+        GL context (a renderer made later takes them as it starts)."""
+        # pylint: disable=protected-access
+        for r in self._renderers.values():
+            r._gl_context.make_current()
+            mujoco.mjr_uploadMesh(self.model, r._mjr_context, mesh)
+
     def close(self) -> None:
         """Free the GL contexts."""
         for r in self._renderers.values():
@@ -107,7 +115,9 @@ class CameraRenderer:
 def add_mesh(spec: Any, body: Any, name: str, visual: VisualMesh, **geom: Any) -> Any:
     """Add ``visual`` to ``body`` of an ``MjSpec`` as a mesh geom, textured if it has a
     texture and UVs; ``geom`` sets the geom's other attributes (say, that it does not
-    collide). Returns the geom."""
+    collide). Returns the geom. Its mesh's inertia is a shell's (a mesh to see may be
+    an open surface, a cloth, which holds no volume): meaningless as a body's, which
+    every caller gives its body itself, or holds still."""
     mesh = visual.mesh
     uv = getattr(mesh.visual, "uv", None)
     kwargs: dict[str, Any] = {}
@@ -125,6 +135,7 @@ def add_mesh(spec: Any, body: Any, name: str, visual: VisualMesh, **geom: Any) -
         name=name,
         uservert=np.asarray(mesh.vertices).reshape(-1).tolist(),
         userface=np.asarray(mesh.faces).reshape(-1).tolist(),
+        inertia=mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
         **kwargs,
     )
     return body.add_geom(

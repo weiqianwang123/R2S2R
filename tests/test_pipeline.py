@@ -164,6 +164,8 @@ def test_stage_checks_say_what_is_wrong(tmp_path):
     problems = VALIDATORS["3"](ws, s3)
     assert len(problems) == 2
     assert "lid's mesh not found" in problems[0] and "outside its limits" in problems[1]
+    _objects_product(s3, cloth={"thickness": 0.002})
+    assert VALIDATORS["3"](ws, s3) == ["box: cloth needs thickness and youngs_modulus"]
 
     _scene_product(s4, ws, extra="notes.md")
     assert VALIDATORS["4"](ws, s4) == ["output.json missing"]
@@ -321,8 +323,15 @@ def test_settling_and_final_replay_are_shared(tmp_path, monkeypatch):
     run(tmp_path / "run", None, FakeMethod(), ("5",))
     assert len(replays) == 2
 
-    report = {"objects": {"box": {"moved_m": 0.0012, "turned_deg": 0.31}}}
-    assert settle_summary(report) == "box moved 0.001 m, turned 0.3 deg"
+    report = {
+        "objects": {
+            "box": {"moved_m": 0.0012, "turned_deg": 0.31},
+            "towel": {"moved_m": 0.0087, "mean_moved_m": 0.002},  # a cloth turns not
+        }
+    }
+    assert settle_summary(report) == (
+        "box moved 0.001 m, turned 0.3 deg, towel moved 0.009 m"
+    )
 
 
 # ------------------------------------------------------------------ agentic method

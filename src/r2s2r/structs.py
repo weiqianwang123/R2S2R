@@ -330,7 +330,7 @@ class JointDynamics:
 
 @dataclass
 class ObjectSpec:
-    """One object, rigid or articulated, placed in the robot base frame."""
+    """One object, rigid, articulated or a cloth, placed in the robot base frame."""
 
     name: str
     category: str
@@ -342,7 +342,8 @@ class ObjectSpec:
     friction: float | None = None
     # The object as one USD file for Isaac Lab (its rigid body or articulation,
     # colliders and friction material; written by settling in Isaac Lab), with
-    # ``metadata.yaml`` beside it. Paths as for ``asset_path``.
+    # ``metadata.yaml`` beside it; None for a settled cloth (Isaac converts its
+    # surface as it came to rest). Paths as for ``asset_path``.
     usd: str | None = None
     # An articulated object's joint positions (rad or m) by the URDF's joint names: as
     # recorded, or where settling left them; None for a rigid object.
@@ -355,6 +356,10 @@ class ObjectSpec:
     # ``friction`` and a joint's ``<joint>.<damping|friction|stiffness|rest>``. A
     # parameter without one is as estimated; interaction data would narrow them.
     ranges: dict[str, tuple[float, float]] | None = None
+    # A cloth's material (``thickness`` m, ``youngs_modulus`` Pa, ``poissons_ratio``):
+    # its URDF's visual mesh is its surface, which settling drapes (in Newton,
+    # :mod:`r2s2r.sim.cloth`) and the simulators then hold as it lies. None for a body.
+    cloth: dict[str, float] | None = None
 
     def dynamics(self, joint: str) -> JointDynamics:
         """Joint ``joint``'s dynamics (a free joint's when the scene gives none)."""
@@ -388,11 +393,8 @@ class ObjectSpec:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ObjectSpec:
-        """Inverse of ``asdict``. A scene from before cloths were dropped still
-        loads when it has none."""
+        """Inverse of ``asdict``."""
         d = dict(d)
-        if d.pop("cloth", None) is not None:
-            raise ValueError(f"{d.get('name')}: a cloth; cloths are not supported")
         d["T_base_obj"] = _array(d["T_base_obj"])
         if d.get("joint_dynamics") is not None:
             d["joint_dynamics"] = {

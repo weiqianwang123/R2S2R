@@ -42,11 +42,8 @@ def settle(
     out_dir = Path(out_dir).resolve()
     spec = SceneSpec.load(scene_dir)
     capture = Capture.load(capture_dir)
-    traj = _trajectory(capture)
-    session = Session(spec, get_robot(capture.embodiment))
+    session = held_session(spec, capture)
     try:
-        i = _rows(traj).get(capture.static_steps[0], 0)
-        session.set_robot(traj.joint_positions[i], _level(traj.gripper_position[i]))
         before, joints_before = session.object_poses(), session.object_joints()
         session.step(int(round(seconds / session.dt)), hold_robot=True)
         after, joints_after = session.object_poses(), session.object_joints()
@@ -59,6 +56,17 @@ def settle(
     scene.save(out_dir)
     (out_dir / "settle.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     return {"scene": str(out_dir / "scene.json"), **report}
+
+
+def held_session(spec: SceneSpec, capture: Capture) -> Session:
+    """A session of ``spec`` with the capture's robot as it was at the start of the
+    static period (what the objects come to rest against, held there by
+    ``Session.step(hold_robot=True)``)."""
+    traj = _trajectory(capture)
+    session = Session(spec, get_robot(capture.embodiment))
+    i = _rows(traj).get(capture.static_steps[0], 0)
+    session.set_robot(traj.joint_positions[i], _level(traj.gripper_position[i]))
+    return session
 
 
 def replay(

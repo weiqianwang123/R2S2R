@@ -275,7 +275,7 @@ def _bake_mesh_scales(root: ET.Element, asset_dir: Path) -> None:
             mesh = trimesh.load(source, force="mesh", process=False)
             assert isinstance(mesh, trimesh.Trimesh), f"{rel} is not a single mesh"
             mesh.apply_transform(np.diag([*scale, 1.0]))
-            mesh.export(baked)
+            export_visual(mesh, baked)
         mesh_el.attrib["filename"] = str(baked_rel)
 
 
@@ -342,6 +342,28 @@ def bottom_offset(
 
 
 # ---------------------------------------------------------------------- helpers
+def export_visual(mesh: trimesh.Trimesh, path: str | Path) -> Path:
+    """Write ``mesh`` to the OBJ file ``path``, its material and texture beside it
+    named after it (``<stem>.mtl``, ``<stem>.png``): trimesh's own names, the same for
+    every mesh, let a directory's last mesh overwrite the others' textures."""
+    path = Path(path)
+    mesh = mesh.copy()
+    material = getattr(mesh.visual, "material", None)
+    if material is not None:
+        # A glTF's PBR material becomes a simple one on export, unnamed: name that.
+        if hasattr(material, "to_simple"):
+            material = material.to_simple()
+        material.name = path.stem
+        setattr(mesh.visual, "material", material)  # a textured mesh's visual
+    text, files = trimesh.exchange.obj.export_obj(  # type: ignore[no-untyped-call]
+        mesh, return_texture=True, mtl_name=f"{path.stem}.mtl"
+    )
+    path.write_text(text, encoding="utf-8")
+    for name, data in files.items():
+        (path.parent / name).write_bytes(data)
+    return path
+
+
 def base_color_texture(mesh_path: Path) -> Path | None:
     """The ``map_Kd`` image of an OBJ's first material, if any."""
     if mesh_path.suffix.lower() != ".obj":

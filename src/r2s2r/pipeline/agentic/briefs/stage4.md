@@ -9,12 +9,14 @@ Turn the objects of stage 3 into a simulation-ready scene. Work in this director
    whole object's; check its joints' limits once more (what a real one of its kind
    allows), and give each joint its dynamics, from how a real one of its kind moves
    when let go (see the objects file in `../AGENTS.md`): does its part stay where it is
-   left, fall, or spring back, and how quickly. Where a value is a guess, give its
-   range too (`<name>_range`, see `../AGENTS.md`), as wide as you are unsure.
+   left, fall, or spring back, and how quickly. Check a cloth's `cloth` material once
+   more, from what it is (a thin cotton napkin, a thick terry towel): thickness, and
+   how hard it stretches. Where a value is a guess, give its range too
+   (`<name>_range`, see `../AGENTS.md`; not a cloth's), as wide as you are unsure.
 3. Check the poses: an object standing on the support must touch it (lowest point at
-   about 0 in the support frame), objects must not intersect each other, and every
-   object must stand within the support's `extent` (enlarge the extent if not; it is
-   only what the cameras saw of the surface).
+   about 0 in the support frame; a cloth's at 0 or above), objects must not intersect
+   each other, and every object must stand within the support's `extent` (enlarge the
+   extent if not; it is only what the cameras saw of the surface).
 4. `r2s2r tool assemble objects.json --out scene`, and read its report: the number
    of collision hulls, their volume as a share of the mesh's convex hull
    (`hull_volume_share`: well below 1 keeps hollows such as a mug's opening; near 1
@@ -30,7 +32,8 @@ Write `output.json`:
               "box": {"mass": 0.2, "mass_range": [0.15, 0.3], "friction": 0.6,
                       "why": "... and why each range is as wide as it is",
                       "joints": {"hinge": "why its limits and dynamics are what they
-                                           are"}}},
+                                           are"}},
+              "towel": {"mass": 0.06, "friction": 0.8, "why": "... and its cloth"}},
   "notes": "..."
 }
 ```

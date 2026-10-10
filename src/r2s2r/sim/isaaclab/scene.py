@@ -18,12 +18,14 @@ bound to its colliders. physcoder loads the same files, with the ``metadata.yaml
 :func:`write_metadata` puts beside them. An articulated object's joints move as their
 dynamics say (:class:`~r2s2r.structs.JointDynamics`: a drive's damping, and its
 stiffness toward the joint's rest; a dry friction), or are held where the scene has
-them when the objects are kinematic.
+them when the objects are kinematic. A cloth is a surface to see, held as it lies
+(it settles in Newton, :mod:`r2s2r.sim.cloth`).
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
@@ -138,8 +140,9 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
     object's friction bound to every collider, the higher of two bodies' frictions
     holding where they touch, as in MuJoCo. An articulated object's joints get a
     force drive with their dynamics' stiffness and damping (:func:`joint_drive`):
-    PhysX applies no gain to a joint without one. Texture paths stay relative, so the
-    directory can move.
+    PhysX applies no gain to a joint without one. A cloth's USD is its surface to see,
+    with no physics. Texture paths stay relative, so the directory can move, and each
+    texture is named after its object (:func:`_named_texture`).
     """
     out_dir = Path(out_dir).resolve()
     converter = UrdfConverter(
@@ -166,7 +169,9 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
     flat = Usd.Stage.Open(stage.Flatten())
     root = flat.GetDefaultPrim()
     links = [p for p in root.GetChildren() if p.HasAPI(UsdPhysics.RigidBodyAPI)]
-    if obj.joints:
+    if obj.cloth:
+        _drop_physics(root)  # a surface to see, however the importer made its link
+    elif obj.joints:
         # Articulated: the links stay as the importer made them, the first the root.
         if not links[0].HasAPI(UsdPhysics.ArticulationRootAPI):
             raise ValueError(f"{obj.asset_path}'s first link is no articulation root")
@@ -178,8 +183,9 @@ def object_usd(obj: ObjectSpec, out_dir: str | Path) -> Path:
         for attr in prim.GetAttributes():
             value = attr.Get()
             if isinstance(value, Sdf.AssetPath) and os.path.isabs(value.path):
-                attr.Set(Sdf.AssetPath(f"./{os.path.relpath(value.path, out_dir)}"))
-    if obj.friction is not None:
+                path = _named_texture(Path(value.path), obj.name, out_dir)
+                attr.Set(Sdf.AssetPath(f"./{os.path.relpath(path, out_dir)}"))
+    if obj.friction is not None and not obj.cloth:
         material = UsdShade.Material.Define(
             flat, root.GetPath().AppendChild("PhysicsMaterial")
         )
@@ -245,6 +251,31 @@ def _move_rigid_body(link: Usd.Prim, root: Usd.Prim) -> None:
         if name.startswith(("physics:", "physx")) and attr.HasAuthoredValue():
             root.CreateAttribute(name, attr.GetTypeName()).Set(attr.Get())
             link.RemoveProperty(name)
+
+
+def _named_texture(path: Path, name: str, out_dir: Path) -> Path:
+    """An image ``path`` as a copy in ``out_dir/textures/`` named after object
+    ``name``: Isaac's renderer takes two objects' textures of one relative path
+    (``material_0.png``, say) for one, and the second object shows the first's."""
+    if path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+        return path
+    if path.parent == out_dir / "textures" and path.name.startswith(f"{name}_"):
+        return path  # named already
+    named = out_dir / "textures" / f"{name}_{path.name}"
+    named.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(path, named)
+    return named
+
+
+def _drop_physics(root: Usd.Prim) -> None:
+    """Every physics schema and property under ``root`` gone: a thing only to see."""
+    for prim in Usd.PrimRange(root):
+        for schema in prim.GetAppliedSchemas():
+            if schema.startswith(("Physics", "Physx")):
+                prim.RemoveAppliedSchema(schema)
+        for prop in prim.GetProperties():
+            if prop.GetName().startswith(("physics:", "physx")):
+                prim.RemoveProperty(prop.GetName())
 
 
 def _colliders(root: Usd.Prim) -> Iterable[Usd.Prim]:
@@ -313,15 +344,21 @@ def with_object_usds(scene: SceneSpec, out_dir: str | Path) -> SceneSpec:
 
 def object_cfg(
     obj: ObjectSpec, index: int, kinematic: bool
-) -> RigidObjectCfg | ArticulationCfg:
+) -> RigidObjectCfg | ArticulationCfg | AssetBaseCfg:
     """An object from its USD (:func:`object_usd`); ``kinematic`` holds it where it
     is placed (for comparing geometry, not physics), an articulated one with its
     joints as the scene has them. Otherwise an articulated object's joints move as
-    their dynamics say (:func:`joint_actuators`)."""
+    their dynamics say (:func:`joint_actuators`). A cloth stays where it lies."""
     if obj.usd is None:
         raise ValueError(f"{obj.name} has no USD yet (with_object_usds)")
     pos, rot = _pose(obj.T_base_obj)
     prim_path = object_prim_path(index)
+    if obj.cloth:
+        return AssetBaseCfg(
+            prim_path=prim_path,
+            spawn=sim_utils.UsdFileCfg(usd_path=obj.usd),
+            init_state=AssetBaseCfg.InitialStateCfg(pos=pos, rot=rot),
+        )
     if obj.joints:
         return ArticulationCfg(
             prim_path=prim_path,
@@ -550,7 +587,7 @@ class Session:
     ``robot_spec`` is the scene's embodiment; ``kinematic_objects`` holds the objects
     where they are placed; ``cameras`` as for :func:`build_scene_cfg`. An articulated
     object starts with its joints where the scene has them, its drives pulling them
-    toward their rest (:func:`joint_targets`).
+    toward their rest (:func:`joint_targets`); a cloth stays where it lies.
     """
 
     def __init__(
@@ -584,6 +621,7 @@ class Session:
             device=self.grip_open.device,
         )
         self.names = {object_key(i): obj.name for i, obj in enumerate(spec.objects)}
+        self._cloths = {obj.name: obj.T_base_obj for obj in spec.objects if obj.cloth}
         specs = {obj.name: obj for obj in spec.objects}
         for name, obj in self._objects().items():
             if isinstance(obj, Articulation):  # the joints as the scene has them
@@ -611,12 +649,16 @@ class Session:
     def _objects(self) -> dict[str, RigidObject | Articulation]:
         """The scene's bodies (rigid or articulated) by name."""
         entities = {**self.scene.rigid_objects, **self.scene.articulations}
-        return {name: entities[key] for key, name in self.names.items()}
+        return {
+            name: entities[key]
+            for key, name in self.names.items()
+            if name not in self._cloths
+        }
 
     def object_poses(self) -> dict[str, NDArray[np.float64]]:
         """Every object's pose in the robot base frame (the environment is at the
-        origin)."""
-        out = {}
+        origin; a cloth's where the scene has it)."""
+        out = {name: np.asarray(T, float).copy() for name, T in self._cloths.items()}
         for name, obj in self._objects().items():
             pos = obj.data.root_pos_w[0].cpu().numpy()
             quat = obj.data.root_quat_w[0].cpu().numpy()

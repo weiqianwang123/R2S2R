@@ -20,6 +20,7 @@ from typing import Any
 
 from r2s2r.paths import REPO_ROOT
 from r2s2r.sim.world import SETTLE_SECONDS, replay_summary
+from r2s2r.structs import SceneSpec
 
 ISAAC_SCRIPTS = REPO_ROOT / "scripts" / "isaaclab"
 # Isaac Lab's rendering preset (the scripts' ``--rendering_mode`` default):
@@ -106,9 +107,16 @@ def pick(
     out_dir: str | Path,
     video_camera: str | None = "ext1",
 ) -> dict[str, Any]:
-    """Run the pick program on the scene for ``target`` (one of its objects) and
-    score it (``out_dir/result.json``; the commands and a video from the static camera
+    """Run the pick program on the scene for ``target`` (one of its objects, not a
+    cloth: it moves only in MuJoCo's scene pick) and score it
+    (``out_dir/result.json``; the commands and a video from the static camera
     ``video_camera`` beside it)."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.testbed.policy import find_object
+
+    obj = find_object(SceneSpec.load(scene_dir), target)
+    if obj.cloth:
+        raise ValueError(f"{obj.name} is a cloth: it moves only in MuJoCo's scene pick")
     out_dir = Path(out_dir).resolve()
     _run_isaac(
         "pick.py",

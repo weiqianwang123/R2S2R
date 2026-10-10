@@ -25,10 +25,12 @@ PHYSCODER_ASSETS = (
     / "assets"
 )
 
-# Conda environments: SimFoundry's (its stages, SAM3, CoACD, FoundationStereo) and
-# Hunyuan3D-2.1's.
+# Conda environments: SimFoundry's (its stages, SAM3, CoACD, FoundationStereo),
+# Hunyuan3D-2.1's, and Newton's, where cloths settle and move beside MuJoCo
+# (scripts/setup/install_newton.sh).
 ENV_SIMFOUNDRY = "simfoundry"
 ENV_MESH = "hunyuan"
+ENV_NEWTON = "newton"
 
 # The ChatGPT desktop app's bundled Codex CLI is kept current; a separately installed
 # `codex` can be too old for the newest models.

@@ -2,16 +2,18 @@
 the support, an articulated object's joints moving as their dynamics say, the robot
 held and driven."""
 
+import json
 from dataclasses import replace
 
 import numpy as np
 import pytest
-from conftest import hinged_box, rgbd_capture, robot_or_skip
+from conftest import hinged_box, rgbd_capture, robot_or_skip, towel_mesh
 
+from r2s2r.assets import urdf_visual_meshes
 from r2s2r.sim.mjscene import CONDIM, Session
-from r2s2r.structs import JointDynamics, SceneSpec
+from r2s2r.structs import JointDynamics, ObjectSpec, SceneSpec
 from r2s2r.tools.objects import assemble
-from r2s2r.transforms import look_at, make_transform
+from r2s2r.transforms import look_at, make_transform, transform_points
 from r2s2r.workspace import Workspace
 
 pytest.importorskip("mujoco")
@@ -158,3 +160,64 @@ def test_two_arms_are_set_and_driven_each_by_its_own(tmp_path):
     assert np.abs(session.arm_q() - target).max() < 0.02
     left, right = session.gripper_level()
     assert left > 0.95 and right < 0.05
+
+
+def _with_towel(tmp_path):
+    """The hinged box's scene and a 30 cm towel through it, 5 cm up."""
+    scene = _box_scene(tmp_path)
+    towel_mesh(0.3).export(tmp_path / "towel.obj")
+    objects = {
+        "support": {"T_base_support": np.eye(4).tolist(), "extent": [1.0, 1.0]},
+        "objects": [
+            {
+                "name": "towel",
+                "mesh": "towel.obj",
+                "T_base_obj": make_transform(np.eye(3), [0.5, 0.0, 0.05]).tolist(),
+                "mass": 0.05,
+                "cloth": {"thickness": 0.002, "youngs_modulus": 5e5},
+            }
+        ],
+    }
+    (tmp_path / "towel.json").write_text(json.dumps(objects))
+    ws = Workspace.load(tmp_path / "run")
+    assemble(ws, tmp_path / "towel.json", tmp_path / "towel_scene", "hull")
+    (towel,) = SceneSpec.load(tmp_path / "towel_scene").objects
+    assert isinstance(towel, ObjectSpec) and towel.cloth
+    return replace(scene, objects=[*scene.objects, towel]), towel
+
+
+def test_a_cloth_stays_where_it_lies_and_touches_nothing(tmp_path):
+    """A towel draped through the box (its surface where the lid is): no free joint,
+    held where the scene has it, at rest; the box settles as it would without it."""
+    scene, towel = _with_towel(tmp_path)
+    session = Session(scene)
+    assert "towel/root" not in [
+        session.model.joint(j).name for j in range(session.model.njnt)
+    ]
+    session.step(int(1.0 / session.dt))
+    assert np.allclose(session.object_poses()["towel"], towel.T_base_obj)
+    assert not session.object_velocities()["towel"].any()
+    box = session.object_poses()["box"]
+    assert np.linalg.norm(box[:3, 3] - ON_TABLE[:3, 3]) < 1e-3
+    with pytest.raises(ValueError, match="a cloth"):
+        session.place("towel", ON_TABLE)
+
+
+@pytest.mark.gl
+def test_a_cloth_is_drawn_where_it_moved(tmp_path):
+    """Seen from above, the towel's surface 10 cm higher is 10 cm nearer, in a render
+    made before it moved too."""
+    scene, towel = _with_towel(tmp_path)
+    session = Session(scene)
+    K = np.array([[300.0, 0.0, 79.5], [0.0, 300.0, 59.5], [0.0, 0.0, 1.0]])
+    above = look_at((0.5, 0.06, 0.6), (0.55, 0.06, 0.0))  # over the towel, off the box
+    try:
+        before = session.render(K, 160, 120, above)["depth"][60, 80]
+        surface = urdf_visual_meshes(towel.asset_path)[0].mesh.vertices
+        lifted = transform_points(towel.T_base_obj, surface) + [0.0, 0.0, 0.1]
+        session.show_surface("towel", lifted)
+        after = session.render(K, 160, 120, above)["depth"][60, 80]
+    finally:
+        session.close()
+    assert before == pytest.approx(0.55, abs=0.01)
+    assert after == pytest.approx(before - 0.1, abs=0.01)

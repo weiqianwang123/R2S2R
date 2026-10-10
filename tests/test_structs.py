@@ -163,8 +163,7 @@ def _jsonable(value):
 
 def test_a_scene_keeps_its_joints_dynamics(tmp_path):
     """An articulated object's joints' dynamics come back as written; a joint without
-    any is free; a scene saved before cloths were dropped loads when it has none, and
-    one with a cloth is refused."""
+    any is free; a scene saved without them loads; a cloth's material comes back."""
     sprung = JointDynamics(damping=0.02, friction=0.05, stiffness=0.3, rest=-0.1)
     box = ObjectSpec(
         "box",
@@ -182,13 +181,12 @@ def test_a_scene_keeps_its_joints_dynamics(tmp_path):
     path = tmp_path / "scene/scene.json"
     saved = json.loads(path.read_text())
     saved["objects"][0].pop("joint_dynamics")
-    saved["objects"][0]["cloth"] = None  # an older scene's
     path.write_text(json.dumps(saved))
     assert SceneSpec.load(tmp_path / "scene").objects[0].joint_dynamics is None
-    saved["objects"][0]["cloth"] = {"thickness": 0.002}
+    material = {"thickness": 0.002, "youngs_modulus": 5e5, "poissons_ratio": 0.3}
+    saved["objects"][0]["cloth"] = material
     path.write_text(json.dumps(saved))
-    with pytest.raises(ValueError, match="cloths are not supported"):
-        SceneSpec.load(tmp_path / "scene")
+    assert SceneSpec.load(tmp_path / "scene").objects[0].cloth == material
 
 
 def test_an_objects_ranges_are_kept_and_drawn_from(tmp_path):

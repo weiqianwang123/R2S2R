@@ -66,6 +66,16 @@ def test_the_support_takes_the_colour_of_the_pixels_on_its_plane(tmp_path):
     colour = support_color(capture, np.eye(4), (0.26, 1.0), stride=1)
     assert np.array(colour) * 255 == pytest.approx([200, 160, 90], abs=0.5)
 
+    rgb[36:, :45] = (30, 30, 30)  # a dark cloth lying flat on most of the table seen
+    cv2.imwrite(str(tmp_path / "c.png"), rgb[..., ::-1])
+    cloth = np.array([[-0.2, -0.2, 0], [0.068, -0.2, 0], [0.068, -0.055, 0]])
+    cloth = np.vstack([cloth, [[-0.2, -0.055, 0]]])
+    line = np.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.2, 0.0, 0.0]])  # no area
+    covered = support_color(capture, np.eye(4), (0.26, 1.0), 1, [cloth, line])
+    assert np.array(covered) * 255 == pytest.approx([200, 160, 90], abs=0.5)
+    seen = support_color(capture, np.eye(4), (0.26, 1.0), stride=1)
+    assert np.array(seen) * 255 != pytest.approx([200, 160, 90], abs=0.5)
+
 
 def test_a_scene_keeps_its_support_colour(tmp_path):
     """Saved and loaded with the scene; a scene without one has none."""

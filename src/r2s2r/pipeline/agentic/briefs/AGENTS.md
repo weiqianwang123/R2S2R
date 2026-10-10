@@ -78,7 +78,8 @@ may be relative to the directory you run them in.
 - `r2s2r tool assemble OBJECTS_JSON --out SCENE_DIR`: the simulation-ready scene
   (`scene.json`): collision parts (CoACD), inertia, flat bases for resting objects.
 - `r2s2r tool settle SCENE_DIR --out SCENE_DIR2`: the objects come to rest under
-  gravity in {{sim}}, this run's simulator (robot held still); how far each moved.
+  gravity in {{sim}}, this run's simulator (robot held still), then the cloths in
+  Newton; how far each moved.
 - `r2s2r tool replay SCENE_DIR --out DIR`: {{sim}} replays the static period (the
   robot at every recorded state, the objects held) and renders every camera at every
   frame; `DIR/compare/` compares each render with the real frame.
@@ -137,10 +138,29 @@ axis. A friction above it keeps the part wherever it is left; a spring whose
 `stiffness` times the turn away from `rest` exceeds it pulls the part back from there.
 Leaving them out makes the joint free, which is a guess too.
 
-Every physical value here is an estimate; where you are unsure of one, give its range
-too (`<name>_range`: [low, high], your estimate inside it): `mass_range`,
-`friction_range`, and a joint's `damping_range`, `friction_range`, `stiffness_range` or
-`rest_range`. Make it as wide as your doubt and no wider: narrow for what the recording
+A cloth (a towel, a napkin, a cloth over a bowl) is a thin surface that drapes. Its
+`mesh` is the surface as it lies (an open triangle mesh in metres, no thickness, a few
+hundred to a few thousand triangles, evenly sized, one piece whose triangles share
+their vertices: one UV chart if textured, as a seam would split the cloth). It is
+unstretched as it lies and bends back toward flat; its material says how it behaves,
+and `mass` is the whole cloth's:
+
+```
+     "cloth": {"thickness": 0.002,                      m
+               "youngs_modulus": 5e5,                   Pa: how hard it stretches and,
+               "poissons_ratio": 0.3}                   with t^3, bends; optional ratio
+```
+
+It lies on or above the support (not hanging over its edge). Settling drapes it over
+what is under it (in Newton, after {{sim}} has settled the rest), taking its values as
+given (a cloth has no ranges); the simulation then holds it as it came to rest, a
+surface nothing touches. An object standing on a cloth stands on the support: leave
+the cloth's thickness out of its pose.
+
+Every physical value here is an estimate; where you are unsure of one (but a cloth's:
+it settles as estimated), give its range too (`<name>_range`: [low, high], your
+estimate inside it): `mass_range`, `friction_range`, and a joint's `damping_range`,
+`friction_range`, `stiffness_range` or `rest_range`. Make it as wide as your doubt and no wider: narrow for what the recording
 shows (a size measured from depth), wide for what it cannot (how stiff a hinge is, how
 slippery a surface). The scene keeps the ranges and a simulation draws each episode's
 values from them (log-uniformly when both ends are above 0), so a policy must cope with

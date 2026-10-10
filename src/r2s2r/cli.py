@@ -20,11 +20,13 @@ tools a method (or anyone) can use on a run::
     r2s2r viewer outputs/agentic [--port 8765]   # live progress in the browser
 
 The MuJoCo testbed (:mod:`r2s2r.testbed`), scoring against a MuJoCo capture's ground
-truth and running the pick test in MuJoCo and Isaac Lab::
+truth and running the pick test in MuJoCo and Isaac Lab (``scene``: MuJoCo on the
+reconstructed scene, its cloths moving in Newton; with ``--target``, any capture's)::
 
     r2s2r eval RUN_DIR|SCENE_DIR --capture CAPTURE_DIR
     r2s2r pick (SCENE_DIR | --oracle) --capture CAPTURE_DIR --out OUT_DIR
-        [--video-camera ext1] [--sims mujoco isaaclab]
+        [--video-camera ext1] [--sims mujoco scene isaaclab]
+    r2s2r pick SCENE_DIR --target NAME --sims scene isaaclab --out OUT_DIR
 
 A run's scenes settle and replay in its simulator (``--sim``, :mod:`r2s2r.sim`): MuJoCo
 in this process, Isaac Lab as scripts, since the Omniverse app must start first
@@ -70,7 +72,9 @@ METHODS: dict[str, Callable[[argparse.Namespace], Method]] = {
     "fixed": _fixed,
     "agentic": _agentic,
 }
-PICK_SIMS = ("mujoco", "isaaclab")  # where the pick test runs
+# Where the pick test runs: the capture's MuJoCo world, the scene in MuJoCo (its cloths
+# in Newton), the scene in Isaac Lab.
+PICK_SIMS = ("mujoco", "scene", "isaaclab")
 
 
 def _droid_capture(args: argparse.Namespace) -> None:
@@ -161,24 +165,46 @@ def _eval(args: argparse.Namespace) -> None:
 def _pick(args: argparse.Namespace) -> None:
     # pylint: disable=import-outside-toplevel
     from r2s2r.testbed.evaluate import evaluate, summary
-    from r2s2r.testbed.pick import match_target, oracle_scene, run_pick
-    from r2s2r.testbed.policy import summarize
+    from r2s2r.testbed.pick import match_target, oracle_scene, run_pick, run_scene_pick
+    from r2s2r.testbed.policy import find_object, summarize
     from r2s2r.testbed.worlds import world_from_capture
 
     if args.oracle == (args.scene_dir is not None):
         raise SystemExit("pick: give a SCENE_DIR or --oracle, not both")
-    capture = Capture.load(args.capture)
+    if args.capture is None and (
+        args.oracle or not args.target or "mujoco" in args.sims
+    ):
+        raise SystemExit("pick: --capture is needed for --oracle, a world, no --target")
+    capture = None if args.capture is None else Capture.load(args.capture)
     if args.oracle:
+        assert capture is not None
         world = world_from_capture(capture)
         scene_dir = oracle_scene(world, capture, args.out / "oracle_scene")
         world.close()
     else:
         scene_dir = args.scene_dir
     scene = SceneSpec.load(scene_dir)
-    print("\n".join(summary(evaluate(scene, capture))))
-    target = match_target(scene, capture)
-    sims = {
-        "mujoco": lambda out: run_pick(capture, scene, target, out, args.video_camera),
+    if capture is not None:
+        print("\n".join(summary(evaluate(scene, capture))))
+    if args.target:
+        target = find_object(scene, args.target).name
+        if "mujoco" in args.sims:  # the world's pick scores the world's own target
+            assert capture is not None
+            if target != match_target(scene, capture):
+                raise SystemExit(f"pick: --target {target} is not the world's target")
+    else:
+        assert capture is not None
+        target = match_target(scene, capture)
+    if find_object(scene, target).cloth and set(args.sims) != {"scene"}:
+        raise SystemExit(f"pick: {target} is a cloth, which moves only in --sims scene")
+
+    def world_pick(out: Path) -> dict:
+        assert capture is not None
+        return run_pick(capture, scene, target, out, args.video_camera)
+
+    sims: dict[str, Callable[[Path], dict]] = {
+        "mujoco": world_pick,
+        "scene": lambda out: run_scene_pick(scene, target, out, args.video_camera),
         "isaaclab": lambda out: isaac.pick(scene_dir, target, out, args.video_camera),
     }
     rollouts = {sim: sims[sim](args.out / sim) for sim in args.sims}
@@ -282,8 +308,9 @@ def main(argv: list[str] | None = None) -> None:
         "pick", help="the pick test on a scene, in MuJoCo and in Isaac Lab"
     )
     p.add_argument("scene_dir", type=Path, nargs="?")
+    p.add_argument("--capture", type=Path, help="the original MuJoCo capture")
     p.add_argument(
-        "--capture", type=Path, required=True, help="the original MuJoCo capture"
+        "--target", help="the scene's object to pick (else the capture's world's)"
     )
     p.add_argument("--out", type=Path, required=True)
     p.add_argument(
@@ -294,8 +321,9 @@ def main(argv: list[str] | None = None) -> None:
         "--sims",
         nargs="+",
         choices=PICK_SIMS,
-        default=list(PICK_SIMS),
-        help="where to run it (Isaac Lab needs its install)",
+        default=["mujoco", "isaaclab"],
+        help="where to run it: the capture's world, the scene in MuJoCo (its cloths "
+        "in Newton), in Isaac Lab (its install)",
     )
     p.set_defaults(func=_pick)
 

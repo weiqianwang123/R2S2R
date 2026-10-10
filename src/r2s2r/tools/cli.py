@@ -246,7 +246,11 @@ def add_tool_parser(sub: Any) -> None:
     p.add_argument("--max-hulls", type=int, default=16)
     p.add_argument("--out", required=True)
 
-    p = add("settle", _settle, "let the objects come to rest (the run's simulator)")
+    p = add(
+        "settle",
+        _settle,
+        "let the objects come to rest (the run's simulator; cloths in Newton)",
+    )
     p.add_argument("scene")
     p.add_argument("--seconds", type=float, default=SETTLE_SECONDS)
     p.add_argument("--sim", choices=SIMS, help="default: the run's")

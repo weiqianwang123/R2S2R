@@ -3,16 +3,20 @@
 import xml.etree.ElementTree as ET
 
 import numpy as np
+import pytest
 import trimesh
 from scipy.spatial.transform import Rotation
 
 from r2s2r.assets import (
     RESTING_BASE,
+    base_color_texture,
     bottom_offset,
+    export_visual,
     make_sim_ready,
     urdf_visual_meshes,
     urdf_visual_points,
 )
+from r2s2r.tools.geometry import load_mesh
 
 
 def _write_urdf(tmp_path, name, body):
@@ -111,3 +115,22 @@ def test_bottom_offset_is_physcoders_convention():
     assert np.allclose(pos, [0.05, -0.1, 0.0], atol=1e-9)
     R = Rotation.from_quat([*quat[1:], quat[0]]).as_matrix()
     assert np.allclose(R[:, 2], [0.0, 1.0, 0.0]) and quat[0] > 0
+
+
+def test_meshes_of_a_directory_keep_their_own_textures(tmp_path):
+    """Two textured links (a glTF's PBR materials) written into one directory each
+    keep their texture, named after their mesh."""
+    image = pytest.importorskip("PIL.Image")
+    for stem, colour in (("visual", (200, 30, 30)), ("lid", (30, 30, 200))):
+        mesh = trimesh.creation.box()
+        mesh.visual = trimesh.visual.TextureVisuals(
+            uv=np.random.default_rng(0).random((len(mesh.vertices), 2)),
+            image=image.new("RGB", (4, 4), colour),
+        )
+        mesh.export(tmp_path / f"{stem}.glb")
+    for stem in ("visual", "lid"):
+        export_visual(load_mesh(tmp_path / f"{stem}.glb"), tmp_path / f"{stem}.obj")
+    for stem, colour in (("visual", (200, 30, 30)), ("lid", (30, 30, 200))):
+        texture = base_color_texture(tmp_path / f"{stem}.obj")
+        assert texture is not None and texture.name == f"{stem}.png"
+        assert image.open(texture).convert("RGB").getpixel((0, 0)) == colour

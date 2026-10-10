@@ -8,7 +8,8 @@ Writes ``OUT_DIR/scene.json`` (object poses where they came to rest, the support
 colour from the capture's depth frames; the report under ``provenance.settle``),
 ``OUT_DIR/settle.json`` (how far each object moved) and
 ``OUT_DIR/objects/<name>/`` (each object as one USD file with physcoder's
-``metadata.yaml``, which the scene refers to).
+``metadata.yaml``, which the scene refers to; a cloth, which settles afterwards in
+Newton, without it).
 """
 
 from __future__ import annotations

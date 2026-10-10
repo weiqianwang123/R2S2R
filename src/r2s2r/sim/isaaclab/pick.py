@@ -19,6 +19,7 @@ from r2s2r.sim.isaaclab.scene import Session, camera_key, crop_window, with_obje
 from r2s2r.structs import SceneSpec
 from r2s2r.testbed.policy import (
     CONTROL_DT,
+    REST_SECONDS,
     VIDEO_EVERY,
     RobotInterface,
     VideoRecorder,
@@ -28,8 +29,6 @@ from r2s2r.testbed.policy import (
     score_lift,
     summarize,
 )
-
-REST_SECONDS = 0.5  # physics before the program starts: the objects come to rest
 
 
 class IsaacLabRobot(RobotInterface):

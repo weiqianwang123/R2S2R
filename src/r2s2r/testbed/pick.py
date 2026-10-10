@@ -1,5 +1,7 @@
 """The pick test in MuJoCo: the pick program on the world a capture was recorded in,
-acting on a reconstructed scene, scored by how far the world's true target rose.
+acting on a reconstructed scene, scored by how far the world's true target rose; or on
+the reconstructed scene itself (:func:`run_scene_pick`, as Isaac Lab's does), its
+cloths moving in Newton beside it, for any capture.
 
 The program only sees the scene; the world's ground truth names the target
 (:func:`match_target`: naming what a task refers to is the policy writer's job) and
@@ -9,6 +11,7 @@ test the policy (in MuJoCo and in Isaac Lab) with a perfect reconstruction.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -19,19 +22,28 @@ from scipy.spatial.transform import Rotation
 
 from r2s2r.assets import ROOT_LINK, UrdfLink, write_object_urdf
 from r2s2r.mjrender import geom_mesh
+from r2s2r.robots import get_robot
+from r2s2r.sim.cloth import ClothSim
+from r2s2r.sim.mjscene import Session
 from r2s2r.structs import Capture, ObjectSpec, SceneSpec
 from r2s2r.testbed.evaluate import ground_truth, scene_errors
 from r2s2r.testbed.policy import (
     CONTROL_DT,
+    REST_SECONDS,
     VIDEO_EVERY,
     RobotInterface,
     VideoRecorder,
+    find_object,
     pick_up,
     save_rollout,
     score_lift,
 )
 from r2s2r.testbed.worlds import MujocoWorld, world_from_capture
-from r2s2r.transforms import quat_wxyz_to_xyzw
+from r2s2r.transforms import intrinsics_matrix, look_at, quat_wxyz_to_xyzw
+
+# Where a scene without the video's camera is filmed from: this far from the target
+# (the base frame), 640 x 480 at 500 px focal length.
+VIEW_OFFSET = (0.5, 0.25, 0.4)
 
 # A static ground-truth object (no joint in the world) needs a mass in a scene.
 STATIC_MASS = 2.0
@@ -62,6 +74,112 @@ class MujocoRobot(RobotInterface):
         self.steps += 1
         if self.on_step is not None:
             self.on_step(self)
+
+
+class SessionRobot(RobotInterface):
+    """The robot of a MuJoCo session on a reconstructed scene behind the policy
+    interface; its cloths, if any, move in Newton beside it (``cloth``)."""
+
+    def __init__(
+        self,
+        session: Session,
+        cloth: ClothSim | None = None,
+        on_step: Callable[[SessionRobot], None] | None = None,
+    ) -> None:
+        assert session.robot is not None, "the session has no robot"
+        super().__init__(session.robot)
+        self.session, self.cloth, self.on_step = session, cloth, on_step
+        self.decimation = max(1, int(round(CONTROL_DT / session.dt)))
+        self.steps = 0
+
+    def joint_positions(self) -> NDArray[np.float64]:
+        return self.session.arm_q()
+
+    def gripper_level(self) -> float:
+        return float(self.session.gripper_level())
+
+    def _hold(self, q: NDArray[np.float64], level: float) -> None:
+        self.session.command(q, level)
+        self.advance(self.decimation)
+        self.steps += 1
+        if self.on_step is not None:
+            self.on_step(self)
+
+    def advance(self, steps: int) -> None:
+        """``steps`` of the session's physics, and the cloths' over the same time."""
+        self.session.step(steps)
+        if self.cloth is not None:
+            self.cloth.step(steps * self.session.dt)
+
+    def positions(self) -> dict[str, NDArray[np.float64]]:
+        """Every object's position; a cloth's highest point's."""
+        out = {
+            name: T[:3, 3]
+            for name, T in self.session.object_poses().items()
+            if not self.session.objects[name].cloth
+        }
+        if self.cloth is not None:
+            for name, vertices in self.cloth.vertices().items():
+                out[name] = vertices[np.argmax(vertices[:, 2])]
+        return out
+
+
+def run_scene_pick(
+    scene: SceneSpec,
+    target: str,
+    out_dir: str | Path,
+    video_camera: str | None = "ext1",
+) -> dict[str, Any]:
+    """The pick program on ``scene`` itself in MuJoCo, its cloths moving in Newton,
+    after :data:`REST_SECONDS` of rest; scored by how far ``target`` rose (a cloth:
+    its highest point). ``result.json``, ``commands.json`` and a video (from the
+    static camera ``video_camera``, else from :data:`VIEW_OFFSET` of the target) go to
+    ``out_dir``. Newton starts only for a one-armed robot and stops however it ends."""
+    out_dir = Path(out_dir)
+    target = find_object(scene, target).name
+    with ExitStack() as stack:
+        session = Session(scene, get_robot(scene.embodiment))
+        stack.callback(session.close)
+        robot = SessionRobot(session)  # refuses a robot of more than one arm
+        if any(obj.cloth for obj in scene.objects):
+            cloth = robot.cloth = ClothSim(session, out_dir / "cloth")
+            stack.callback(cloth.close)
+        robot.advance(int(round(REST_SECONDS / session.dt)))
+        before = robot.positions()
+        if video_camera:
+            K, size, T_base_cam, view = _video_view(scene, video_camera, before[target])
+            video = VideoRecorder(out_dir / f"mujoco_scene_{view}.mp4")
+            stack.callback(video.close)
+
+            def record(robot: SessionRobot) -> None:
+                if robot.steps % VIDEO_EVERY == 0:
+                    if robot.cloth is not None:
+                        robot.cloth.show()
+                    video.add(session.render(K, *size, T_base_cam)["rgb"])
+
+            robot.on_step = record
+        policy = pick_up(robot, scene, target)
+        result = {
+            "deployment": "mujoco_scene",
+            "scene": scene.name,
+            "scene_method": scene.provenance.get("method"),
+            "policy": policy,
+            **score_lift(before, robot.positions(), target),
+        }
+        save_rollout(out_dir, result, robot.log)
+    return result
+
+
+def _video_view(
+    scene: SceneSpec, role: str, target: NDArray
+) -> tuple[NDArray[np.float64], tuple[int, int], NDArray[np.float64], str]:
+    """The video's camera: the scene's static ``role`` camera (intrinsics, size, pose,
+    the role), else one :data:`VIEW_OFFSET` from ``target``, looking at it ("view")."""
+    for cam in scene.cameras.values():
+        if cam.role == role and cam.T_base_cam is not None:
+            return cam.K, (cam.width, cam.height), cam.T_base_cam, role
+    K = intrinsics_matrix(500.0, 500.0, 319.5, 239.5)
+    return K, (640, 480), look_at(np.asarray(target) + VIEW_OFFSET, target), "view"
 
 
 def match_target(scene: SceneSpec, capture: Capture) -> str:
