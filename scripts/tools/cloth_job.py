@@ -28,8 +28,10 @@ and answers are JSON, each after its length (4 bytes, little-endian); an array i
 {"array": base64 of its float64 bytes, "shape": [...]}. Requests: {"op": "init",
 "input": NPZ, "cloths": [...]}; {"op": "step", "seconds": dt, "body_pose": array}: the
 bodies move there over dt, steadily, and the cloths with them; {"op": "cloths"}:
-answered with {"vertices": [array, ...]}; {"op": "close"}. Each is answered (with
-{"error": ...} on failure, its traceback in the log).
+answered with {"vertices": [array, ...]}; {"op": "state"}: answered with the
+simulation's state, {"particle_q": array, "particle_qd": array, "body_q": array};
+{"op": "set_state", ...}: that state back (any of its arrays); {"op": "close"}. Each is
+answered (with {"error": ...} on failure, its traceback in the log).
 
 A cloth bends back toward flat: every edge's rest angle is 0, its stiffness the plate's
 D |e| / (A1 + A2) (|e| the edge's length, A1 and A2 its triangles' areas; Newton's
@@ -209,6 +211,20 @@ class Scene:
             first += n
         return out
 
+    def get_state(self):
+        """The cloths' vertices and velocities, every body's pose."""
+        state = self.state
+        return {
+            "particle_q": state.particle_q.numpy().astype(float),
+            "particle_qd": state.particle_qd.numpy().astype(float),
+            "body_q": state.body_q.numpy().astype(float),
+        }
+
+    def set_state(self, arrays):
+        """The state :meth:`get_state` gave (any of its arrays) back."""
+        for key, value in arrays.items():
+            getattr(self.state, key).assign(np.asarray(value, np.float32))
+
     def cloth_speeds(self):
         """Each cloth's fastest vertex's speed."""
         qd = np.linalg.norm(self.state.particle_qd.numpy(), axis=1)
@@ -292,6 +308,11 @@ def serve():
                 scene.advance(request["seconds"], _array(request["body_pose"]))
             elif request["op"] == "cloths":
                 answer["vertices"] = [_encode(v) for v in scene.cloths()]
+            elif request["op"] == "state":
+                answer.update({k: _encode(v) for k, v in scene.get_state().items()})
+            elif request["op"] == "set_state":
+                keys = ("particle_q", "particle_qd", "body_q")
+                scene.set_state({k: _array(request[k]) for k in keys if k in request})
             elif request["op"] == "close":
                 _send(answers, answer)
                 return

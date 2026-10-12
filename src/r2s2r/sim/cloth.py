@@ -69,6 +69,7 @@ MIN_RADIUS = 0.001  # m: a cloth's contact radius, half its thickness, at least 
 RESTING_M, RESTING_DEG = 0.001, 1.0
 REACH = 0.02  # m: a free body this near what a cloth spans moves with it, settling
 JOB = "cloth_job.py"
+STATE = ("particle_q", "particle_qd", "body_q")  # the served simulation's state
 CLOSE_SECONDS = 30  # Newton has this long to stop when asked
 
 
@@ -235,6 +236,36 @@ class ClothSim:
             obj.name: transform_points(to_base, _decode(v))
             for obj, v in zip(self.cloths, answer["vertices"])
         }
+
+    def state(self) -> dict[str, NDArray[np.float64]]:
+        """The cloths' simulation as it is (their vertices and velocities, the
+        bodies' poses, all in Newton's frame), for :meth:`set_state`."""
+        answer = self._ask({"op": "state"})
+        return {key: _decode(answer[key]) for key in STATE}
+
+    def set_state(self, state: dict[str, NDArray]) -> None:
+        """The cloths' simulation as :meth:`state` gave it."""
+        request: dict[str, Any] = {"op": "set_state"}
+        request.update({key: _encode(np.asarray(state[key], float)) for key in STATE})
+        self._ask(request)
+
+    def place(self, vertices: dict[str, NDArray]) -> None:
+        """Each cloth at rest with its vertices at ``vertices[name]`` (the base
+        frame; all of them, in order), the bodies where the session has them."""
+        to_support = self.to_support
+        q = np.concatenate(
+            [transform_points(to_support, vertices[obj.name]) for obj in self.cloths]
+        )
+        mujoco.mj_kinematics(self.session.model, self.session.data)
+        poses = body_poses(self.session.data, self.ids, to_support)
+        self._ask(
+            {
+                "op": "set_state",
+                "particle_q": _encode(q),
+                "particle_qd": _encode(np.zeros_like(q)),
+                "body_q": _encode(poses),
+            }
+        )
 
     def show(self) -> None:
         """Draw every cloth in the session's renders where Newton has it."""

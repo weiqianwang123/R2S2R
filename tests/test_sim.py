@@ -272,6 +272,20 @@ while True:
         send({"vertices": [
             {"array": base64.b64encode(v.tobytes()).decode(), "shape": list(v.shape)}
             for v in vertices]})
+    elif request["op"] == "state":
+        q = np.concatenate(vertices)
+        empty = np.zeros((0, 7)) if poses is None else poses
+        send({k: {"array": base64.b64encode(np.ascontiguousarray(v).tobytes()).decode(),
+                  "shape": list(v.shape)}
+              for k, v in (("particle_q", q), ("particle_qd", np.zeros_like(q)),
+                           ("body_q", empty))})
+    elif request["op"] == "set_state":
+        if "particle_q" in request:
+            a = request["particle_q"]
+            q = np.frombuffer(base64.b64decode(a["array"])).reshape(a["shape"])
+            ends = np.cumsum([len(v) for v in vertices])[:-1]
+            vertices = list(np.split(q, ends))
+        send({"ok": True})
     elif request["op"] == "close":
         send({"ok": True})
         break
@@ -314,6 +328,30 @@ def test_a_cloth_moves_beside_a_session(tmp_path, monkeypatch):
         assert np.allclose(transform_points(T_mesh, local), moved, atol=1e-5)
         with pytest.raises(ValueError, match="vertices"):
             session.show_surface("towel", moved[:-1])
+    finally:
+        cloth.close()
+        session.close()
+
+
+def test_a_cloth_s_state_comes_back_and_it_is_placed_at_rest(tmp_path, monkeypatch):
+    """The cloths' simulation as it was, set back after it has moved on; and a
+    towel put elsewhere (the base frame), at rest."""
+    _run(tmp_path, {"towel": make_transform(np.eye(3), [0.5, 0.0, 0.17])})
+    _fake_newton(tmp_path, monkeypatch)
+    session = Session(SceneSpec.load(tmp_path / "scene"), robot_or_skip("fr3_robotiq"))
+    cloth = cloth_module.ClothSim(session, tmp_path / "cloth")
+    try:
+        start = cloth.vertices()["towel"]
+        saved = cloth.state()
+        assert set(saved) == set(cloth_module.STATE)
+        cloth.step(1.0)
+        assert not np.allclose(cloth.vertices()["towel"], start)
+        cloth.set_state(saved)
+        np.testing.assert_allclose(cloth.vertices()["towel"], start, atol=1e-9)
+        elsewhere = start + [0.05, -0.1, 0.0]
+        cloth.place({"towel": elsewhere})
+        np.testing.assert_allclose(cloth.vertices()["towel"], elsewhere, atol=1e-9)
+        np.testing.assert_allclose(cloth.state()["particle_qd"], 0.0)
     finally:
         cloth.close()
         session.close()
