@@ -197,9 +197,9 @@ def scene_spec(
     spec.compiler.degree = False  # every angle here is in radians
     spec.option.timestep = timestep
     spec.option.gravity = gravity(scene)
-    # Several contact points between convex meshes, not one: on one, a book's flat
-    # bottom balanced on a point and sank 2 cm into the table.
-    spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    # Several contact points between convex meshes (multiccd, MuJoCo's default from
+    # 3.8), not one: on one, a book's flat bottom balanced on a point and sank 2 cm
+    # into the table.
     # Friction as MuJoCo advises for grasping: an elliptic cone, stiff (IMPRATIO). A
     # block the gripper squeezed crept out under a steady pull 4 times as fast without.
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC

@@ -10,9 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
    "h5py",
-   # MuJoCo stands in for the real world. 3.4+ needs websockets>=13, which
-   # conflicts with the websockets==12.0 pin of isaacsim-kernel 5.1.
-   "mujoco>=3.3,<3.4",
+   # MuJoCo stands in for the real world: 3.8, the version ABC-Sim pins, so a scene
+   # settles here as it does there. (3.4's websockets dependency, which clashed with
+   # Isaac Sim 5.1's pin, is gone from 3.4's own releases.)
+   "mujoco>=3.8.1,<3.9",
    "numpy",
    "opencv-python-headless",
    "PyYAML",
