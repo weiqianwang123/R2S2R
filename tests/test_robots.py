@@ -525,8 +525,12 @@ def test_abcs_grippers_open_95_mm_each_its_own():
         gap = ys[1] - ys[0] - 2 * m.geom_size[pads[0]][1]
         assert gap == pytest.approx(2 * slide + 0.0008, abs=1e-4)
     assert robot.arms[0].max_opening == pytest.approx(0.095, abs=1e-3)
+
+
+def test_abcs_robot_has_no_isaac_model():
+    """The YAM runs in MuJoCo only: no USD, and isaac_cfg says so."""
     with pytest.raises(NotImplementedError, match="MuJoCo"):
-        robot.isaac_cfg()
+        robot_or_skip("dual_yam").isaac_cfg()
 
 
 def test_abcs_arm_urdf_agrees_with_the_mjcf():

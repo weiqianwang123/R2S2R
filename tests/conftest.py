@@ -42,7 +42,7 @@ ROBOT_ASSETS = {
     "fr3_robotiq": MENAGERIE_DIR / "franka_fr3",
     "ur5e_2f140": ur5e_2f140.MJCF_PATH,
     "dual_x5": dual_x5.X5_DIR / "X5A.urdf",
-    "dual_yam": dual_yam.MJCF_PATH,
+    "dual_yam": dual_yam.YAM_DIR / "assets" / "model2.stl",
 }
 
 

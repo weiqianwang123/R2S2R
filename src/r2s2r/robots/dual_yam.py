@@ -7,12 +7,13 @@ that XML with the station (floor, gate, walls, table, their cameras and lights) 
 out and the arms re-rooted: the base frame is midway between the arms' bases, on the
 plane they stand on (ABC's table top), x the way they face, z up; the left arm (ABC's
 ``left_`` joints and observations) on +y, the arms 0.62 m apart. :data:`T_ABC_BASE` is
-the base in ABC's world frame (its task scenes stand the arms at z 0.75, a few at 0.76:
-check the scene). Everything else is ABC's: bodies, joints, sites and actuators keep
-their names, the position servos their gains and force limits, the joints their armature
-and friction loss, the links their gravity compensation, the pads their friction, the
-arms their collisions with each other, and the wrist cameras (``left``, ``right``) their
-mounts. So an arm moves here as it does in ABC.
+the base in ABC's world frame as its robot file stands the arms (z 0.75); most of
+its task scenes stand them 1 cm higher, at 0.76 (6 of 25 at 0.75): a world placing a
+scene against ABC's reads the scene's. Everything else is ABC's: bodies, joints, sites
+and actuators keep their names, the position servos their gains and force limits, the
+joints their armature and friction loss, the links their gravity compensation, the
+pads their friction, the arms their collisions with each other, and the wrist cameras
+(``left``, ``right``) their mounts. So an arm moves here as it does in ABC.
 
 Each finger slides from 0 (closed, the pads 0.8 mm apart) to 47.5 mm (open, 95 mm
 apart); the right finger mirrors the driven left one by ABC's joint equality, written
@@ -50,6 +51,10 @@ URDF_PATH = YAM_DIR / "yam_arm.urdf"
 ARMS = {"left": 0.31, "right": -0.31}  # each arm's base, along the base frame's y (m)
 ARM_JOINTS = tuple(f"joint{i}" for i in range(1, 7))
 FINGERS = ("left_finger", "right_finger")  # right_finger mirrors left_finger
+# The URDF's velocity limits: i2rt's own URDF gives the arm joints 10 rad/s; the
+# fingers' is the 47.5 mm slide in a tenth of a second.
+JOINT_VELOCITY = 10.0
+FINGER_VELOCITY = 0.5
 FINGER_OPEN = 0.0475  # the driven finger's slide (m)
 PAD_GAP = 0.095  # the pads' inner faces apart, open (m)
 GRASP_OFFSET = 0.1347  # ABC's grasp site along link6's z (m)
@@ -131,7 +136,12 @@ def mjcf() -> Any:
 def urdf() -> Path:
     """One arm as a URDF (:data:`URDF_PATH`, written when missing or out of date), from
     the MJCF: joint frames at the body origins, axes the MJCF's, the meshes by path
-    relative to :data:`YAM_DIR`, a finger's effort its gripper actuator's."""
+    relative to :data:`YAM_DIR`, a finger's effort its gripper actuator's. ABC's XML
+    has no velocity limits; the URDF's are i2rt's own (:data:`JOINT_VELOCITY`,
+    :data:`FINGER_VELOCITY`), which a planner reading the file takes."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.mjrender import mujoco
+
     spec = mjcf()
     robot = ET.Element("robot", name="yam_arm")
     for link, name in BODIES.items():
@@ -170,24 +180,24 @@ def urdf() -> Path:
             continue
         body = spec.body(f"left_{name}")
         joint = body.joints[0]
-        slide = joint.type == spec.joint("left_left_finger").type
-        name = link.replace("link", "joint")  # joint1..6; the fingers their own
+        slide = joint.type == mujoco.mjtJoint.mjJNT_SLIDE
+        joint_name = link.replace("link", "joint")  # joint1..6; the fingers their own
         element = ET.SubElement(
-            robot, "joint", name=name, type="prismatic" if slide else "revolute"
+            robot, "joint", name=joint_name, type="prismatic" if slide else "revolute"
         )
         parent = body.parent.name.removeprefix("left_")
         ET.SubElement(element, "parent", link=links[parent])
         ET.SubElement(element, "child", link=link)
         _origin(element, body.pos, body.quat)
         ET.SubElement(element, "axis", xyz=" ".join(map(_num, joint.axis)))
-        actuator = "left_gripper" if link in FINGERS else f"left_{name}"
+        actuator = "left_gripper" if link in FINGERS else f"left_{joint_name}"
         ET.SubElement(
             element,
             "limit",
             lower=_num(joint.range[0]),
             upper=_num(joint.range[1]),
             effort=_num(spec.actuator(actuator).forcerange[1]),
-            velocity="0",
+            velocity=_num(FINGER_VELOCITY if slide else JOINT_VELOCITY),
         )
     ET.indent(robot)
     text = ET.tostring(robot, encoding="unicode") + "\n"
