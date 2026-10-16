@@ -7,12 +7,13 @@ Isaac Lab and the testbed all take the spec, so a new robot is a new module adde
 from __future__ import annotations
 
 from r2s2r.robots.dual_x5 import DUAL_X5
+from r2s2r.robots.dual_yam import DUAL_YAM
 from r2s2r.robots.fr3_robotiq import FR3_ROBOTIQ
 from r2s2r.robots.spec import ArmSpec, GripperSpec, RobotSpec
 from r2s2r.robots.ur5e_2f140 import UR5E_2F140
 
 ROBOTS: dict[str, RobotSpec] = {
-    robot.name: robot for robot in (FR3_ROBOTIQ, UR5E_2F140, DUAL_X5)
+    robot.name: robot for robot in (FR3_ROBOTIQ, UR5E_2F140, DUAL_X5, DUAL_YAM)
 }
 
 

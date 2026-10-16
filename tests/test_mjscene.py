@@ -145,10 +145,11 @@ def test_a_drawn_objects_physics_is_set_and_the_state_kept(tmp_path):
     assert m.body_mass[ids].sum() == pytest.approx(built)
 
 
-def test_two_arms_are_set_and_driven_each_by_its_own(tmp_path):
-    """RoboDojo's two arms: each follows its own targets and its gripper its own
-    opening; the session gives one opening per arm."""
-    robot = robot_or_skip("dual_x5")
+@pytest.mark.parametrize("name", ["dual_x5", "dual_yam"])
+def test_two_arms_are_set_and_driven_each_by_its_own(tmp_path, name):
+    """RoboDojo's and ABC's two arms: each follows its own targets and its gripper its
+    own opening; the session gives one opening per arm."""
+    robot = robot_or_skip(name)
     home = np.asarray(robot.home_q)
     scene = replace(_box_scene(tmp_path), embodiment=robot.name, joint_positions=home)
     session = Session(scene, robot)

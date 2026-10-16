@@ -18,7 +18,7 @@ import trimesh
 from numpy.typing import NDArray
 
 from r2s2r.assets import joint_transform
-from r2s2r.robots import dual_x5, fr3_robotiq, get_robot, ur5e_2f140
+from r2s2r.robots import dual_x5, dual_yam, fr3_robotiq, get_robot, ur5e_2f140
 from r2s2r.robots.spec import MENAGERIE_DIR, RobotSpec
 from r2s2r.structs import (
     CameraSpec,
@@ -42,6 +42,7 @@ ROBOT_ASSETS = {
     "fr3_robotiq": MENAGERIE_DIR / "franka_fr3",
     "ur5e_2f140": ur5e_2f140.MJCF_PATH,
     "dual_x5": dual_x5.X5_DIR / "X5A.urdf",
+    "dual_yam": dual_yam.MJCF_PATH,
 }
 
 

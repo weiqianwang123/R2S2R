@@ -1,6 +1,8 @@
 """Tests for the robot registry and robots/model.py (skipped per robot without its
-assets), RoboDojo's two arms, the masker and the viewer's robot on the UR5e."""
+assets), RoboDojo's and ABC-Sim's two arms, the masker and the viewer's robot on the
+UR5e."""
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import cv2
@@ -14,6 +16,7 @@ pytest.importorskip("mujoco")
 from r2s2r.robots import (  # noqa: E402
     ROBOTS,
     dual_x5,
+    dual_yam,
     fr3_robotiq,
     get_robot,
     ur5e_2f140,
@@ -23,6 +26,7 @@ from r2s2r.transforms import (  # noqa: E402
     intrinsics_matrix,
     invert,
     look_at,
+    make_transform,
     transform_points,
 )
 
@@ -35,7 +39,7 @@ def fixture_model(request):
 
 def test_registry_names_the_known_robots():
     """Every robot is registered under its name; unknown names list the known ones."""
-    assert set(ROBOTS) == {"fr3_robotiq", "ur5e_2f140", "dual_x5"}
+    assert set(ROBOTS) == {"fr3_robotiq", "ur5e_2f140", "dual_x5", "dual_yam"}
     assert all(get_robot(n).name == n for n in ROBOTS)
     with pytest.raises(ValueError, match="fr3_robotiq"):
         get_robot("ur10")
@@ -58,7 +62,12 @@ def test_robot_compiles_with_its_arms_and_grippers(model):
     """The spec's joints, actuators and bodies exist; the home pose is within limits."""
     robot = model.robot
     assert model.arm_qadr.shape == (robot.dof,) == (len(robot.home_q),)
-    dofs = {"fr3_robotiq": [7], "ur5e_2f140": [6], "dual_x5": [6, 6]}
+    dofs = {
+        "fr3_robotiq": [7],
+        "ur5e_2f140": [6],
+        "dual_x5": [6, 6],
+        "dual_yam": [6, 6],
+    }
     assert [len(arm.joints) for arm in robot.arms] == dofs[robot.name]
     for arm in robot.arms:
         model.model.actuator(arm.gripper.actuator)
@@ -391,3 +400,192 @@ def test_robodojos_tcp_is_between_the_pads():
             ys.append(points[:, 1])
         near, far = sorted(ys, key=np.mean)
         assert near.max() < 0.001 and far.min() > -0.001
+
+
+def _poses(m, d, names, kind="body"):
+    """``T_world_x`` of bodies or sites ``names`` in a compiled model's data."""
+    poses = []
+    for name in names:
+        if kind == "body":
+            b = m.body(name).id
+            poses.append(make_transform(d.xmat[b].reshape(3, 3), d.xpos[b]))
+        else:
+            s = m.site(name).id
+            poses.append(make_transform(d.site_xmat[s].reshape(3, 3), d.site_xpos[s]))
+    return poses
+
+
+def test_abcs_arms_stand_where_abc_has_them():
+    """In ABC's world frame the arms' bases are where its yam_bimanual_empty.xml puts
+    them, facing its +x; at zero joints each gripper points ahead of its arm, its TCP
+    frame's y the fingers' slide."""
+    model = RobotModel(robot_or_skip("dual_yam"))
+    for side, y in (("left", 0.31), ("right", -0.31)):
+        T = dual_yam.T_ABC_BASE @ model.pose(f"{side}_arm")
+        assert np.allclose(T[:3, 3], [0.2525, y, 0.75])
+        assert np.allclose(T[:3, :3], np.eye(3))
+    model.set(np.zeros(model.robot.dof))
+    m, d = model.model, model.data
+    for arm, side in enumerate(("left", "right")):
+        T = model.tcp_pose(arm)
+        assert np.allclose(T[:3, 2], [1.0, 0.0, 0.0])
+        T_link6 = model.pose(f"{side}_link_6")
+        assert np.allclose(
+            T[:3, 3], T_link6[:3, 3] + dual_yam.GRASP_OFFSET * T_link6[:3, 2]
+        )
+        assert np.allclose(
+            T[:3, 1], T_link6[:3, 0]
+        )  # the fingers slide along link6's x
+        finger = m.joint(f"{side}_left_finger").id
+        axis = d.xmat[m.jnt_bodyid[finger]].reshape(3, 3) @ m.jnt_axis[finger]
+        assert np.allclose(axis, T_link6[:3, 0])
+
+
+def test_abcs_model_is_abcs_xml_re_rooted():
+    """Over random joints, every site of the robot's model is where ABC's own XML has
+    it (the base frame moved by T_ABC_BASE), each TCP at its grasp site; the joints'
+    ranges, armature and friction loss, and the actuators' gains, limits and force
+    ranges are ABC's."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.mjrender import mujoco
+
+    robot = robot_or_skip("dual_yam")
+    m, m0 = robot.mjcf().compile(), dual_yam.abc_spec().compile()
+    d, d0 = mujoco.MjData(m), mujoco.MjData(m0)
+    assert m.nkey == 0 and m.ncam == 2 and m.nlight == 0 and m.ntex == 0
+    rng = np.random.default_rng(0)
+    sites = [m.site(s).name for s in range(m.nsite)]
+    for _ in range(20):
+        for j in range(m.njnt):
+            q = rng.uniform(*m.jnt_range[j])
+            d.qpos[m.jnt_qposadr[j]] = q
+            d0.qpos[m0.joint(m.joint(j).name).qposadr[0]] = q
+        mujoco.mj_kinematics(m, d)
+        mujoco.mj_kinematics(m0, d0)
+        ours, theirs = _poses(m, d, sites, "site"), _poses(m0, d0, sites, "site")
+        for T, T0 in zip(ours, theirs):
+            assert np.allclose(dual_yam.T_ABC_BASE @ T, T0, atol=1e-6)
+        for side in ("left", "right"):
+            grasp = _poses(m, d, [f"{side}_grasp_site"], "site")[0]
+            assert np.allclose(_poses(m, d, [f"{side}_tcp"])[0], grasp, atol=1e-9)
+    for j in range(m.njnt):
+        j0 = m0.joint(m.joint(j).name).id
+        assert np.array_equal(m.jnt_range[j], m0.jnt_range[j0])
+        dof, dof0 = m.jnt_dofadr[j], m0.jnt_dofadr[j0]
+        assert m.dof_armature[dof] == m0.dof_armature[dof0]
+        assert m.dof_frictionloss[dof] == m0.dof_frictionloss[dof0]
+    for a in range(m.nu):
+        act, act0 = m.actuator(a), m0.actuator(m.actuator(a).name)
+        for field in ("gainprm", "biasprm", "forcerange", "ctrlrange", "trnid"):
+            assert np.array_equal(getattr(act, field), getattr(act0, field)), field
+    for b in range(1, m.nbody):
+        name = m.body(b).name
+        if not name.endswith("_tcp"):
+            assert m.body_gravcomp[b] == m0.body_gravcomp[m0.body(name).id]
+    pads = [
+        g
+        for g in range(m.ngeom)
+        if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_BOX and m.geom_contype[g]
+    ]
+    assert len(pads) == 8 and all(m.geom_friction[g][0] == 4.0 for g in pads)
+    assert all(m.geom_condim[g] == 6 for g in pads)
+
+
+def test_abcs_grippers_open_95_mm_each_its_own():
+    """Open, each gripper's pads are 95 mm apart along its TCP's y (ABC's command 1);
+    closed (ABC's 0) they meet, the right finger mirroring the left by ABC's equality;
+    the left closed leaves the right open."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.mjrender import mujoco
+
+    robot = robot_or_skip("dual_yam")
+    model = RobotModel(robot)
+    m, d = model.model, model.data
+    assert [g.joints for g in model.grippers] == [
+        [f"{side}_left_finger", f"{side}_right_finger"] for side in ("left", "right")
+    ]
+    model.set(np.asarray(robot.home_q), [1.0, 0.0])
+    for arm, (side, slide) in enumerate(
+        (("left", 0.0), ("right", dual_yam.FINGER_OPEN))
+    ):
+        assert d.qpos[m.joint(f"{side}_left_finger").qposadr[0]] == pytest.approx(slide)
+        assert d.qpos[m.joint(f"{side}_right_finger").qposadr[0]] == pytest.approx(
+            -slide
+        )
+        T_tcp_base = invert(model.tcp_pose(arm))
+        pads = [
+            g
+            for g in range(m.ngeom)
+            if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_BOX
+            and m.geom_size[g][2] == 0.04
+            and m.body(m.geom_bodyid[g]).name.startswith(side)
+        ]
+        assert len(pads) == 2
+        ys = sorted(transform_points(T_tcp_base, d.geom_xpos[pads])[:, 1])
+        gap = ys[1] - ys[0] - 2 * m.geom_size[pads[0]][1]
+        assert gap == pytest.approx(2 * slide + 0.0008, abs=1e-4)
+    assert robot.arms[0].max_opening == pytest.approx(0.095, abs=1e-3)
+    with pytest.raises(NotImplementedError, match="MuJoCo"):
+        robot.isaac_cfg()
+
+
+def test_abcs_arm_urdf_agrees_with_the_mjcf():
+    """The one-arm URDF, loaded by MuJoCo, puts every link and mesh where the MJCF's
+    left arm has it (its base frame) over random joints, with the MJCF's limits."""
+    # pylint: disable=import-outside-toplevel
+    from r2s2r.mjrender import mujoco
+
+    robot = robot_or_skip("dual_yam")
+    root = ET.parse(dual_yam.urdf()).getroot()
+    assert root.get("name") == "yam_arm"
+    assert [j.get("name") for j in root.iter("joint")] == [
+        *dual_yam.ARM_JOINTS,
+        *dual_yam.FINGERS,
+    ]
+    assert [j.get("type") for j in root.iter("joint")] == ["revolute"] * 6 + [
+        "prismatic"
+    ] * 2
+    extension = ET.Element("mujoco")
+    ET.SubElement(
+        extension,
+        "compiler",
+        strippath="false",
+        discardvisual="false",
+        fusestatic="false",
+    )
+    root.insert(0, extension)
+    spec = mujoco.MjSpec.from_string(ET.tostring(root, encoding="unicode"))
+    spec.meshdir = str(dual_yam.YAM_DIR)
+    mu, m = spec.compile(), robot.mjcf().compile()
+    du, d = mujoco.MjData(mu), mujoco.MjData(m)
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        for j in range(mu.njnt):
+            name = mu.joint(j).name
+            assert np.allclose(mu.jnt_range[j], m.joint(f"left_{name}").range)
+            q = rng.uniform(*mu.jnt_range[j])
+            du.qpos[mu.jnt_qposadr[j]] = q
+            d.qpos[m.joint(f"left_{name}").qposadr[0]] = q
+        mujoco.mj_kinematics(mu, du)
+        mujoco.mj_kinematics(m, d)
+        T_base = invert(_poses(m, d, ["left_arm"])[0])
+        for link, body in dual_yam.BODIES.items():
+            T, T_u = _poses(m, d, [f"left_{body}"])[0], _poses(mu, du, [link])[0]
+            assert np.allclose(T_base @ T, T_u, atol=1e-6), link
+            meshes = {
+                mdl: [
+                    g
+                    for g in range(mdl.ngeom)
+                    if mdl.geom_bodyid[g] == mdl.body(b).id
+                    and mdl.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH
+                    and mdl.geom_contype[g] == 0
+                ]
+                for mdl, b in ((m, f"left_{body}"), (mu, link))
+            }
+            assert len(meshes[m]) == len(meshes[mu]) > 0
+            for g, g_u in zip(meshes[m], meshes[mu]):
+                assert np.allclose(
+                    transform_points(T_base, d.geom_xpos[[g]])[0],
+                    du.geom_xpos[g_u],
+                    atol=1e-6,
+                )

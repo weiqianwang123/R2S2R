@@ -17,6 +17,7 @@ bash scripts/setup/link_simfoundry_resources.sh  # a SimFoundry install's models
 bash scripts/setup/fetch_mujoco_assets.sh        # MuJoCo robots and objects
 bash scripts/setup/fetch_robotiq_isaac.sh        # Robotiq's 2F-85 for Isaac (git-lfs)
 bash scripts/setup/fetch_robodojo_x5.sh          # RoboDojo's ARX X5
+bash scripts/setup/fetch_abc_yam.sh              # ABC-Sim's i2rt YAM
 bash scripts/setup/install_newton.sh             # conda env "newton", for cloths
 source .venv/bin/activate                        # and Codex or Claude Code on the PATH
 ```
@@ -76,12 +77,12 @@ flowchart LR
 
 ## Robots
 
-| `fr3_robotiq` | `ur5e_2f140` | `dual_x5` |
-|:-:|:-:|:-:|
-| <img src="docs/robots/fr3_robotiq.png" width="200"> | <img src="docs/robots/ur5e_2f140.png" width="200"> | <img src="docs/robots/dual_x5.png" width="200"> |
-| FR3 + Robotiq 2F-85, the lab's DROID robot | UR5e + Robotiq 2F-140, [PhysCoder](https://github.com/Jaraxxus-Me/physcoder)'s | [RoboDojo](https://robodojo-benchmark.com)'s two ARX X5 arms |
-| DROID's ZED `ext1`, `ext2`, `wrist` (stereo); MuJoCo `fr3_table`: `ext1`, `wrist` | `wrist` (optional `ext1`); MuJoCo `physcoder_box_block` | both arms' joints, left then right |
-| Menagerie's FR3; Isaac Lab: the Panda (same kinematics) with the FR3's limits and Robotiq's own 2F-85 | PhysCoder's MJCF and USD, by path | RoboDojo's X5A URDF, two as one, its drives |
+| `fr3_robotiq` | `ur5e_2f140` | `dual_x5` | `dual_yam` |
+|:-:|:-:|:-:|:-:|
+| <img src="docs/robots/fr3_robotiq.png" width="200"> | <img src="docs/robots/ur5e_2f140.png" width="200"> | <img src="docs/robots/dual_x5.png" width="200"> | <img src="docs/robots/dual_yam.png" width="200"> |
+| FR3 + Robotiq 2F-85, the lab's DROID robot | UR5e + Robotiq 2F-140, [PhysCoder](https://github.com/Jaraxxus-Me/physcoder)'s | [RoboDojo](https://robodojo-benchmark.com)'s two ARX X5 arms | [ABC-Sim](https://github.com/amazon-far/abc)'s two i2rt YAM arms |
+| DROID's ZED `ext1`, `ext2`, `wrist` (stereo); MuJoCo `fr3_table`: `ext1`, `wrist` | `wrist` (optional `ext1`); MuJoCo `physcoder_box_block` | both arms' joints, left then right | both arms' joints, left then right |
+| Menagerie's FR3; Isaac Lab: the Panda (same kinematics) with the FR3's limits and Robotiq's own 2F-85 | PhysCoder's MJCF and USD, by path | RoboDojo's X5A URDF, two as one, its drives | ABC's own MJCF, re-rooted, its drives; MuJoCo only |
 
 A robot is one `RobotSpec` module in [`src/r2s2r/robots/`](src/r2s2r/robots), registered
 in `ROBOTS`; a capture names its robot.
