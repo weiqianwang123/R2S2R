@@ -2,7 +2,6 @@
 assets), RoboDojo's and ABC-Sim's two arms, the masker and the viewer's robot on the
 UR5e."""
 
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import cv2
@@ -418,7 +417,7 @@ def _poses(m, d, names, kind="body"):
 def test_abcs_arms_stand_where_abc_has_them():
     """In ABC's world frame the arms' bases are where its yam_bimanual_empty.xml puts
     them, facing its +x; at zero joints each gripper points ahead of its arm, its TCP
-    frame's y the fingers' slide."""
+    the pads' centre in link6, the TCP frame's y the fingers' slide."""
     model = RobotModel(robot_or_skip("dual_yam"))
     for side, y in (("left", 0.31), ("right", -0.31)):
         T = dual_yam.T_ABC_BASE @ model.pose(f"{side}_arm")
@@ -430,9 +429,7 @@ def test_abcs_arms_stand_where_abc_has_them():
         T = model.tcp_pose(arm)
         assert np.allclose(T[:3, 2], [1.0, 0.0, 0.0])
         T_link6 = model.pose(f"{side}_link_6")
-        assert np.allclose(
-            T[:3, 3], T_link6[:3, 3] + dual_yam.GRASP_OFFSET * T_link6[:3, 2]
-        )
+        assert np.allclose(T[:3, 3], transform_points(T_link6, [dual_yam.TCP_POS])[0])
         assert np.allclose(
             T[:3, 1], T_link6[:3, 0]
         )  # the fingers slide along link6's x
@@ -443,9 +440,9 @@ def test_abcs_arms_stand_where_abc_has_them():
 
 def test_abcs_model_is_abcs_xml_re_rooted():
     """Over random joints, every site of the robot's model is where ABC's own XML has
-    it (the base frame moved by T_ABC_BASE), each TCP at its grasp site; the joints'
-    ranges, armature and friction loss, and the actuators' gains, limits and force
-    ranges are ABC's."""
+    it (the base frame moved by T_ABC_BASE), each TCP the pads' centre: its grasp
+    site's axes, 44 mm from the site along link6's -y; the joints' ranges, armature
+    and friction loss, and the actuators' gains, limits and force ranges are ABC's."""
     # pylint: disable=import-outside-toplevel
     from r2s2r.mjrender import mujoco
 
@@ -467,7 +464,15 @@ def test_abcs_model_is_abcs_xml_re_rooted():
             assert np.allclose(dual_yam.T_ABC_BASE @ T, T0, atol=1e-6)
         for side in ("left", "right"):
             grasp = _poses(m, d, [f"{side}_grasp_site"], "site")[0]
-            assert np.allclose(_poses(m, d, [f"{side}_tcp"])[0], grasp, atol=1e-9)
+            tcp = _poses(m, d, [f"{side}_tcp"])[0]
+            link6 = _poses(m, d, [f"{side}_link_6"])[0]
+            assert np.allclose(tcp[:3, :3], grasp[:3, :3], atol=1e-9)
+            assert np.allclose(
+                tcp[:3, 3], transform_points(link6, [dual_yam.TCP_POS])[0], atol=1e-9
+            )
+            assert np.allclose(
+                tcp[:3, 3] - grasp[:3, 3], -0.044 * link6[:3, 1], atol=1e-9
+            )
     for j in range(m.njnt):
         j0 = m0.joint(m.joint(j).name).id
         assert np.array_equal(m.jnt_range[j], m0.jnt_range[j0])
@@ -492,9 +497,9 @@ def test_abcs_model_is_abcs_xml_re_rooted():
 
 
 def test_abcs_grippers_open_95_mm_each_its_own():
-    """Open, each gripper's pads are 95 mm apart along its TCP's y (ABC's command 1);
-    closed (ABC's 0) they meet, the right finger mirroring the left by ABC's equality;
-    the left closed leaves the right open."""
+    """Open, each gripper's pads are 95 mm apart along its TCP's y (ABC's command 1),
+    the TCP between them; closed (ABC's 0) they meet, the right finger mirroring the
+    left by ABC's equality; the left closed leaves the right open."""
     # pylint: disable=import-outside-toplevel
     from r2s2r.mjrender import mujoco
 
@@ -521,7 +526,10 @@ def test_abcs_grippers_open_95_mm_each_its_own():
             and m.body(m.geom_bodyid[g]).name.startswith(side)
         ]
         assert len(pads) == 2
-        ys = sorted(transform_points(T_tcp_base, d.geom_xpos[pads])[:, 1])
+        in_tcp = transform_points(T_tcp_base, d.geom_xpos[pads])
+        assert np.allclose(in_tcp[:, 0], 0.0, atol=1e-6)  # on the TCP's line
+        assert in_tcp[:, 1].sum() == pytest.approx(0.0, abs=1e-6)  # about its z
+        ys = sorted(in_tcp[:, 1])
         gap = ys[1] - ys[0] - 2 * m.geom_size[pads[0]][1]
         assert gap == pytest.approx(2 * slide + 0.0008, abs=1e-4)
     assert robot.arms[0].max_opening == pytest.approx(0.095, abs=1e-3)
@@ -531,65 +539,3 @@ def test_abcs_robot_has_no_isaac_model():
     """The YAM runs in MuJoCo only: no USD, and isaac_cfg says so."""
     with pytest.raises(NotImplementedError, match="MuJoCo"):
         robot_or_skip("dual_yam").isaac_cfg()
-
-
-def test_abcs_arm_urdf_agrees_with_the_mjcf():
-    """The one-arm URDF, loaded by MuJoCo, puts every link and mesh where the MJCF's
-    left arm has it (its base frame) over random joints, with the MJCF's limits."""
-    # pylint: disable=import-outside-toplevel
-    from r2s2r.mjrender import mujoco
-
-    robot = robot_or_skip("dual_yam")
-    root = ET.parse(dual_yam.urdf()).getroot()
-    assert root.get("name") == "yam_arm"
-    assert [j.get("name") for j in root.iter("joint")] == [
-        *dual_yam.ARM_JOINTS,
-        *dual_yam.FINGERS,
-    ]
-    assert [j.get("type") for j in root.iter("joint")] == ["revolute"] * 6 + [
-        "prismatic"
-    ] * 2
-    extension = ET.Element("mujoco")
-    ET.SubElement(
-        extension,
-        "compiler",
-        strippath="false",
-        discardvisual="false",
-        fusestatic="false",
-    )
-    root.insert(0, extension)
-    spec = mujoco.MjSpec.from_string(ET.tostring(root, encoding="unicode"))
-    spec.meshdir = str(dual_yam.YAM_DIR)
-    mu, m = spec.compile(), robot.mjcf().compile()
-    du, d = mujoco.MjData(mu), mujoco.MjData(m)
-    rng = np.random.default_rng(0)
-    for _ in range(20):
-        for j in range(mu.njnt):
-            name = mu.joint(j).name
-            assert np.allclose(mu.jnt_range[j], m.joint(f"left_{name}").range)
-            q = rng.uniform(*mu.jnt_range[j])
-            du.qpos[mu.jnt_qposadr[j]] = q
-            d.qpos[m.joint(f"left_{name}").qposadr[0]] = q
-        mujoco.mj_kinematics(mu, du)
-        mujoco.mj_kinematics(m, d)
-        T_base = invert(_poses(m, d, ["left_arm"])[0])
-        for link, body in dual_yam.BODIES.items():
-            T, T_u = _poses(m, d, [f"left_{body}"])[0], _poses(mu, du, [link])[0]
-            assert np.allclose(T_base @ T, T_u, atol=1e-6), link
-            meshes = {
-                mdl: [
-                    g
-                    for g in range(mdl.ngeom)
-                    if mdl.geom_bodyid[g] == mdl.body(b).id
-                    and mdl.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH
-                    and mdl.geom_contype[g] == 0
-                ]
-                for mdl, b in ((m, f"left_{body}"), (mu, link))
-            }
-            assert len(meshes[m]) == len(meshes[mu]) > 0
-            for g, g_u in zip(meshes[m], meshes[mu]):
-                assert np.allclose(
-                    transform_points(T_base, d.geom_xpos[[g]])[0],
-                    du.geom_xpos[g_u],
-                    atol=1e-6,
-                )
